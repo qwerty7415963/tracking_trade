@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { FloodWaitError, SessionRevokedError } from "teleproto/errors";
 import { PrismaService } from "../database/prisma.service";
+import { loadAppConfig } from "../config/app.config";
 import {
   TelegramCollectorService,
   TelegramPort,
@@ -32,7 +33,7 @@ describe("TelegramCollectorService", () => {
   function service(prisma: unknown, port: TelegramPort): TelegramCollectorService {
     return new TelegramCollectorService(
       prisma as PrismaService,
-      { operatorUsernames: [], tradingEnabled: false, databaseUrl: "", redisUrl: "" },
+      loadAppConfig({}),
       () => port,
     );
   }
@@ -97,3 +98,4 @@ describe("TelegramCollectorService", () => {
     expect(create).toHaveBeenCalledTimes(2);
   });
 });
+

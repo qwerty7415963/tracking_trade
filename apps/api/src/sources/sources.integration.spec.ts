@@ -1,4 +1,5 @@
 import { Test } from "@nestjs/testing";
+import { loadAppConfig } from "../config/app.config";
 import { AppModule } from "../app.module";
 import { PrismaService } from "../database/prisma.service";
 import { TelegramCollectorService } from "../telegram/telegram-collector.service";
@@ -18,7 +19,7 @@ describeIntegration("Sources + ingest (live DB)", () => {
     const prisma = app.get(PrismaService);
     const telegram = new TelegramCollectorService(
       prisma,
-      { operatorUsernames: [], tradingEnabled: false, databaseUrl: "", redisUrl: "" },
+      loadAppConfig({}),
       () => {
         throw new Error("no live telegram in tests");
       },
@@ -47,3 +48,4 @@ describeIntegration("Sources + ingest (live DB)", () => {
     await app.close();
   }, 30000);
 });
+

@@ -21,4 +21,9 @@ describe("loadAppConfig", () => {
     expect(config.databaseUrl).toContain("localhost:5434");
     expect(config.redisUrl).toContain("localhost:6379");
   });
+
+  it("always boots with trading disabled even if env tries otherwise", () => {
+    const config = loadAppConfig({ TRADING_ENABLED: "true" } as NodeJS.ProcessEnv);
+    expect(config.tradingEnabled).toBe(false);
+  });
 });

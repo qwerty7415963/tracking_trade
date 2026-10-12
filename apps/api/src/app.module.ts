@@ -5,6 +5,7 @@ import { DatabaseModule } from "./database/database.module";
 import { HealthController } from "./health/health.controller";
 import { AuthModule } from "./auth/auth.module";
 import { AuditModule } from "./audit/audit.module";
+import { ExecutionModule } from "./execution/execution.module";
 import { QueueModule } from "./queue/queue.module";
 import { SignalsModule } from "./signals/signals.module";
 import { SourcesModule } from "./sources/sources.module";
@@ -19,6 +20,7 @@ import { SourcesModule } from "./sources/sources.module";
     QueueModule,
     SourcesModule,
     SignalsModule,
+    ExecutionModule,
   ],
   controllers: [HealthController],
 })
