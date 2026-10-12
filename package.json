@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc",
+    "build": "tsc -p packages/domain && tsc -p packages/card-renderer && tsc -p packages/mt5-bridge-contract && tsc -p packages/connectors && tsc -p packages/database && tsc -p packages/reporting && tsc -p packages/shared && tsc -p apps/api && tsc -p apps/worker && tsc -p apps/screenshot-worker",
     "test": "jest",
     "postinstall": "prisma generate --schema prisma/schema.prisma"
   },

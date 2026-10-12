@@ -1,6 +1,7 @@
 {
-  "name": "@tracking-auto/card-renderer",
-  "version": "0.1.0",
-  "private": true,
-  "main": "src/index.ts"
+    "name":  "@tracking-auto/card-renderer",
+    "version":  "0.1.0",
+    "private":  true,
+    "main":  "dist/index.js",
+    "types":  "dist/index.d.ts"
 }
