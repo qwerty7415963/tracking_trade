@@ -47,6 +47,10 @@ Quản lý nguồn Telegram và X.
 | `JOIN_FLOOD_WAIT` | Join channel quá nhanh, dính flood limit | Backoff, join lại sau; giảm tốc độ join |
 | `NOT_A_MEMBER` | Session chưa join channel | Join lại trước khi bật collection |
 | `PRIVATE_NEED_INVITE` | Channel private thiếu invite link | Bổ sung invite link vào `collection_config_json` |
+| `MISSING_CREDENTIALS` | Thiếu `TELEGRAM_API_ID/HASH/SESSION_STRING` | Điền env rồi thử lại |
+| `UNKNOWN_COLLECTION_ERROR` | Lỗi thu thập chưa phân loại | Xem log, báo operator |
+| `CONNECTOR_DISABLED` | X connector chưa có sau spike | Chờ Phase 0/2 hoàn thành spike |
+| `CIRCUIT_OPEN` | X circuit breaker đang mở | Chờ cooldown, kiểm tra lại sau |
 
 > Source gặp lỗi collection chuyển `health` sang error; pipeline các nguồn khác vẫn chạy bình thường.
 
