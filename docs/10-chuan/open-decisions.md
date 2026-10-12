@@ -21,6 +21,7 @@ Các quyết định sau **chưa được chốt** và phải được quyết �
 | 11 | Mẫu bài đăng Telegram khi vào lệnh | ĐÃ CHỐT | Khung `Direction Instrument - status` + Entry/SL/TP + tên nguồn + URL nguồn + screenshot; limit/filled/tp/sl/close chung 1 khung; update reply bài đầu; direction hiển thị Long/Short |
 | 12 | Danh mục operator bot commands | ĐÃ CHỐT | Lệnh xem + approve/reject + kill + `/resume` kèm `/confirm` 2 bước + bật/tắt nguồn + reconcile; chỉ private chat + `OPERATOR_USERNAMES`; cấm qua bot: đổi risk limits, sửa template, xóa dữ liệu, deploy |
 | 13 | Ảnh báo cáo gen bằng code thay vì chụp MT5 | ĐÃ CHỐT | FloatingPnLCardRenderer (HTML/CSS + Playwright, 1280×180); local volume + retention 7 ngày; API async BullMQ; bỏ hẳn chụp màn hình MT5 |
+| 14 | Nơi chứa backup offsite | ĐÃ CHỐT | Máy local operator, mô hình pull (scp repo restic mã hóa); restic password operator tự giữ; drill restore hàng tháng |
 
 ## Kế hoạch triển khai theo phase
 

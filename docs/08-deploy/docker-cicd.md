@@ -100,9 +100,14 @@ Mục tiêu: chống supply-chain attack (package bị chiếm quyền, chèn m�
 - Có log rotation và disk alerts.
 - **Không tự bật kill switch hoặc trading sau deploy.**
 
-## 7. Liên kết tài liệu
+## 7. Backup
+
+Backup mã hóa offsite về máy operator theo mô hình pull (restic, retention 7 ngày, drill restore hàng tháng). Chi tiết đầy đủ: [backup-restore.md](backup-restore.md).
+
+## 8. Liên kết tài liệu
 
 - MT5 Docker spike: [mt5-docker-spike.md](mt5-docker-spike.md)
 - Recovery sau restart: [recovery.md](recovery.md)
+- Backup & restore: [backup-restore.md](backup-restore.md)
 - Security: [10-chuan/security-checklist.md](../10-chuan/security-checklist.md)
 - ADR: [ADR-0014](../adr/ADR-0014-telegram-mtproto-teleproto.md)
