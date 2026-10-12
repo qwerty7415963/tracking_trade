@@ -11,7 +11,7 @@ Các quyết định sau **chưa được chốt** và phải được quyết �
 | 1 | Phương thức Telegram collection và sender | ĐÃ CHỐT (ADR-0013) | Collection = `USER_SESSION` (nguồn là channel bên thứ ba, BOT không khả thi); sender reporting ưu tiên `BOT` |
 | 2 | Quyền truy cập các Telegram channels | ĐÃ CHỐT một phần | Public: USER_SESSION join trực tiếp; private: cần invite link lưu trong `collection_config_json`. Cần số điện thoại + session cho collection |
 | 3 | Phương thức truy cập X được phép và phương án fallback | CHƯA CHỐT | Không dùng API trả phí; spike Playwright trước |
-| 4 | Broker, MT5 environment và kết quả technical spike | CHỐT một phần | Broker **Vantage Markets**, server `vantagemarkets-demo`, môi trường **demo**. Còn mở: MT5 environment (Wine/Docker vs Windows host) + technical spike Phase 0 |
+| 4 | Broker, MT5 environment và kết quả technical spike | CHỐT một phần | Broker **Vantage Markets**, server `vantagemarkets-demo`, môi trường **demo**. Môi trường MT5: **Linux Docker + Wine** (ghim version; fallback Windows host nếu spike rớt). Còn mở duy nhất: **kết quả spike Phase 0** |
 | 5 | Symbol mapping và timezone | CHƯA CHỐT | Ví dụ: `GOLD → XAUUSD.a` |
 | 6 | Risk limits và yêu cầu SL | CHƯA CHỐT | Config theo tài khoản |
 | 7 | Policy cho từng loại update | CHƯA CHỐT | TP1, cancel setup, close all... |

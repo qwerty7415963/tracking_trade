@@ -23,6 +23,7 @@ Lưu trữ các quyết định kiến trúc quan trọng của dự án. Mỗi 
 | [0013](ADR-0013-telegram-collection-user-session.md) | Telegram collection dùng USER_SESSION, reporting ưu tiên BOT | Accepted |
 | [0014](ADR-0014-telegram-mtproto-teleproto.md) | Telegram MTProto client dùng teleproto (pin version + quy trình cập nhật) | Accepted |
 | [0015](ADR-0015-anh-bao-cao-gen-bang-code.md) | Ảnh báo cáo gen bằng code, không chụp MT5 | Accepted |
+| [0016](ADR-0016-mt5-wine-version-pin.md) | MT5 trên Linux Docker + Wine, ghim version | Accepted |
 
 ## 3. Template chuẩn
 
