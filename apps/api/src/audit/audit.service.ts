@@ -17,8 +17,10 @@ export class AuditService {
     actor: string,
     action: string,
     details?: Record<string, unknown>,
+    tx?: Prisma.TransactionClient,
   ): Promise<AuditEntry> {
-    const row = await this.prisma.auditLog.create({
+    const client = tx ?? this.prisma;
+    const row = await client.auditLog.create({
       data: {
         actor,
         action,

@@ -23,11 +23,17 @@ Không yêu cầu AI code toàn bộ hệ thống trong một lượt. Mỗi pha
 - **Bỏ qua reconciliation** khi có trạng thái UNKNOWN.
 - Tự **vượt cơ chế bảo vệ truy cập của X**.
 
-## 3. Review theo rủi ro
+## 3. Quy tắc NestJS DI (rút từ Phase 2–3)
+
+- `@UseGuards(GuardClass)` khởi tạo guard qua injector của **module chứa controller** — mọi module có controller dùng guard phải **import trực tiếp module export config** (`AppConfigModule`), `@Global` ở module khác không đủ.
+- Provider dùng chung (config, auth, audit, DB) đặt trong module `@Global` riêng; không re-provide ở module con.
+- Viết integration test khởi tạo full `AppModule` để bắt lỗi DI trước production.
+
+## 4. Review theo rủi ro
 
 Thay đổi liên quan đến **concurrency, tiền, migration hoặc auth** cần review theo rủi ro.
 
-## 4. Nguyên tắc cuối cùng
+## 5. Nguyên tắc cuối cùng
 
 Ưu tiên **correctness, traceability và recovery** trước automation tối đa. Chỉ cân nhắc live trading sau khi demo end-to-end, reconciliation, risk controls và recovery tests đều đạt.
 
