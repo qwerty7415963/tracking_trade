@@ -7,4 +7,328 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Models land in Phase 1 — see docs/02-du-lieu/database-design.md
+// Models mirror docs/02-du-lieu/database-design.md.
+// Money/price/volume use Decimal (never float).
+
+model Source {
+  id                   String    @id @default(uuid())
+  platform             String
+  externalSourceId     String    @map("external_source_id")
+  displayName          String    @map("display_name")
+  sourceKind           String    @map("source_kind")
+  enabled              Boolean   @default(true)
+  priority             Int       @default(0)
+  collectionConfigJson Json?     @map("collection_config_json")
+  parserProfileId      String?   @map("parser_profile_id")
+  createdBy            String?   @map("created_by")
+  updatedBy            String?   @map("updated_by")
+  deletedAt            DateTime? @map("deleted_at")
+  lastErrorCode        String?   @map("last_error_code")
+  lastErrorAt          DateTime? @map("last_error_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  messages SourceMessage[]
+  signals  Signal[]
+
+  @@unique([platform, externalSourceId])
+  @@map("sources")
+}
+
+model ConnectorCredential {
+  id                 String    @id @default(uuid())
+  provider           String
+  credentialName     String    @map("credential_name")
+  encryptedSecretRef String    @map("encrypted_secret_ref")
+  accountLabel       String?   @map("account_label")
+  status             String    @default("ACTIVE")
+  lastValidatedAt    DateTime? @map("last_validated_at")
+
+  bindings SourceCredentialBinding[]
+
+  @@map("connector_credentials")
+}
+
+model SourceCredentialBinding {
+  id           String              @id @default(uuid())
+  sourceId     String              @map("source_id")
+  credentialId String              @map("credential_id")
+  purpose      String
+  credential   ConnectorCredential @relation(fields: [credentialId], references: [id])
+
+  @@unique([sourceId, credentialId, purpose])
+  @@map("source_credential_bindings")
+}
+
+model SourceMessage {
+  id                String    @id @default(uuid())
+  sourceId          String    @map("source_id")
+  externalMessageId String    @map("external_message_id")
+  revision          Int       @default(1)
+  contentRaw        String    @map("content_raw") @db.Text
+  authorId          String?   @map("author_id")
+  authorName        String?   @map("author_name")
+  sourceUrl         String?   @map("source_url")
+  threadId          String?   @map("thread_id")
+  replyToMessageId  String?   @map("reply_to_message_id")
+  quotedMessageId   String?   @map("quoted_message_id")
+  sourceTimestamp   DateTime? @map("source_timestamp")
+  receivedAt        DateTime  @default(now()) @map("received_at")
+  contentHash       String    @map("content_hash")
+
+  source  Source         @relation(fields: [sourceId], references: [id])
+  updates SignalUpdate[]
+
+  @@unique([sourceId, externalMessageId, revision])
+  @@map("source_messages")
+}
+
+model Signal {
+  id         String   @id @default(uuid())
+  sourceId   String   @map("source_id")
+  instrument String
+  direction  String
+  status     String   @default("DETECTED")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  source    Source          @relation(fields: [sourceId], references: [id])
+  versions  SignalVersion[]
+  updates   SignalUpdate[]  @relation("MatchedUpdates")
+  approvals Approval[]
+
+  @@map("signals")
+}
+
+model SignalVersion {
+  id                    String   @id @default(uuid())
+  signalId              String   @map("signal_id")
+  versionNumber         Int      @map("version_number")
+  eventType             String   @map("event_type")
+  instrument            String
+  direction             String
+  orderType             String?  @map("order_type")
+  entry                 Decimal? @db.Decimal(30, 8)
+  stopLoss              Decimal? @map("stop_loss") @db.Decimal(30, 8)
+  takeProfits           Json?    @map("take_profits")
+  normalizedPayloadJson Json?    @map("normalized_payload_json")
+  parserVersion         String?  @map("parser_version")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  signal    Signal             @relation(fields: [signalId], references: [id])
+  approvals Approval[]
+  commands  ExecutionCommand[]
+
+  @@unique([signalId, versionNumber])
+  @@map("signal_versions")
+}
+
+model SignalUpdate {
+  id                String   @id @default(uuid())
+  sourceMessageId   String   @map("source_message_id")
+  matchedSignalId   String?  @map("matched_signal_id")
+  matchConfidence   Decimal? @map("match_confidence") @db.Decimal(5, 4)
+  validationStatus  String   @default("RECEIVED") @map("validation_status")
+  actionType        String?  @map("action_type")
+  actionPayloadJson Json?    @map("action_payload_json")
+  reviewReason      String?  @map("review_reason") @db.Text
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  sourceMessage SourceMessage @relation(fields: [sourceMessageId], references: [id])
+  matchedSignal Signal?       @relation("MatchedUpdates", fields: [matchedSignalId], references: [id])
+
+  @@map("signal_updates")
+}
+
+model Approval {
+  id              String   @id @default(uuid())
+  signalId        String   @map("signal_id")
+  signalVersionId String   @map("signal_version_id")
+  decision        String
+  approvedBy      String   @map("approved_by")
+  reason          String?  @db.Text
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  signal  Signal        @relation(fields: [signalId], references: [id])
+  version SignalVersion @relation(fields: [signalVersionId], references: [id])
+
+  @@map("approvals")
+}
+
+model ExecutionCommand {
+  id              String    @id @default(uuid())
+  idempotencyKey  String    @unique @map("idempotency_key")
+  accountId       String    @map("account_id")
+  signalId        String?   @map("signal_id")
+  signalVersionId String?   @map("signal_version_id")
+  commandType     String    @map("command_type")
+  payloadJson     Json?     @map("payload_json")
+  status          String    @default("CREATED")
+  correlationId   String?   @map("correlation_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  expiresAt       DateTime? @map("expires_at")
+
+  version    SignalVersion? @relation(fields: [signalVersionId], references: [id])
+  executions Execution[]
+
+  @@map("execution_commands")
+}
+
+model Execution {
+  id                 String    @id @default(uuid())
+  executionCommandId String    @map("execution_command_id")
+  brokerOrderId      String?   @map("broker_order_id")
+  brokerDealId       String?   @map("broker_deal_id")
+  brokerPositionId   String?   @map("broker_position_id")
+  requestedVolume    Decimal?  @map("requested_volume") @db.Decimal(30, 8)
+  filledVolume       Decimal?  @map("filled_volume") @db.Decimal(30, 8)
+  fillPrice          Decimal?  @map("fill_price") @db.Decimal(30, 8)
+  actualSl           Decimal?  @map("actual_sl") @db.Decimal(30, 8)
+  actualTp           Decimal?  @map("actual_tp") @db.Decimal(30, 8)
+  executionStatus    String    @default("PENDING") @map("execution_status")
+  openedAt           DateTime? @map("opened_at")
+  closedAt           DateTime? @map("closed_at")
+
+  command      ExecutionCommand      @relation(fields: [executionCommandId], references: [id])
+  publications TelegramPublication[]
+
+  @@map("executions")
+}
+
+model RiskEvent {
+  id         String   @id @default(uuid())
+  commandId  String?  @map("command_id")
+  checkName  String   @map("check_name")
+  passed     Boolean
+  reason     String?  @db.Text
+  configJson Json?    @map("config_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("risk_events")
+}
+
+model TelegramSenderAccount {
+  id              String    @id @default(uuid())
+  accountType     String    @map("account_type")
+  displayName     String    @map("display_name")
+  credentialRef   String?   @map("credential_ref")
+  status          String    @default("ACTIVE")
+  lastValidatedAt DateTime? @map("last_validated_at")
+  lastError       String?   @map("last_error") @db.Text
+
+  destinations TelegramDestination[]
+  publications TelegramPublication[]
+
+  @@map("telegram_sender_accounts")
+}
+
+model TelegramDestination {
+  id              String  @id @default(uuid())
+  senderAccountId String  @map("sender_account_id")
+  chatId          String  @map("chat_id")
+  channelName     String? @map("channel_name")
+  enabled         Boolean @default(true)
+
+  sender       TelegramSenderAccount @relation(fields: [senderAccountId], references: [id])
+  publications TelegramPublication[]
+  routes       ReportingRoute[]
+
+  @@map("telegram_destinations")
+}
+
+model ReportingTemplate {
+  id                 String  @id @default(uuid())
+  name               String
+  eventType          String  @map("event_type")
+  templateBody       String  @map("template_body") @db.Text
+  templateVersion    Int     @default(1) @map("template_version")
+  requiredFieldsJson Json?   @map("required_fields_json")
+  parseMode          String? @map("parse_mode")
+  isActive           Boolean @default(true) @map("is_active")
+  createdBy          String? @map("created_by")
+  updatedBy          String? @map("updated_by")
+
+  routes       ReportingRoute[]
+  publications TelegramPublication[]
+
+  @@map("reporting_templates")
+}
+
+model ReportingRoute {
+  id            String  @id @default(uuid())
+  eventType     String  @map("event_type")
+  destinationId String  @map("destination_id")
+  templateId    String  @map("template_id")
+  enabled       Boolean @default(true)
+  priority      Int     @default(0)
+
+  destination TelegramDestination @relation(fields: [destinationId], references: [id])
+  template    ReportingTemplate   @relation(fields: [templateId], references: [id])
+
+  @@map("reporting_routes")
+}
+
+model TelegramPublication {
+  id                     String    @id @default(uuid())
+  executionId            String?   @map("execution_id")
+  senderAccountId        String?   @map("sender_account_id")
+  destinationId          String?   @map("destination_id")
+  templateId             String?   @map("template_id")
+  templateVersion        Int?      @map("template_version")
+  sourceMessageId        String?   @map("source_message_id")
+  sourcePlatform         String?   @map("source_platform")
+  sourceUrl              String?   @map("source_url")
+  sourceDisplayName      String?   @map("source_display_name")
+  sourceTelegramName     String?   @map("source_telegram_name")
+  destinationChannelName String?   @map("destination_channel_name")
+  renderedText           String?   @map("rendered_text") @db.Text
+  telegramMessageId      String?   @map("telegram_message_id")
+  publicationStatus      String    @default("PENDING") @map("publication_status")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  publishedAt            DateTime? @map("published_at")
+
+  execution   Execution?             @relation(fields: [executionId], references: [id])
+  sender      TelegramSenderAccount? @relation(fields: [senderAccountId], references: [id])
+  destination TelegramDestination?   @relation(fields: [destinationId], references: [id])
+  template    ReportingTemplate?     @relation(fields: [templateId], references: [id])
+
+  @@map("telegram_publications")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actor     String
+  action    String
+  entity    String?
+  entityId  String?  @map("entity_id")
+  details   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
+
+model BridgeHeartbeat {
+  id         String   @id @default(uuid())
+  accountId  String   @map("account_id")
+  terminal   String?
+  status     String
+  details    Json?
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@index([accountId, receivedAt])
+  @@map("bridge_heartbeats")
+}
+
+model OutboxEvent {
+  id          String    @id @default(uuid())
+  topic       String
+  payloadJson Json      @map("payload_json")
+  status      String    @default("PENDING")
+  attempts    Int       @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  claimedAt   DateTime? @map("claimed_at")
+
+  @@index([status, createdAt])
+  @@map("outbox_events")
+}

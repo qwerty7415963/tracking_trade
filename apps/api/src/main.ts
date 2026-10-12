@@ -1,6 +1,12 @@
-// Phase 1: NestJS API entry point.
+import "reflect-metadata";
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module";
+
 async function bootstrap(): Promise<void> {
-  console.log("api scaffold — NestJS lands in Phase 1");
+  const app = await NestFactory.create(AppModule);
+  app.setGlobalPrefix("api");
+  const port = Number(process.env.PORT ?? 3000);
+  await app.listen(port);
 }
 
 void bootstrap();

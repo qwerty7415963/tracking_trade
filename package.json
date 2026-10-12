@@ -9,10 +9,30 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "jest"
   },
   "devDependencies": {
+    "@nestjs/testing": "11.2.7",
+    "@types/jest": "30.0.0",
     "@types/node": "26.6.5",
-    "typescript": "7.0.2"
+    "@types/supertest": "7.2.1",
+    "jest": "30.5.2",
+    "prisma": "6.19.3",
+    "supertest": "7.3.1",
+    "ts-jest": "29.4.14",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@nestjs/common": "11.2.7",
+    "@nestjs/config": "4.0.4",
+    "@nestjs/core": "11.2.7",
+    "@nestjs/platform-express": "11.2.7",
+    "@prisma/client": "6.19.3",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.2"
   }
 }
