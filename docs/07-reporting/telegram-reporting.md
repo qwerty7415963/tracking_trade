@@ -93,7 +93,7 @@ https://t.me/traderosho/4375
 
 - Lệnh **limit / filled / tp / sl / close đều dùng chung khung trên**, chỉ đổi token `{{status}}`.
 - `{{direction}}` hiển thị **Long/Short**.
-- Bài đầu tiên **đính kèm screenshot** (gửi dạng photo + caption là nội dung trên; caption Telegram giới hạn 1024 ký tự).
+- Bài đầu tiên **đính kèm ảnh card P&L gen bằng code** (1280×180, từ dữ liệu vị thế đã xác minh — không chụp MT5; gửi dạng photo + caption là nội dung trên; caption Telegram giới hạn 1024 ký tự).
 - Mọi bài cập nhật sau bài đầu tiên **reply vào bài đầu tiên** (xem rule #7).
 - Thiếu `source_url` bắt buộc → validation error/review, **không bịa link**.
 - Ngoại lệ rule "luôn có tên destination channel": mẫu này không in tên kênh vì bài đăng nằm ngay trong channel đích (tên kênh là implicit).

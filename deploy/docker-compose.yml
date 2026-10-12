@@ -34,3 +34,5 @@ services:
 volumes:
   pgdata:
   redisdata:
+  # Rendered P&L cards (local volume, 7-day retention enforced by the app).
+  artifacts:

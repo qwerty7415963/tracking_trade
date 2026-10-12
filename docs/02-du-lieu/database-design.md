@@ -276,7 +276,28 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối.
 
 > `telegram_publications` là **snapshot** tại thời điểm tạo publication intent — template thay đổi sau đó không làm đổi bài đã xếp hàng.
 
-### 2.17 Các bảng khác
+### 2.17 `render_artifacts`
+
+Lưu ảnh card P&L gen bằng code (không chụp MT5).
+
+| Trường | Ghi chú |
+|---|---|
+| `id` | Khóa chính |
+| `render_id` | ID render duy nhất (unique) |
+| `snapshot_id` | Snapshot vị thế đã dùng |
+| `account_id` | Tài khoản MT5 |
+| `position_id` | Vị thế broker |
+| `execution_id` | Execution nội bộ |
+| `artifact_path` | Đường dẫn file PNG (local volume) |
+| `content_hash` | SHA-256 của PNG |
+| `width` / `height` | Kích thước (mặc định 1280×180) |
+| `mime_type` | `image/png` |
+| `template_version` | Version template card |
+| `created_at` | Thời điểm tạo |
+
+Retention 7 ngày (xóa file + row). Idempotency theo `render_id` (cùng snapshot + template).
+
+### 2.18 Các bảng khác
 
 - `audit_logs` — lịch sử mọi thao tác tài chính và quản trị.
 - `bridge_heartbeats` — heartbeat từ MT5 bridge.

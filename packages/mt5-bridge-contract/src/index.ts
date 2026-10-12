@@ -53,6 +53,10 @@ export interface BrokerPosition {
   openPrice: number;
   stopLoss: number | null;
   takeProfit: number | null;
+  /** Floating profit from the broker. Null when the bridge does not provide it. */
+  profit: number | null;
+  /** Close-side quote (BID for BUY, ASK for SELL). Null when unavailable. */
+  currentPrice: number | null;
 }
 
 export interface BrokerSymbolInfo {

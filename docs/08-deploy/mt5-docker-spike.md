@@ -14,9 +14,10 @@ Phải chứng minh trước khi phụ thuộc:
 - **Demo login** hoạt động.
 - **EA/bridge duy trì heartbeat**.
 - **Reconnect không tạo lệnh trùng**.
-- **Screenshot** hoạt động ở resolution cố định.
 - **Command journal phục hồi** sau crash.
 - Có thể **truy vấn trạng thái broker** sau timeout.
+
+> Ảnh báo cáo **gen bằng code** (FloatingPnLCardRenderer), không chụp màn hình MT5 — hạng mục "screenshot ở resolution cố định" đã bỏ.
 
 ## 3. Các phương án fallback nếu spike thất bại
 

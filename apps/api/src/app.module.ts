@@ -6,6 +6,7 @@ import { HealthController } from "./health/health.controller";
 import { AuthModule } from "./auth/auth.module";
 import { AuditModule } from "./audit/audit.module";
 import { ExecutionModule } from "./execution/execution.module";
+import { ReportingModule } from "./reporting/reporting.module";
 import { QueueModule } from "./queue/queue.module";
 import { SignalsModule } from "./signals/signals.module";
 import { SourcesModule } from "./sources/sources.module";
@@ -21,6 +22,7 @@ import { SourcesModule } from "./sources/sources.module";
     SourcesModule,
     SignalsModule,
     ExecutionModule,
+    ReportingModule,
   ],
   controllers: [HealthController],
 })

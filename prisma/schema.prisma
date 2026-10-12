@@ -295,6 +295,25 @@ model TelegramPublication {
   @@map("telegram_publications")
 }
 
+model RenderArtifact {
+  id             String   @id @default(uuid())
+  renderId       String   @unique @map("render_id")
+  snapshotId     String   @map("snapshot_id")
+  accountId      String   @map("account_id")
+  positionId     String   @map("position_id")
+  executionId    String?  @map("execution_id")
+  artifactPath   String   @map("artifact_path")
+  contentHash    String   @map("content_hash")
+  width          Int
+  height         Int
+  mimeType       String   @default("image/png") @map("mime_type")
+  templateVersion Int     @default(1) @map("template_version")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([positionId, createdAt])
+  @@map("render_artifacts")
+}
+
 model AuditLog {
   id        String   @id @default(uuid())
   actor     String

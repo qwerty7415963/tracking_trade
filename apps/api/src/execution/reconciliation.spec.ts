@@ -41,6 +41,8 @@ describe("ReconciliationService", () => {
           openPrice: 2345,
           stopLoss: null,
           takeProfit: null,
+          profit: 5,
+          currentPrice: 2346,
         },
       ]),
       commandStatus: jest.fn(),
