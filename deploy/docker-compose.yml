@@ -2,6 +2,9 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Host port 5434: 5432 is a native PostgreSQL, 5433 is taken by another project.
+    ports:
+      - "5434:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tracking}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tracking}
@@ -17,6 +20,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    ports:
+      - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data

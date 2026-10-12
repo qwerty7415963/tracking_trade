@@ -4,6 +4,8 @@ export const APP_VERSION = "0.1.0";
 export interface AppConfig {
   operatorUsernames: string[];
   tradingEnabled: boolean;
+  databaseUrl: string;
+  redisUrl: string;
 }
 
 function parseUsernames(raw: string | undefined): string[] {
@@ -19,5 +21,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     operatorUsernames: parseUsernames(env.OPERATOR_USERNAMES),
     // ADR-0011: live trading is always disabled by default after boot.
     tradingEnabled: false,
+    databaseUrl: env.DATABASE_URL ?? "postgresql://tracking:tracking@localhost:5434/tracking",
+    redisUrl: env.REDIS_URL ?? "redis://localhost:6379",
   };
 }

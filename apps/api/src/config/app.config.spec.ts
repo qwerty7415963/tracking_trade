@@ -15,4 +15,10 @@ describe("loadAppConfig", () => {
   it("always boots with trading disabled", () => {
     expect(loadAppConfig({ OPERATOR_USERNAMES: "alice" }).tradingEnabled).toBe(false);
   });
+
+  it("defaults database and redis urls to local compose", () => {
+    const config = loadAppConfig({});
+    expect(config.databaseUrl).toContain("localhost:5434");
+    expect(config.redisUrl).toContain("localhost:6379");
+  });
 });

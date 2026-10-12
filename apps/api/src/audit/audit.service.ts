@@ -1,4 +1,6 @@
 import { Injectable } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
+import { PrismaService } from "../database/prisma.service";
 
 export interface AuditEntry {
   at: string;
@@ -9,22 +11,25 @@ export interface AuditEntry {
 
 @Injectable()
 export class AuditService {
-  private readonly buffer: AuditEntry[] = [];
+  constructor(private readonly prisma: PrismaService) {}
 
-  record(actor: string, action: string, details?: Record<string, unknown>): AuditEntry {
-    const entry: AuditEntry = {
-      at: new Date().toISOString(),
-      actor,
-      action,
+  async record(
+    actor: string,
+    action: string,
+    details?: Record<string, unknown>,
+  ): Promise<AuditEntry> {
+    const row = await this.prisma.auditLog.create({
+      data: {
+        actor,
+        action,
+        details: (details ?? Prisma.DbNull) as Prisma.InputJsonValue,
+      },
+    });
+    return {
+      at: row.createdAt.toISOString(),
+      actor: row.actor,
+      action: row.action,
       details,
     };
-    this.buffer.push(entry);
-    // Phase 1 sink: structured log. DB sink lands with Prisma wiring.
-    console.log(JSON.stringify({ audit: entry }));
-    return entry;
-  }
-
-  entries(): readonly AuditEntry[] {
-    return this.buffer;
   }
 }

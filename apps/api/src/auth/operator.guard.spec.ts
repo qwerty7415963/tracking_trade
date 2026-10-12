@@ -1,4 +1,5 @@
 import { ForbiddenException, UnauthorizedException } from "@nestjs/common";
+import { loadAppConfig } from "../config/app.config";
 import { OperatorGuard } from "./operator.guard";
 
 function mockContext(headers: Record<string, unknown>): Parameters<OperatorGuard["canActivate"]>[0] {
@@ -9,7 +10,7 @@ function mockContext(headers: Record<string, unknown>): Parameters<OperatorGuard
 }
 
 describe("OperatorGuard", () => {
-  const guard = new OperatorGuard({ operatorUsernames: ["alice"], tradingEnabled: false });
+  const guard = new OperatorGuard(loadAppConfig({ OPERATOR_USERNAMES: "alice" }));
 
   it("rejects missing identity", () => {
     expect(() => guard.canActivate(mockContext({}))).toThrow(UnauthorizedException);
@@ -27,7 +28,7 @@ describe("OperatorGuard", () => {
   });
 
   it("rejects everyone when operator list is empty (fail-safe)", () => {
-    const denyAll = new OperatorGuard({ operatorUsernames: [], tradingEnabled: false });
+    const denyAll = new OperatorGuard(loadAppConfig({}));
     expect(() => denyAll.canActivate(mockContext({ "x-operator-username": "alice" }))).toThrow(
       ForbiddenException,
     );
