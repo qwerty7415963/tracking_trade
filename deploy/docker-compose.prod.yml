@@ -1,0 +1,17 @@
+# Production overrides. Deploy only pinned images by digest (see docs/08-deploy/docker-cicd.md).
+services:
+  postgres:
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  redis:
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
