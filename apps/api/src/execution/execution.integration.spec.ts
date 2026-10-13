@@ -2,12 +2,19 @@ import { Test } from "@nestjs/testing";
 import { APP_CONFIG, loadAppConfig } from "../config/app.config";
 import { AppModule } from "../app.module";
 import { PrismaService } from "../database/prisma.service";
-import { BRIDGE_PORT, BridgePort } from "../bridge/mt5-bridge.adapter";
+import { BrokerStateService } from "../bridge/broker-state.service";
+
+const FAKE_STATE = {
+  symbolInfo: jest.fn(async () => SPEC),
+  account: jest.fn(async () => ({ marginFree: 10000, marginRequired: 100, equity: 10000 })),
+  isAlive: jest.fn(async () => true),
+  positions: jest.fn(async () => []),
+};
 import { ExecutionService } from "./execution.service";
 import { KillSwitchService } from "./kill-switch.service";
 import { SignalsService } from "../signals/signals.service";
 
-// Live-DB test with a fake bridge (no MT5 terminal needed).
+// Live-DB test with fake broker state (no MT5 terminal needed).
 // Runs only with INTEGRATION_TESTS=1 so plain `npm test` (and CI) stays hermetic.
 const describeIntegration = process.env.INTEGRATION_TESTS ? describe : describe.skip;
 
@@ -23,40 +30,29 @@ const SPEC = {
   contractSize: 100,
 };
 
-function fakeBridge(): BridgePort {
-  return {
-    sendCommand: jest.fn(async () => ({
-      result: "CONFIRMED",
-      brokerRetcode: 10009,
-      brokerOrderId: "o1",
-      brokerDealId: "d1",
-      brokerPositionId: "pLive",
-      requestedVolume: 0.02,
-      filledVolume: 0.02,
-      fillPrice: 2345,
-      actualSl: 2340,
-      actualTp: 2360,
-      timestamps: {},
-      accountSnapshot: null,
-      error: null,
-    })),
-    commandStatus: jest.fn(),
-    positions: jest.fn(async () => []),
-    orders: jest.fn(async () => []),
-    deals: jest.fn(async () => []),
-    symbolInfo: jest.fn(async () => SPEC),
-    account: jest.fn(async () => ({ marginFree: 10000, marginRequired: 100, equity: 10000 })),
-    heartbeat: jest.fn(async () => ({ status: "ok" })),
-  } as unknown as BridgePort;
-}
+const EA_CONFIRM = {
+  result: "CONFIRMED" as const,
+  brokerRetcode: 10009,
+  brokerOrderId: "o1",
+  brokerDealId: "d1",
+  brokerPositionId: "pLive",
+  requestedVolume: 0.02,
+  filledVolume: 0.02,
+  fillPrice: 2345,
+  actualSl: 2340,
+  actualTp: 2360,
+  timestamps: {},
+  accountSnapshot: null,
+  error: null,
+};
 
-describeIntegration("Execution flow (live DB, fake bridge)", () => {
-  it("opens once from approval; retry is idempotent; kill switch blocks", async () => {
+describeIntegration("Execution flow (live DB, poll topology)", () => {
+  it("journals SENT; EA confirm opens; retry idempotent; kill switch blocks", async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(APP_CONFIG)
       .useValue({ ...loadAppConfig({}), mt5AccountId: "acc1" })
-      .overrideProvider(BRIDGE_PORT)
-      .useValue(fakeBridge())
+      .overrideProvider(BrokerStateService)
+      .useValue(FAKE_STATE)
       .compile();
     const app = moduleRef.createNestApplication();
     await app.init();
@@ -88,12 +84,18 @@ describeIntegration("Execution flow (live DB, fake bridge)", () => {
     const full = await signals.get(outcome.signalId as string);
     await signals.approve(outcome.signalId as string, { signalVersionId: full.versions[0].id }, "alice");
 
+    // Journal SENT for EA pickup (no broker call from the backend).
     const opened = await executions.openFromApproval(outcome.signalId as string, "alice");
-    expect(opened.status).toBe("CONFIRMED");
-    expect(opened.executions[0].executionStatus).toBe("OPEN");
-    expect(opened.executions[0].brokerPositionId).toBe("pLive");
+    expect(opened.status).toBe("SENT");
+    expect(opened.executions[0].executionStatus).toBe("PENDING");
 
-    // Same approval again: idempotent, no second broker call.
+    // EA reports fill -> OPEN with broker ids.
+    const confirmed = await executions.applyExternalResponse(opened.id, EA_CONFIRM, "bridge");
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.executions[0].executionStatus).toBe("OPEN");
+    expect(confirmed.executions[0].brokerPositionId).toBe("pLive");
+
+    // Same approval again: idempotent, no second command.
     const again = await executions.openFromApproval(outcome.signalId as string, "alice");
     expect(again.id).toBe(opened.id);
 

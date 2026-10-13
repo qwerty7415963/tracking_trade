@@ -1,6 +1,5 @@
 import { KillSwitchService } from "./kill-switch.service";
 import { ReconciliationService } from "./reconciliation.service";
-import { BridgePort } from "../bridge/mt5-bridge.adapter";
 
 describe("KillSwitchService", () => {
   it("defaults OFF and audits transitions", async () => {
@@ -15,11 +14,11 @@ describe("KillSwitchService", () => {
 });
 
 describe("ReconciliationService", () => {
-  function service(prisma: unknown, bridge: Partial<BridgePort>) {
+  function service(prisma: unknown, brokerState: unknown) {
     return new ReconciliationService(
       prisma as never,
       { record: jest.fn(async () => ({})) } as never,
-      bridge as BridgePort,
+      brokerState as never,
       { mt5AccountId: "acc1" } as never,
     );
   }
@@ -28,9 +27,9 @@ describe("ReconciliationService", () => {
     const prisma = {
       execution: { findMany: jest.fn(async () => []) },
       riskEvent: { create: jest.fn(async () => ({})) },
-      executionCommand: { findMany: jest.fn(async () => []) },
+      executionCommand: { findMany: jest.fn(async () => []), update: jest.fn() },
     };
-    const bridge = {
+    const brokerState = {
       positions: jest.fn(async () => [
         {
           positionId: "p9",
@@ -41,38 +40,36 @@ describe("ReconciliationService", () => {
           openPrice: 2345,
           stopLoss: null,
           takeProfit: null,
-          profit: 5,
+          profit: 1,
           currentPrice: 2346,
         },
       ]),
-      commandStatus: jest.fn(),
     };
-    const svc = service(prisma, bridge);
+    const svc = service(prisma, brokerState);
     const report = await svc.reconcileAccount("acc1", "alice");
     expect(report.unknownPositions).toEqual([
       { positionId: "p9", symbol: "XAUUSD.a", volume: 0.05 },
     ]);
     expect(prisma.riskEvent.create).toHaveBeenCalled();
-    // No close call exists on the bridge port: unknown positions are never auto-closed.
-    expect("closePosition" in (bridge as object)).toBe(false);
   });
 
-  it("resolves stale commands from bridge status", async () => {
+  it("marks expired stale commands TIMEOUT_UNKNOWN", async () => {
     const update = jest.fn(async () => ({}));
     const prisma = {
       execution: { findMany: jest.fn(async () => []) },
       riskEvent: { create: jest.fn(async () => ({})) },
       executionCommand: {
-        findMany: jest.fn(async () => [{ id: "c1" }]),
+        findMany: jest.fn(async () => [
+          { id: "c1", expiresAt: new Date(Date.now() - 1000), status: "SENT" },
+        ]),
         update,
       },
     };
-    const bridge = {
-      positions: jest.fn(async () => []),
-      commandStatus: jest.fn(async () => ({ result: "CONFIRMED" }) as never),
-    };
-    const svc = service(prisma, bridge);
+    const svc = service(prisma, { positions: jest.fn(async () => []) });
     const report = await svc.reconcileAccount("acc1", "alice");
     expect(report.reconciledCommands).toEqual(["c1"]);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: "TIMEOUT_UNKNOWN" } }),
+    );
   });
 });

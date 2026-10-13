@@ -2,19 +2,19 @@ import { Test } from "@nestjs/testing";
 import { promises as fs } from "fs";
 import { AppModule } from "../app.module";
 import { PrismaService } from "../database/prisma.service";
-import { BRIDGE_PORT, BridgePort } from "../bridge/mt5-bridge.adapter";
+import { BrokerStateService } from "../bridge/broker-state.service";
 import { CARD_RENDERER, TELEGRAM_SENDER } from "./publications.service";
 import { PublicationsService } from "./publications.service";
 import { createDefaultRenderer } from "./publications.service";
 
-// Live-DB + real browser render, fake bridge + fake Telegram sender.
+// Live-DB + real browser render, fake broker state + fake Telegram sender.
 // Runs only with INTEGRATION_TESTS=1 so plain `npm test` (and CI) stays hermetic.
 const describeIntegration = process.env.INTEGRATION_TESTS ? describe : describe.skip;
 
-describeIntegration("Publish flow (live DB, fake bridge/sender, real render)", () => {
+describeIntegration("Publish flow (live DB, fake broker state/sender, real render)", () => {
   it("renders card, saves artifact, sends photo replying to the original", async () => {
     const sentCalls: Array<Record<string, unknown>> = [];
-    const fakeBridge = {
+    const fakeBrokerState = {
       positions: jest.fn(async () => [
         {
           positionId: "pPub",
@@ -29,7 +29,7 @@ describeIntegration("Publish flow (live DB, fake bridge/sender, real render)", (
           currentPrice: 2347.5,
         },
       ]),
-    } as unknown as BridgePort;
+    };
     const fakeSender = {
       sendPhoto: jest.fn(async (input: Record<string, unknown>) => {
         sentCalls.push(input);
@@ -38,8 +38,8 @@ describeIntegration("Publish flow (live DB, fake bridge/sender, real render)", (
     };
 
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(BRIDGE_PORT)
-      .useValue(fakeBridge)
+      .overrideProvider(BrokerStateService)
+      .useValue(fakeBrokerState)
       .overrideProvider(TELEGRAM_SENDER)
       .useValue(fakeSender)
       .overrideProvider(CARD_RENDERER)

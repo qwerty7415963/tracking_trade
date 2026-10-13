@@ -17,8 +17,12 @@ import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { Inject } from "@nestjs/common";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../database/prisma.service";
-import { BRIDGE_PORT, BridgePort } from "../bridge/mt5-bridge.adapter";
+import { BrokerStateService } from "../bridge/broker-state.service";
 import { KillSwitchService } from "./kill-switch.service";
+
+// NOTE: poll topology — the backend journals commands (SENT) and the EA
+// picks them up via GET /bridge/commands. The backend never calls the
+// bridge over HTTP here; MT5BridgeAdapter remains for a direct topology.
 
 const OPEN_STATUSES = ["SENT", "TIMEOUT_UNKNOWN", "RECONCILING", "ACKNOWLEDGED"];
 
@@ -31,7 +35,7 @@ export class ExecutionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    @Inject(BRIDGE_PORT) private readonly bridge: BridgePort,
+    private readonly brokerState: BrokerStateService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly killSwitch: KillSwitchService,
   ) {}
@@ -97,10 +101,10 @@ export class ExecutionService {
     const accountId = this.config.mt5AccountId;
     if (!accountId) throw new ConflictException("MT5 account not configured");
     const symbol = version.instrument;
-    const [info, account, heartbeat] = await Promise.all([
-      this.bridge.symbolInfo(accountId, symbol),
-      this.bridge.account(accountId),
-      this.bridge.heartbeat(accountId),
+    const [info, account, alive] = await Promise.all([
+      this.brokerState.symbolInfo(accountId, symbol),
+      this.brokerState.account(accountId),
+      this.brokerState.isAlive(accountId),
     ]);
     if (!info) throw new ConflictException(`no symbol map for ${symbol}`);
 
@@ -135,7 +139,7 @@ export class ExecutionService {
       {
         accountId,
         expectedAccountId: accountId,
-        bridgeAlive: heartbeat?.status === "ok",
+        bridgeAlive: alive,
         killSwitch: this.killSwitch.getMode(),
         isNewOrder: true,
         signalExpired: false,
@@ -205,7 +209,8 @@ export class ExecutionService {
     return this.sendCommand(command.id, actor);
   }
 
-  private buildBridgeCommand(
+  /** Journal row -> EA poll contract. */
+  toBridgeCommand(
     command: {
       id: string;
       idempotencyKey: string;
@@ -236,6 +241,10 @@ export class ExecutionService {
     };
   }
 
+  /**
+   * Journal the command as SENT for EA pickup. No HTTP is sent here:
+   * confirmation arrives later via POST /bridge/commands/:id/response.
+   */
   private async sendCommand(
     commandId: string,
     actor: string,
@@ -251,30 +260,15 @@ export class ExecutionService {
       where: { id: execution.id },
       data: { requestedVolume: payload.volume ?? null },
     });
-
-    let response: BridgeResponse;
-    try {
-      await this.prisma.executionCommand.update({
-        where: { id: command.id },
-        data: { status: "SENT" },
-      });
-      response = await this.withTimeout(
-        this.bridge.sendCommand(this.buildBridgeCommand(command, execution.id)),
-      );
-    } catch (err) {
-      // Timeout or transport failure: UNKNOWN, reconcile before any retry.
-      await this.prisma.executionCommand.update({
-        where: { id: command.id },
-        data: { status: "TIMEOUT_UNKNOWN" },
-      });
-      await this.audit.record(actor, "execution.timeout-unknown", { commandId: command.id });
-      await this.reconcileCommand(command.id, actor).catch(() => {});
-      return this.prisma.executionCommand.findUniqueOrThrow({
-        where: { id: command.id },
-        include: { executions: true },
-      });
-    }
-    return this.applyBridgeResponse(command.id, execution.id, response, actor);
+    await this.prisma.executionCommand.update({
+      where: { id: command.id },
+      data: { status: "SENT" },
+    });
+    await this.audit.record(actor, "execution.sent", { commandId: command.id });
+    return this.prisma.executionCommand.findUniqueOrThrow({
+      where: { id: command.id },
+      include: { executions: true },
+    });
   }
 
   private async applyBridgeResponse(
@@ -327,13 +321,50 @@ export class ExecutionService {
     });
   }
 
-  private async withTimeout<T>(promise: Promise<T>): Promise<T> {
-    const timeout = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("bridge timeout")), this.config.bridgeTimeoutMs);
+  async getCommandWithExecutions(id: string) {
+    return this.prisma.executionCommand.findUniqueOrThrow({
+      where: { id },
+      include: { executions: true },
     });
-    return Promise.race([promise, timeout]);
   }
 
+  /** Commands awaiting EA pickup (oldest first). */
+  listPendingCommands(accountId: string) {
+    return this.prisma.executionCommand.findMany({
+      where: { accountId, status: "SENT" },
+      orderBy: { createdAt: "asc" },
+      take: 10,
+    });
+  }
+
+  /** Apply a bridge-pushed response (EA poll topology). Same journal, same rules. */
+  async applyExternalResponse(commandId: string, response: BridgeResponse, actor: string) {
+    const command = await this.prisma.executionCommand.findUniqueOrThrow({
+      where: { id: commandId },
+      include: { executions: true },
+    });
+    const execution = command.executions[0];
+    if ((response.result === "CONFIRMED" || response.result === "REJECTED") && !execution) {
+      throw new ConflictException(`command ${commandId} has no execution row`);
+    }
+    if (response.result === "CONFIRMED" || response.result === "REJECTED") {
+      return this.applyBridgeResponse(commandId, (execution as { id: string }).id, response, actor);
+    }
+    await this.prisma.executionCommand.update({
+      where: { id: commandId },
+      data: { status: "ACKNOWLEDGED" },
+    });
+    await this.audit.record(actor, "execution.response", { commandId, result: response.result });
+    return this.prisma.executionCommand.findUniqueOrThrow({
+      where: { id: commandId },
+      include: { executions: true },
+    });
+  }
+
+  /**
+   * Reconcile from broker truth (heartbeat positions). Never guesses:
+   * expired + unconfirmed -> TIMEOUT_UNKNOWN; missing OPEN position -> review flag.
+   */
   async reconcileCommand(
     commandId: string,
     actor: string,
@@ -349,23 +380,33 @@ export class ExecutionService {
       where: { id: commandId },
       data: { status: "RECONCILING" },
     });
-    try {
-      const status = await this.withTimeout(this.bridge.commandStatus(command.id));
-      const execution = command.executions[0];
-      if (status.result === "CONFIRMED" && execution) {
-        return this.applyBridgeResponse(commandId, execution.id, status, actor);
-      }
-      if (status.result === "REJECTED" && execution) {
-        return this.applyBridgeResponse(commandId, execution.id, status, actor);
-      }
-      return this.prisma.executionCommand.findUniqueOrThrow({ where: { id: commandId }, include: { executions: true } });
-    } catch {
-      await this.prisma.executionCommand.update({
-        where: { id: commandId },
-        data: { status: "TIMEOUT_UNKNOWN" },
+    const execution = command.executions[0];
+    const positions = await this.brokerState.positions(command.accountId).catch(() => []);
+    if (
+      execution?.executionStatus === "OPEN" &&
+      execution.brokerPositionId &&
+      !positions.some((p) => p.positionId === execution.brokerPositionId)
+    ) {
+      await this.prisma.riskEvent.create({
+        data: {
+          checkName: "RECONCILE_POSITION_MISSING",
+          passed: false,
+          reason: `OPEN execution ${execution.id} has no broker position ${execution.brokerPositionId}`,
+          configJson: { commandId } as never,
+        },
       });
-      return this.prisma.executionCommand.findUniqueOrThrow({ where: { id: commandId }, include: { executions: true } });
     }
+    const expired = command.expiresAt ? Date.now() > command.expiresAt.getTime() : false;
+    const next = expired ? "TIMEOUT_UNKNOWN" : "RECONCILING";
+    await this.prisma.executionCommand.update({
+      where: { id: commandId },
+      data: { status: next },
+    });
+    await this.audit.record(actor, "execution.reconciled", { commandId, status: next });
+    return this.prisma.executionCommand.findUniqueOrThrow({
+      where: { id: commandId },
+      include: { executions: true },
+    });
   }
 
   async modifySltp(executionId: string, stopLoss: number | null, takeProfit: number | null, actor: string) {
@@ -393,27 +434,11 @@ export class ExecutionService {
         expiresAt: new Date(Date.now() + this.config.bridgeTimeoutMs * 4),
       },
     });
-    const response = await this.withTimeout(
-      this.bridge.sendCommand(this.buildBridgeCommand(command, execution.id)),
-    );
-    if (response.result === "CONFIRMED") {
-      await this.prisma.executionCommand.update({
-        where: { id: command.id },
-        data: { status: "CONFIRMED" },
-      });
-      await this.prisma.execution.update({
-        where: { id: execution.id },
-        data: {
-          actualSl: response.actualSl ?? stopLoss,
-          actualTp: response.actualTp ?? takeProfit,
-        },
-      });
-    } else {
-      await this.prisma.executionCommand.update({
-        where: { id: command.id },
-        data: { status: response.result === "REJECTED" ? "REJECTED" : "ACKNOWLEDGED" },
-      });
-    }
+    // EA pickup: confirmation arrives via POST /bridge/commands/:id/response.
+    await this.prisma.executionCommand.update({
+      where: { id: command.id },
+      data: { status: "SENT" },
+    });
     await this.audit.record(actor, "execution.modify", { commandId: command.id });
     return this.prisma.execution.findUniqueOrThrow({ where: { id: execution.id } });
   }
@@ -428,7 +453,7 @@ export class ExecutionService {
       throw new ForbiddenException("kill switch blocks automated mutations");
     }
     const filled = execution.filledVolume ? Number(execution.filledVolume) : 0;
-    const info = await this.bridge.symbolInfo(
+    const info = await this.brokerState.symbolInfo(
       execution.command.accountId,
       (execution.command.payloadJson as { symbol?: string } | null)?.symbol ?? "",
     );
@@ -449,24 +474,11 @@ export class ExecutionService {
         expiresAt: new Date(Date.now() + this.config.bridgeTimeoutMs * 4),
       },
     });
-    const response = await this.withTimeout(
-      this.bridge.sendCommand(this.buildBridgeCommand(command, execution.id)),
-    );
-    if (response.result === "CONFIRMED") {
-      await this.prisma.executionCommand.update({
-        where: { id: command.id },
-        data: { status: "CONFIRMED" },
-      });
-      const remaining = filled - (response.filledVolume ?? closeVolume);
-      await this.prisma.execution.update({
-        where: { id: execution.id },
-        data: {
-          filledVolume: remaining,
-          executionStatus: remaining <= 0 ? "CLOSED" : "OPEN",
-          closedAt: remaining <= 0 ? new Date() : null,
-        },
-      });
-    }
+    // EA pickup: fill accounting arrives via POST /bridge/commands/:id/response.
+    await this.prisma.executionCommand.update({
+      where: { id: command.id },
+      data: { status: "SENT" },
+    });
     await this.audit.record(actor, "execution.partial-close", { commandId: command.id });
     return this.prisma.execution.findUniqueOrThrow({ where: { id: execution.id } });
   }
@@ -492,19 +504,11 @@ export class ExecutionService {
         expiresAt: new Date(Date.now() + this.config.bridgeTimeoutMs * 4),
       },
     });
-    const response = await this.withTimeout(
-      this.bridge.sendCommand(this.buildBridgeCommand(command, execution.id)),
-    );
-    if (response.result === "CONFIRMED") {
-      await this.prisma.executionCommand.update({
-        where: { id: command.id },
-        data: { status: "CONFIRMED" },
-      });
-      await this.prisma.execution.update({
-        where: { id: execution.id },
-        data: { executionStatus: "CLOSED", closedAt: new Date() },
-      });
-    }
+    // EA pickup: close confirmation arrives via POST /bridge/commands/:id/response.
+    await this.prisma.executionCommand.update({
+      where: { id: command.id },
+      data: { status: "SENT" },
+    });
     await this.audit.record(actor, "execution.close", { commandId: command.id });
     return this.prisma.execution.findUniqueOrThrow({ where: { id: execution.id } });
   }

@@ -42,7 +42,7 @@ function service(overrides: Record<string, unknown> = {}) {
   return new PublicationsService(
     prisma as never,
     { record: jest.fn() } as never,
-    (overrides.bridge ?? {}) as never,
+    (overrides.brokerState ?? {}) as never,
     (overrides.renderer ?? {}) as never,
     (overrides.sender ?? {}) as never,
     (overrides.config ?? { mt5AccountId: "acc1" }) as never,
@@ -91,8 +91,8 @@ describe("PublicationsService.publishNow", () => {
     const sender = {
       sendPhoto: jest.fn(async () => ({ ok: true, telegramMessageId: "777", unknown: false })),
     };
-    const bridge = { positions: jest.fn(async () => [POSITION]) };
-    return { prisma, renderer, sender, bridge };
+    const brokerState = { positions: jest.fn(async () => [POSITION]), symbolInfo: jest.fn(), account: jest.fn(), isAlive: jest.fn() };
+    return { prisma, renderer, sender, brokerState };
   }
 
   it("publishes photo with caption and records message id", async () => {
@@ -112,7 +112,7 @@ describe("PublicationsService.publishNow", () => {
 
   it("refuses closed positions without sending", async () => {
     const setup = okSetup();
-    setup.bridge.positions = jest.fn(async () => []);
+    setup.brokerState.positions = jest.fn(async () => []);
     const svc = service(setup);
     await expect(
       svc.publishNow("pub1", { executionId: "e1", destinationChatId: "@chan" }, "alice"),
@@ -134,3 +134,4 @@ describe("PublicationsService.publishNow", () => {
     expect(result.status).toBe("UNKNOWN");
   });
 });
+

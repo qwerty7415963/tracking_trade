@@ -2,7 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../database/prisma.service";
-import { BRIDGE_PORT, BridgePort } from "../bridge/mt5-bridge.adapter";
+import { BrokerStateService } from "../bridge/broker-state.service";
 
 export interface ReconcileReport {
   unknownPositions: Array<{ positionId: string; symbol: string; volume: number }>;
@@ -15,12 +15,12 @@ export class ReconciliationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    @Inject(BRIDGE_PORT) private readonly bridge: BridgePort,
+    private readonly brokerState: BrokerStateService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   async reconcileAccount(accountId: string, actor: string): Promise<ReconcileReport> {
-    const brokerPositions = await this.bridge.positions(accountId);
+    const brokerPositions = await this.brokerState.positions(accountId);
     const openExecutions = await this.prisma.execution.findMany({
       where: { executionStatus: "OPEN", command: { accountId } },
     });
@@ -47,17 +47,15 @@ export class ReconciliationService {
     });
     const reconciledCommands: string[] = [];
     for (const cmd of stale) {
-      try {
-        const status = await this.bridge.commandStatus(cmd.id);
-        if (status.result === "CONFIRMED" || status.result === "REJECTED") {
-          await this.prisma.executionCommand.update({
-            where: { id: cmd.id },
-            data: { status: status.result },
-          });
-          reconciledCommands.push(cmd.id);
-        }
-      } catch {
-        // Leave UNKNOWN; never guess.
+      // Expiry without confirmation -> UNKNOWN. Confirmation itself
+      // arrives via POST /bridge/commands/:id/response (EA poll topology).
+      const expired = cmd.expiresAt ? Date.now() > cmd.expiresAt.getTime() : false;
+      if (expired && cmd.status !== "TIMEOUT_UNKNOWN") {
+        await this.prisma.executionCommand.update({
+          where: { id: cmd.id },
+          data: { status: "TIMEOUT_UNKNOWN" },
+        });
+        reconciledCommands.push(cmd.id);
       }
     }
 

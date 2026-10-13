@@ -1,5 +1,4 @@
 import { ConflictException, ForbiddenException } from "@nestjs/common";
-import { BridgePort } from "../bridge/mt5-bridge.adapter";
 import { ExecutionService } from "./execution.service";
 import { KillSwitchService } from "./kill-switch.service";
 
@@ -41,18 +40,14 @@ const CONFIG = {
   bridgeTimeoutMs: 50,
 };
 
-function fakeBridge(overrides: Partial<BridgePort> = {}): BridgePort {
+function fakeBrokerState(overrides: Record<string, unknown> = {}) {
   return {
-    sendCommand: jest.fn(async () => ({ result: "CONFIRMED" })),
-    commandStatus: jest.fn(),
-    positions: jest.fn(async () => []),
-    orders: jest.fn(async () => []),
-    deals: jest.fn(async () => []),
     symbolInfo: jest.fn(async () => SPEC),
     account: jest.fn(async () => ({ marginFree: 10000, marginRequired: 100, equity: 10000 })),
-    heartbeat: jest.fn(async () => ({ status: "ok" })),
+    isAlive: jest.fn(async () => true),
+    positions: jest.fn(async () => []),
     ...overrides,
-  } as unknown as BridgePort;
+  };
 }
 
 function mockPrisma(
@@ -72,7 +67,7 @@ function mockPrisma(
     payloadJson: { volume: 0.02 },
     correlationId: null,
     createdAt: new Date(),
-    expiresAt: new Date(),
+    expiresAt: new Date(Date.now() + 60000),
     status,
     executions: [{ id: "e1" }],
   });
@@ -100,81 +95,82 @@ function mockPrisma(
   };
 }
 
-function service(prisma: unknown, bridge: BridgePort, killMode: "OFF" | "STOP_NEW_TRADES" = "OFF") {
+function service(prisma: unknown, brokerState: unknown, killMode: "OFF" | "STOP_NEW_TRADES" = "OFF") {
   const kill = new KillSwitchService({ record: jest.fn() } as never);
   (kill as unknown as { mode: string }).mode = killMode;
-  return new ExecutionService(prisma as never, { record: jest.fn() } as never, bridge, CONFIG as never, kill);
+  return new ExecutionService(
+    prisma as never,
+    { record: jest.fn() } as never,
+    brokerState as never,
+    CONFIG as never,
+    kill,
+  );
 }
 
-const CONFIRMED = {
-  result: "CONFIRMED" as const,
-  brokerRetcode: 10009,
-  brokerOrderId: "o1",
-  brokerDealId: "d1",
-  brokerPositionId: "p1",
-  requestedVolume: 0.02,
-  filledVolume: 0.02,
-  fillPrice: 2345,
-  actualSl: 2340,
-  actualTp: 2360,
-  timestamps: {},
-  accountSnapshot: null,
-  error: null,
-};
-
-describe("ExecutionService", () => {
+describe("ExecutionService (poll topology)", () => {
   it("refuses a second OPEN while one is unresolved", async () => {
     const prisma = mockPrisma({ findFirstCommand: { id: "c0" } });
-    const svc = service(prisma, fakeBridge());
+    const svc = service(prisma, fakeBrokerState());
     await expect(svc.openFromApproval("s1", "alice")).rejects.toThrow(ConflictException);
   });
 
-  it("returns the existing command for the same idempotency key without resending", async () => {
+  it("returns the existing command for the same idempotency key", async () => {
     const existing = { id: "c1", status: "CONFIRMED" };
     const prisma = mockPrisma({ findUniqueCommand: existing });
-    const bridge = fakeBridge();
-    const svc = service(prisma, bridge);
+    const svc = service(prisma, fakeBrokerState());
     await expect(svc.openFromApproval("s1", "alice")).resolves.toEqual(existing);
-    expect(bridge.sendCommand).not.toHaveBeenCalled();
   });
 
-  it("marks TIMEOUT_UNKNOWN on send failure and never resends", async () => {
-    const bridge = fakeBridge({
-      sendCommand: jest.fn(async () => {
-        throw new Error("timeout");
-      }),
-      commandStatus: jest.fn(async () => {
-        throw new Error("bridge down");
-      }),
-    });
+  it("journals SENT for EA pickup without calling the broker", async () => {
     const prisma = mockPrisma();
-    const svc = service(prisma, bridge);
-    const result = (await svc.openFromApproval("s1", "alice")) as { status: string };
-    expect(bridge.sendCommand).toHaveBeenCalledTimes(1);
-    expect(result.status).toBe("TIMEOUT_UNKNOWN");
+    const svc = service(prisma, fakeBrokerState());
+    const result = await svc.openFromApproval("s1", "alice");
+    expect(result.status).toBe("SENT");
+    expect(result.executions).toHaveLength(1);
   });
 
   it("blocks new orders when kill switch is on", async () => {
     const prisma = mockPrisma();
-    const svc = service(prisma, fakeBridge({ sendCommand: jest.fn(async () => CONFIRMED) }), "STOP_NEW_TRADES");
+    const svc = service(prisma, fakeBrokerState(), "STOP_NEW_TRADES");
     await expect(svc.openFromApproval("s1", "alice")).rejects.toThrow(ForbiddenException);
-  });
-
-  it("confirms a clean open and records the fill", async () => {
-    const prisma = mockPrisma();
-    const bridge = fakeBridge({ sendCommand: jest.fn(async () => CONFIRMED) });
-    const svc = service(prisma, bridge);
-    const result = (await svc.openFromApproval("s1", "alice")) as { status: string };
-    expect(bridge.sendCommand).toHaveBeenCalledTimes(1);
-    expect(result.status).toBe("CONFIRMED");
-    expect(prisma.execution.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ executionStatus: "OPEN" }) }),
-    );
   });
 
   it("rejects when bridge has no symbol map", async () => {
     const prisma = mockPrisma();
-    const svc = service(prisma, fakeBridge({ symbolInfo: jest.fn(async () => null) }));
+    const svc = service(prisma, fakeBrokerState({ symbolInfo: jest.fn(async () => null) }));
     await expect(svc.openFromApproval("s1", "alice")).rejects.toThrow(/no symbol map/);
+  });
+
+  it("marks expired unconfirmed commands TIMEOUT_UNKNOWN on reconcile", async () => {
+    const prisma = mockPrisma();
+    (prisma.executionCommand.findUniqueOrThrow as jest.Mock).mockResolvedValueOnce({
+      id: "c1",
+      accountId: "acc1",
+      status: "SENT",
+      expiresAt: new Date(Date.now() - 1000),
+      executions: [],
+    });
+    const svc = service(prisma, fakeBrokerState());
+    const result = await svc.reconcileCommand("c1", "alice");
+    expect(result.status).toBe("TIMEOUT_UNKNOWN");
+  });
+
+  it("flags OPEN executions whose broker position vanished", async () => {
+    const prisma = mockPrisma();
+    (prisma.executionCommand.findUniqueOrThrow as jest.Mock).mockResolvedValueOnce({
+      id: "c1",
+      accountId: "acc1",
+      status: "SENT",
+      expiresAt: new Date(Date.now() + 60000),
+      executions: [{ id: "e1", executionStatus: "OPEN", brokerPositionId: "pX" }],
+    });
+    const svc = service(prisma, fakeBrokerState());
+    const result = await svc.reconcileCommand("c1", "alice");
+    expect(result.status).toBe("RECONCILING");
+    expect(prisma.riskEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ checkName: "RECONCILE_POSITION_MISSING" }),
+      }),
+    );
   });
 });

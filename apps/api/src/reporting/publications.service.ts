@@ -4,7 +4,7 @@ import Redis from "ioredis";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../database/prisma.service";
-import { BRIDGE_PORT, BridgePort } from "../bridge/mt5-bridge.adapter";
+import { BrokerStateService } from "../bridge/broker-state.service";
 import { REDIS_CLIENT } from "../queue/redis.provider";
 import {
   FloatingPnLCardRenderer,
@@ -125,7 +125,7 @@ export class PublicationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    @Inject(BRIDGE_PORT) private readonly bridge: BridgePort,
+    private readonly brokerState: BrokerStateService,
     @Inject(CARD_RENDERER) private readonly renderer: FloatingPnLCardRenderer,
     @Inject(TELEGRAM_SENDER) private readonly sender: TelegramSender,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -196,7 +196,7 @@ export class PublicationsService {
       : null;
 
     const accountId = command.accountId || this.config.mt5AccountId;
-    const positions = await this.bridge.positions(accountId);
+    const positions = await this.brokerState.positions(accountId);
     const position = positions.find((p) => p.positionId === execution.brokerPositionId);
     if (!position) throw new ConflictException("POSITION_NOT_OPEN: nothing to render");
     if (position.profit === null || position.profit === undefined) {

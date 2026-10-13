@@ -1,0 +1,38 @@
+# MT5 terminal on Wine (spike, Phase 0).
+# Pinned versions only — record Wine + MT5 build in docs on pass.
+# MetaQuotes install script supports Ubuntu/Debian/Mint/Fedora.
+ARG UBUNTU_VERSION=24.04
+FROM ubuntu:${UBUNTU_VERSION}
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    WINEARCH=win64 \
+    WINEPREFIX=/home/trader/.wine \
+    WINEDEBUG=-all \
+    DISPLAY=:99
+
+# WINE_VERSION is pinned at build time, e.g.:
+#   docker build --build-arg WINE_VERSION=11.0.1 ...
+ARG WINE_VERSION=11.0.1
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates curl wget gnupg xvfb \
+  && mkdir -p /etc/apt/keyrings \
+  && wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
+  && wget -NP /etc/apt/sources.list.d/ \
+    "https://dl.winehq.org/wine-builds/ubuntu/dists/noble/winehq-noble.sources" \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends --allow-downgrades \
+    winehq-stable=${WINE_VERSION} \
+  && rm -rf /var/lib/apt/lists/* \
+  && wine --version
+
+RUN useradd -m -s /bin/bash trader
+USER trader
+WORKDIR /home/trader
+
+COPY --chown=trader:trader mt5/entrypoint-wine.sh /home/trader/entrypoint.sh
+RUN chmod +x /home/trader/entrypoint.sh
+
+# Terminal + EA are installed at container start (spike), not baked in.
+ENTRYPOINT ["/home/trader/entrypoint.sh"]
