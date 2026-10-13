@@ -100,7 +100,13 @@ Mục tiêu: chống supply-chain attack (package bị chiếm quyền, chèn m�
 - Có log rotation và disk alerts.
 - **Không tự bật kill switch hoặc trading sau deploy.**
 
-## 7. Backup
+## 7. Local deploy đã kiểm chứng (13/10/2026)
+
+- `tracking-trade-api:local` — `sha256:b76bf4248d3562907380156fb96db3e0a2b6f648881799149d36ebe2093f9c4e` (804MB), health `ok`.
+- `tracking-trade-worker:local` — `sha256:9c1ec9af43cdf3f944aa8bb39cebfa0c403ba99d1efddf9d61e65a50ce403baa` (3.42GB — nặng do Chromium + dev deps, tối ưu sau).
+- Bài học: workspace symlinks gãy nếu runner thiếu `packages/*/dist` — đã fix bằng COPY tường minh từng package.
+
+## 8. Backup
 
 Backup mã hóa offsite về máy operator theo mô hình pull (restic, retention 7 ngày, drill restore hàng tháng). Chi tiết đầy đủ: [backup-restore.md](backup-restore.md).
 

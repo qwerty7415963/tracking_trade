@@ -1,4 +1,6 @@
-# Production overrides. Deploy only pinned images by digest (see docs/08-deploy/docker-cicd.md).
+# Production overlay: app services + infra hardening.
+# Deploy only pinned images by digest (see docs/08-deploy/docker-cicd.md).
+# NOTE: apps/worker (stub) is intentionally absent — it would restart-loop.
 services:
   postgres:
     restart: always
@@ -10,6 +12,56 @@ services:
 
   redis:
     restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    image: tracking-trade-api:local
+    env_file:
+      - ../.env
+    environment:
+      PORT: "3000"
+      DATABASE_URL: postgresql://tracking:tracking@postgres:5432/tracking
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/screenshot-worker/Dockerfile
+    image: tracking-trade-worker:local
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql://tracking:tracking@postgres:5432/tracking
+      REDIS_URL: redis://redis:6379
+      ARTIFACTS_DIR: /data/artifacts
+    volumes:
+      - artifacts:/data/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
     logging:
       driver: json-file
       options:
