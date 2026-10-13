@@ -1,0 +1,83 @@
+# Production deploy: push to main -> CI gate -> SSH to VPS ->
+# git pull + compose build + migrate + up + healthcheck (+ rollback).
+# Required repo secrets: VPS_HOST, VPS_USER, VPS_SSH_KEY.
+# Optional (deploy notify): TELEGRAM_BOT_TOKEN, ALERT_CHAT_ID.
+name: deploy-production
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm audit --audit-level=high
+      - run: npx prisma validate --schema prisma/schema.prisma
+        env:
+          DATABASE_URL: postgresql://u:p@localhost:5432/db
+
+  deploy:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH setup
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Deploy on VPS
+        id: deploy
+        run: |
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" <<'EOF'
+          set -e
+          cd /opt/tracking_trade
+          PREV_SHA=$(git rev-parse HEAD)
+          echo "previous=$PREV_SHA" > /tmp/deploy-prev-sha
+          git fetch origin && git checkout main && git pull --ff-only
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml build api worker
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml run --rm api npx prisma migrate deploy
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml up -d
+          sleep 20
+          curl -sf localhost:3000/api/v1/health
+          EOF
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" <<'EOF'
+          set -e
+          cd /opt/tracking_trade
+          PREV_SHA=$(cut -d= -f2 /tmp/deploy-prev-sha)
+          git checkout "$PREV_SHA"
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml build api worker
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml up -d
+          sleep 20
+          curl -sf localhost:3000/api/v1/health
+          EOF
+      - name: Notify Telegram
+        if: always()
+        run: |
+          if [ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] || [ -z "${{ secrets.ALERT_CHAT_ID }}" ]; then
+            echo "notify secrets missing, skipping"
+            exit 0
+          fi
+          STATUS="${{ steps.deploy.outcome }}"
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.ALERT_CHAT_ID }}" \
+            --data-urlencode "text=deploy ${{ github.sha }}: ${STATUS}" || true

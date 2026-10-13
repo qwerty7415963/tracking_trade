@@ -53,19 +53,19 @@ Trên Pull Request:
 6. Contract tests.
 7. Dependency/image scan.
 
-## 3. Build và deploy
+## 3. Build và deploy (mô hình B: Actions SSH, build trên VPS)
 
-1. Build Docker images.
-2. Push GHCR với **immutable commit SHA/digest**.
-3. Production deploy **chỉ dùng image đã xác định chính xác**.
-4. SSH xác thực vào VPS.
-5. **Backup trước migration**.
-6. Chạy migration **một lần**.
-7. Rollout Docker Compose.
-8. Chạy health checks và smoke tests.
-9. **Rollback image nếu unhealthy**, với migration recovery plan phù hợp.
+GHCR dời lại sau. Hiện tại: push `main` → CI gate → Actions SSH vào VPS → build tại chỗ:
 
-> **Không dùng tag `latest`** làm định danh production.
+1. Merge vào `main` (chỉ qua PR đã CI xanh; commit chỉ-docs không deploy).
+2. Job `gate`: typecheck + test + audit + prisma validate. Fail thì dừng.
+3. Job `deploy` (serialize qua `concurrency`): SSH bằng deploy key (secret `VPS_SSH_KEY`) → `git pull main` → `compose build api worker` → `migrate deploy` một lần → `up -d` → health check.
+4. Health fail → rollback tự động (checkout SHA trước đó + build + up).
+5. Báo Telegram (non-blocking; cần secrets `TELEGRAM_BOT_TOKEN` + `ALERT_CHAT_ID`).
+
+Secrets repo cần: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (bắt buộc); `TELEGRAM_BOT_TOKEN`, `ALERT_CHAT_ID` (tùy chọn, cho notify).
+
+> Production deploy **chỉ từ commit trên `main`** đã qua gate.
 
 ## 4. Quy trình quản lý dependency (khóa version + cập nhật)
 

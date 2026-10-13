@@ -48,9 +48,10 @@ const EA_CONFIRM = {
 
 describeIntegration("Execution flow (live DB, poll topology)", () => {
   it("journals SENT; EA confirm opens; retry idempotent; kill switch blocks", async () => {
+    // Dedicated account isolates risk counts from other suites running in parallel.
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(APP_CONFIG)
-      .useValue({ ...loadAppConfig({}), mt5AccountId: "acc1" })
+      .useValue({ ...loadAppConfig({}), mt5AccountId: "acc-exec-it" })
       .overrideProvider(BrokerStateService)
       .useValue(FAKE_STATE)
       .compile();
