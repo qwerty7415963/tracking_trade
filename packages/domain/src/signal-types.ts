@@ -45,16 +45,23 @@ export interface ParserInput {
 }
 
 // Explicit symbol map only. Unknown symbols are NEVER fuzzy-matched.
+// Values are canonical names; the market-data resolver confirms them
+// against the live Hyperliquid universe (data-driven mapping).
 export const SYMBOL_MAP: Record<string, string> = {
-  GOLD: "XAUUSD.a",
-  XAUUSD: "XAUUSD.a",
-  SILVER: "XAGUSD.a",
-  XAGUSD: "XAGUSD.a",
-  BTC: "BTCUSD.a",
-  BTCUSD: "BTCUSD.a",
-  ETH: "ETHUSD.a",
-  ETHUSD: "ETHUSD.a",
+  GOLD: "XAU",
+  XAUUSD: "XAU",
+  XAU: "XAU",
+  SILVER: "XAG",
+  XAGUSD: "XAG",
+  XAG: "XAG",
+  BTC: "BTC",
+  BTCUSD: "BTC",
+  ETH: "ETH",
+  ETHUSD: "ETH",
+  SOL: "SOL",
 };
+
+export type KillSwitchMode = "OFF" | "STOP_NEW_TRADES" | "STOP_ALL_MUTATIONS";
 
 const FOREX_PAIR = /\b([A-Z]{6})\b/;
 const SUFFIXED_SYMBOL = /\b((?:XAU|XAG|BTC|ETH)USD(?:\.\w+)?|US30|NAS100|SPX500|UK100|DE40|JP225)\b/;

@@ -11,7 +11,7 @@ COPY packages/card-renderer/package.json packages/card-renderer/package.json
 COPY packages/connectors/package.json packages/connectors/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/domain/package.json packages/domain/package.json
-COPY packages/mt5-bridge-contract/package.json packages/mt5-bridge-contract/package.json
+COPY packages/market-data/package.json packages/market-data/package.json
 COPY packages/reporting/package.json packages/reporting/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY prisma ./prisma
@@ -40,8 +40,8 @@ COPY --from=builder --chown=app:app /app/packages/database/dist ./packages/datab
 COPY --from=builder --chown=app:app /app/packages/database/package.json ./packages/database/package.json
 COPY --from=builder --chown=app:app /app/packages/domain/dist ./packages/domain/dist
 COPY --from=builder --chown=app:app /app/packages/domain/package.json ./packages/domain/package.json
-COPY --from=builder --chown=app:app /app/packages/mt5-bridge-contract/dist ./packages/mt5-bridge-contract/dist
-COPY --from=builder --chown=app:app /app/packages/mt5-bridge-contract/package.json ./packages/mt5-bridge-contract/package.json
+COPY --from=builder --chown=app:app /app/packages/market-data/dist ./packages/market-data/dist
+COPY --from=builder --chown=app:app /app/packages/market-data/package.json ./packages/market-data/package.json
 COPY --from=builder --chown=app:app /app/packages/reporting/dist ./packages/reporting/dist
 COPY --from=builder --chown=app:app /app/packages/reporting/package.json ./packages/reporting/package.json
 COPY --from=builder --chown=app:app /app/packages/shared/dist ./packages/shared/dist
@@ -51,3 +51,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD node -e "fetch('http://localhost:3000/api/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 CMD ["node", "dist/apps/api/src/main.js"]
+

@@ -11,12 +11,47 @@
 | POST | `/api/v1/signals/:id/approve` | Duyệt tín hiệu |
 | POST | `/api/v1/signals/:id/reject` | Từ chối tín hiệu |
 | POST | `/api/v1/signals/:id/expire` | Hết hạn tín hiệu |
+## 1. Endpoints
+
+### Signals (giữ nguyên)
+
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| GET | `/api/v1/signals` | Danh sách tín hiệu |
+| GET | `/api/v1/signals/:id` | Chi tiết tín hiệu |
+| POST | `/api/v1/signals/:id/approve` | Duyệt + mở vị thế ảo (approve = open) |
+| POST | `/api/v1/signals/:id/reject` | Từ chối tín hiệu |
+| POST | `/api/v1/signals/:id/expire` | Hết hạn tín hiệu |
 | GET | `/api/v1/updates/review-queue` | Hàng đợi review update |
 | POST | `/api/v1/updates/:id/approve` | Duyệt update |
 | POST | `/api/v1/updates/:id/reject` | Từ chối update |
-| GET | `/api/v1/executions` | Danh sách execution |
+
+### Virtual accounts
+
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| GET | `/api/v1/accounts` | Danh sách tài khoản ảo |
+| POST | `/api/v1/accounts` | Tạo tài khoản (name, balance, leverage?, mode?) |
+| GET | `/api/v1/accounts/:id` | Tổng quan: equity, margin ratio, vị thế mở, PnL |
+| POST | `/api/v1/accounts/:id/deposit` | Nạp vốn ảo |
+| POST | `/api/v1/accounts/:id/withdraw` | Rút vốn ảo |
+| POST | `/api/v1/accounts/:id/reset` | Đóng hết + đặt lại số dư |
+| PATCH | `/api/v1/accounts/:id` | Đổi mode (`AUTO`/`APPROVE`) hoặc leverage |
+
+### Virtual positions
+
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| GET | `/api/v1/positions` | Danh sách vị thế (`?status=`) |
+| GET | `/api/v1/positions/:id` | Chi tiết vị thế |
+| POST | `/api/v1/positions/open` | Mở lại cho signal đã approve (`signalId`, `accountId?`) |
+| POST | `/api/v1/positions/:id/close` | Đóng thủ công theo giá thị trường |
+
+### Vận hành
+
+| Method | Endpoint | Mô tả |
+|---|---|---|
 | POST | `/api/v1/operations/kill-switch` | Bật/tắt kill switch |
-| POST | `/api/v1/operations/reconcile` | Kích hoạt reconcile |
 | GET | `/api/v1/health` | Health check |
 
 ## 2. Quy tắc
@@ -26,9 +61,8 @@
   - **Role authorization**: username phải thuộc danh sách `OPERATOR_USERNAMES` (1 biến env duy nhất, comma-separated).
   - **Audit log** (ghi rõ username thực hiện).
   - **Conflict checks**.
-- Approve/reject tín hiệu phải gắn với **đúng signal version** (xem [manual-approval](../03-nghiep-vu/manual-approval.md)).
+- Approve/reject tín hiệu phải gắn với **đúng signal version** (xem [manual-approval](../03-nghiep-vu/manual-approval.md)). Approve đồng nghĩa mở vị thế ảo; mở thất bại không hủy approval (ghi rõ lý do, retry qua `/positions/open`).
 - Kill switch có hai chế độ: `STOP NEW TRADES` và `STOP ALL AUTOMATED MUTATIONS` (xem [risk-engine](../04-risk-execution/risk-engine.md)).
-- Reconcile dùng cho trạng thái UNKNOWN — không được bỏ qua.
 
 ## 3. Operator bot commands
 
@@ -36,26 +70,28 @@
 
 | Lệnh | Tác dụng |
 |---|---|
-| `/status` | Trạng thái hệ thống, kill switch, bridge heartbeat |
-| `/signals` | Danh sách tín hiệu chờ duyệt |
-| `/signal <id>` | Chi tiết 1 tín hiệu |
-| `/approve <id>` | Duyệt tín hiệu (đúng version) |
+| `/approve <id>` | Duyệt + mở vị thế ảo (đúng version) |
 | `/reject <id> [lý do]` | Từ chối tín hiệu |
-| `/approve_update <id>` / `/reject_update <id>` | Duyệt/từ chối update trong review queue |
+| `/open <signalId> [accountId]` | Mở lại cho signal đã approve |
+| `/close <positionId>` | Đóng vị thế theo giá thị trường |
+| `/positions [status]` | Danh sách vị thế ảo |
+| `/account [id]` | Tổng quan tài khoản (equity, margin, PnL) |
+| `/mode [auto\|approve] [accountId]` | Xem/đổi mode mở lệnh |
+| `/deposit <accountId> <amount>` | Nạp vốn ảo |
+| `/withdraw <accountId> <amount>` | Rút vốn ảo |
+| `/reset <accountId> <balance>` | Đóng hết + đặt lại số dư |
+| `/review` | Hàng đợi review (signals + updates) |
 | `/kill [new\|all]` | Bật kill switch (`STOP NEW TRADES` / `STOP ALL AUTOMATED MUTATIONS`) |
-| `/resume` + `/confirm` | Gỡ kill switch / cho phép trading lại — bắt buộc **xác nhận 2 bước**, thiếu `/confirm` thì vô hiệu |
-| `/source_enable <id>` / `/source_disable <id>` | Bật/tắt nguồn |
-| `/reconcile` | Kích hoạt đối chiếu broker |
-| `/executions` / `/health` | Xem executions / health (read-only) |
+
+Review mơ hồ: bot đẩy noti kèm nút **Approve** / **Reject** (inline buttons); bấm Reject từ chối ngay.
 
 ### Quy tắc
 
 - Chỉ username trong `OPERATOR_USERNAMES`, chỉ trong **private chat** — bot không nhận lệnh trong group/channel.
-- Mọi lệnh đổi trạng thái tuân thủ đúng rule mục 2 (auth, audit, conflict checks, approval đúng version).
+- Rate limit lệnh liên tiếp; mọi lệnh đổi trạng thái tuân thủ đúng rule mục 2 (auth, audit, conflict checks, approval đúng version).
 - **Không cho qua bot:** đổi risk limits, sửa template/route, xóa dữ liệu, deploy.
 
 ## 4. Liên kết tài liệu
 
 - Duyệt thủ công: [03-nghiep-vu/manual-approval.md](../03-nghiep-vu/manual-approval.md)
 - Risk: [04-risk-execution/risk-engine.md](../04-risk-execution/risk-engine.md)
-- Reconcile: [04-risk-execution/mt5-bridge.md](../04-risk-execution/mt5-bridge.md)

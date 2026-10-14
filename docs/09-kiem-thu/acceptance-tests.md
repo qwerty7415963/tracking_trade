@@ -13,36 +13,33 @@
 
 ## 2. Approval và updates
 
-- Không có manual approval thì **không mở lệnh mới**.
+- Mode `APPROVE`: không có manual approval thì **không mở vị thế mới**.
+- Mode `AUTO`: chỉ tự mở khi đủ field, không mơ hồ, map được coin.
 - Signal version đổi làm **approval cũ mất hiệu lực**.
-- Update mơ hồ hoặc nguồn không xác thực **không tác động MT5**.
-- SL/TP update **đúng vị thế**.
-- Partial close **tuân thủ volume step**.
-- TP1 **không tự đóng** nếu policy chưa cho phép.
+- Update mơ hồ hoặc nguồn không xác thực **không mở/đóng vị thế** — đưa review + noti operator.
+- Nút Reject từ chối ngay, ghi audit.
 - Update đồng thời **không gây mutation sai thứ tự**.
 
-## 3. Execution và risk
+## 3. Virtual trading và risk
 
-- Timeout sau gửi lệnh **không tạo OPEN thứ hai**.
-- Broker rejection được xử lý.
-- Partial fill được **ghi nhận chính xác**.
-- Thiếu symbol map bị **từ chối**.
-- Volume sai, spread cao, margin thiếu và SLTP sai bị **chặn**.
-- **Daily loss limit** và **kill switch** chặn lệnh.
-- Reconnect reconciliation **phát hiện vị thế lạ**.
-- Kill switch trong lúc command đang chạy được kiểm thử.
+- Cùng signal+version đang mở → **không tạo vị thế trùng**.
+- Thiếu quote/mapping → **từ chối**, không đoán giá.
+- Size sai step/min, margin thiếu, SL thiếu bị **chặn**.
+- **Daily loss limit** và **kill switch** chặn mở mới.
+- TP1 đóng **50%**, các TP còn lại chia đều; TP duy nhất đóng 100%.
+- SL đóng **toàn bộ** phần còn lại; SL thắng khi chạm cả 2 phía.
+- Mỗi lần đóng ghi realized PnL vào **ledger**; số dư chỉ đổi qua ledger.
 
 ## 4. Reporting
 
-- **Không báo filled** trước broker confirmation.
-- Screenshot lỗi **không kích hoạt execute lại**.
-- Telegram retry **không làm thay đổi execution**.
-- Reply update **đúng message ID gốc**.
-- Update tới trước publication gốc phải **chờ**.
+- Card `filled` chỉ sau khi vị thế đã mở (không báo trước).
+- Render lỗi **không mở/đóng vị thế**.
+- Telegram retry **không làm thay đổi vị thế**.
+- Bài TP/SL/close **reply đúng bài gốc**.
 - Template thay đổi **không làm đổi publication snapshot**.
 - Thiếu X URL bắt buộc gây **validation failure**.
 - Sender không có quyền đăng kênh tạo **lỗi rõ ràng**.
-- Bài đăng vào lệnh khớp đúng **mẫu đã chốt** (direction/instrument/status/entry/SL/TP/nguồn/URL + screenshot); bài update **reply đúng bài đầu tiên**.
+- Bài đăng khớp đúng **mẫu đã chốt** (direction/instrument/status/entry/SL/TP/nguồn/URL + ảnh card).
 
 ## 5. Telegram connector (collection)
 

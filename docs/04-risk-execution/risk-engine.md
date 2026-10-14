@@ -1,68 +1,66 @@
-# Risk Engine
+# Risk Engine (paper)
 
-> Ánh xạ từ plan §7 (Risk engine).
+> Ánh xạ từ plan §7 (Risk engine), thích ứng cho paper trading.
 
 ## 1. Các kiểm tra bắt buộc
 
-Trước mọi thao tác giao dịch (mở lệnh, sửa SL/TP, close), RiskEngine phải kiểm tra:
+Trước khi mở vị thế ảo (`evaluateVirtualRisk`), hệ thống kiểm tra:
 
-- Đúng **tài khoản MT5**.
-- **Terminal và EA heartbeat** khỏe.
-- **Kill switch** không chặn lệnh.
-- Tín hiệu **chưa hết hạn**.
-- **Approval đúng version**.
-- **Symbol mapping** tồn tại.
-- **Spread** dưới giới hạn.
-- **Price deviation** dưới giới hạn.
-- **Volume** nằm trong min/max/step.
-- **Margin** đủ.
-- **SL/TP hợp lệ**.
-- **Stop distance** đáp ứng yêu cầu broker.
-- **Risk per trade** trong giới hạn.
-- **Daily loss** chưa vượt ngưỡng.
-- **Total open risk** chưa vượt ngưỡng.
-- Không vượt **max positions** hoặc **max positions per symbol**.
-- Không mở thêm lệnh nếu lệnh OPEN trước đó đang **UNKNOWN**.
+- **Kill switch** không chặn (`STOP_ALL_MUTATIONS` chặn mọi mutation; `STOP_NEW_TRADES` chặn mở mới).
+- **Approval hợp lệ** (đúng version, decision APPROVED).
+- **Coin đã map** (resolve được từ universe Hyperliquid live).
+- **Size** ≥ min size và đúng step (`sizeIncrement`).
+- **Leverage** hợp lệ (1..50).
+- **Margin đủ**: `notional / leverage ≤ equity`.
+- **Max positions** chưa vượt ngưỡng.
+- **Daily loss** (lỗ đã chốt hôm nay) chưa vượt ngưỡng.
+- **Risk per trade** (size × stop distance) trong giới hạn.
 
 Mọi kết quả kiểm tra được ghi vào bảng `risk_events`.
 
-## 2. Position sizing
+## 2. Position sizing (perp)
 
-Volume phải được tính từ **monetary risk budget** và thông số broker:
+Size (đơn vị coin) tính từ **risk budget (USDC)** và stop distance:
 
-- Tick size.
-- Tick value.
-- Contract size.
-- Currency conversion.
-- Stop distance.
-- Volume step.
+```
+size = riskBudget / |entry − stopLoss|
+```
 
-### Quy trình
+- Entry = giá mid lúc mở (không đoán).
+- **Làm tròn size xuống** theo `sizeIncrement` từ `meta`.
+- Size tối thiểu từ ngưỡng notional $10 (`minSize`).
+- Nếu size < min → **reject lệnh** (`MIN_SIZE_EXCEEDS_BUDGET`).
 
-1. Tính volume từ risk budget và stop distance.
-2. **Làm tròn volume xuống** theo broker step.
-3. **Tính lại risk** với volume đã làm tròn.
-4. Nếu volume tối thiểu khiến risk vượt giới hạn → **reject lệnh**.
+## 3. Cross-margin account (MVP)
 
-## 3. Kill switch
+- `equity = balance + Σ unrealized PnL`.
+- `marginRatio = Σ(notional × MMR) / equity` (MMR mặc định 1%).
+- `liquidation ≈ entry × (1 ∓ (1/leverage − MMR))` — công thức xấp xỉ để hiển thị, không phải nguồn xác minh.
+- MVP **không** tính fee/funding (ghi rõ trong hiển thị và ADR).
+
+## 4. Multi-TP split
+
+- TP1 đóng **50%** size; các TP còn lại chia đều phần còn lại; TP duy nhất đóng 100%.
+- SL đóng **toàn bộ** phần còn lại.
+- Mỗi lần đóng ghi realized PnL vào ledger (`virtual_transactions`).
+
+## 5. Kill switch
 
 Hai chế độ:
 
 | Chế độ | Ý nghĩa |
 |---|---|
-| `STOP NEW TRADES` | Chặn lệnh mới |
-| `STOP ALL AUTOMATED MUTATIONS` | Chặn mọi thay đổi vị thế tự động |
+| `STOP NEW TRADES` | Chặn mở mới |
+| `STOP ALL AUTOMATED MUTATIONS` | Chặn mọi mutation tự động (kể cả TP/SL worker bỏ qua chu kỳ) |
 
 ### Quy tắc
 
 - Kill switch **không tự động đóng** các vị thế hiện có.
-- Kill switch **không được xóa** trạng thái command UNKNOWN.
 - Kill switch được bật/tắt bởi người có quyền (xem open-decisions) và phải ghi audit log.
-- **Không tự bật live trading** sau deploy/restart — mặc định trading disabled.
 
-## 4. Liên kết tài liệu
+## 6. Liên kết tài liệu
 
-- Kiểm tra trước khi execute: [03-nghiep-vu/manual-approval.md](../03-nghiep-vu/manual-approval.md)
-- Vòng đời command: [02-du-lieu/state-machines.md](../02-du-lieu/state-machines.md)
+- Kiểm tra trước khi mở: [03-nghiep-vu/manual-approval.md](../03-nghiep-vu/manual-approval.md)
+- Vòng đời vị thế: [02-du-lieu/state-machines.md](../02-du-lieu/state-machines.md)
 - Kill switch thiết kế: [ADR-0010](../adr/ADR-0010-kill-switch.md)
 - API kill switch: [06-api/operations-api.md](../06-api/operations-api.md)

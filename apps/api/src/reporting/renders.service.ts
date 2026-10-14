@@ -22,9 +22,8 @@ export type RenderJobStatus =
   | "FINAL_FAILURE";
 
 export interface RenderRequest {
-  accountId: string;
-  positionId: string;
-  executionId?: string;
+  virtualPositionId: string;
+  markPrice?: number;
 }
 
 function mapJobStatus(state: string): RenderJobStatus {
@@ -49,7 +48,8 @@ export class RendersService {
   }
 
   artifactsDir(): string {
-    return process.env.ARTIFACTS_DIR ?? "./artifacts";
+    const dir = (process.env.ARTIFACTS_DIR ?? "").trim();
+    return dir.length > 0 ? dir : "./artifacts";
   }
 
   async requestRender(request: RenderRequest, actor: string) {
@@ -63,7 +63,7 @@ export class RendersService {
       });
       await this.audit.record(actor, "render.requested", {
         renderId: job.id,
-        positionId: request.positionId,
+        positionId: request.virtualPositionId,
       });
       return { renderId: job.id, status: "PENDING" as RenderJobStatus };
     } finally {
@@ -103,8 +103,7 @@ export class RendersService {
     renderId: string;
     snapshotId: string;
     accountId: string;
-    positionId: string;
-    executionId: string | null;
+    virtualPositionId: string | null;
     png: Buffer;
     contentHash: string;
     width: number;
@@ -122,8 +121,7 @@ export class RendersService {
           renderId: input.renderId,
           snapshotId: input.snapshotId,
           accountId: input.accountId,
-          positionId: input.positionId,
-          executionId: input.executionId,
+          virtualPositionId: input.virtualPositionId,
           artifactPath: path,
           contentHash: input.contentHash,
           width: input.width,

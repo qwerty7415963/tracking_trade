@@ -16,7 +16,7 @@ describe("parseSignal", () => {
     const parsed = parseSignal({ ...base, text: FULL });
     expect(parsed.eventType).toBe("NEW");
     expect(parsed.direction).toBe("LONG");
-    expect(parsed.instrument).toBe("XAUUSD.a");
+    expect(parsed.instrument).toBe("XAU");
     expect(parsed.orderType).toBe("LIMIT");
     expect(parsed.entry).toBe(2345.67);
     expect(parsed.stopLoss).toBe(2340);
@@ -27,7 +27,7 @@ describe("parseSignal", () => {
 
   it("maps GOLD via explicit map, never fuzzy", () => {
     const parsed = parseSignal({ ...base, text: "Short GOLD\nEntry: 100\nSL: 101\nTP: 99" });
-    expect(parsed.instrument).toBe("XAUUSD.a");
+    expect(parsed.instrument).toBe("XAU");
     expect(parsed.direction).toBe("SHORT");
   });
 

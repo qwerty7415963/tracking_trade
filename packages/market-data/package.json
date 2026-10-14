@@ -1,5 +1,5 @@
 {
-    "name":  "@tracking-auto/mt5-bridge-contract",
+    "name":  "@tracking-auto/market-data",
     "version":  "0.1.0",
     "private":  true,
     "main":  "dist/index.js",

@@ -4,7 +4,6 @@ import Redis from "ioredis";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../database/prisma.service";
-import { BrokerStateService } from "../bridge/broker-state.service";
 import { REDIS_CLIENT } from "../queue/redis.provider";
 import {
   FloatingPnLCardRenderer,
@@ -80,9 +79,13 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
-export interface PublishRequest {
-  executionId: string;
-  destinationChatId: string;
+export type CardStatus = "filled" | "tp" | "sl" | "close";
+
+export interface PositionPublishRequest {
+  positionId: string;
+  status: CardStatus;
+  markPrice: number;
+  destinationChatId?: string;
   replyToMessageId?: string;
 }
 
@@ -120,12 +123,21 @@ function decimals(value: number): number {
   return dot < 0 ? 0 : text.length - dot - 1;
 }
 
+function asNumber(value: unknown): number {
+  return value instanceof Object && "toNumber" in value
+    ? (value as { toNumber(): number }).toNumber()
+    : Number(value);
+}
+
+function displayBase(coin: string): string {
+  return coin.includes(":") ? coin.split(":").slice(-1)[0] : coin;
+}
+
 @Injectable()
 export class PublicationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    private readonly brokerState: BrokerStateService,
     @Inject(CARD_RENDERER) private readonly renderer: FloatingPnLCardRenderer,
     @Inject(TELEGRAM_SENDER) private readonly sender: TelegramSender,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -133,19 +145,33 @@ export class PublicationsService {
     @Inject(RendersService) private readonly renders: RendersService,
   ) {}
 
-  async requestPublish(request: PublishRequest, actor: string) {
+  async requestPositionPublish(
+    positionId: string,
+    status: CardStatus,
+    opts: { markPrice: number; destinationChatId?: string; replyToMessageId?: string },
+    actor: string,
+  ) {
+    const destination = (opts.destinationChatId ?? this.config.reportDestinationChatId ?? "").trim();
+    if (!destination) {
+      throw new Error("PUBLICATION_VALIDATION_FAILED: no destination chat configured");
+    }
+    let replyTo = opts.replyToMessageId;
+    if (!replyTo) {
+      const original = await this.prisma.telegramPublication.findFirst({
+        where: { virtualPositionId: positionId, publicationStatus: "PUBLISHED" },
+        orderBy: { publishedAt: "asc" },
+      });
+      replyTo = original?.telegramMessageId ?? undefined;
+    }
     const queue = new Queue(PUBLISH_QUEUE_NAME, { connection: this.redis });
     try {
       const publication = await this.prisma.telegramPublication.create({
-        data: { executionId: request.executionId, publicationStatus: "PENDING" },
+        data: { virtualPositionId: positionId, publicationStatus: "PENDING" },
       });
-      const job = await queue.add("publish", { ...request, publicationId: publication.id },
-        {
-          attempts: 5,
-          backoff: { type: "exponential", delay: 5000 },
-          removeOnComplete: 100,
-          removeOnFail: 200,
-        },
+      const job = await queue.add(
+        "publish-position",
+        { ...opts, positionId, status, publicationId: publication.id, destinationChatId: destination, replyToMessageId: replyTo },
+        { attempts: 5, backoff: { type: "exponential", delay: 5000 }, removeOnComplete: 100, removeOnFail: 200 },
       );
       await this.audit.record(actor, "publication.requested", {
         publicationId: publication.id,
@@ -163,83 +189,63 @@ export class PublicationsService {
     return publication;
   }
 
-  /** Build a verified snapshot and render the card. Read-only for trading. */
-  async renderExecutionCard(executionId: string, snapshotId: string) {
-    const execution = await this.prisma.execution.findUnique({
-      where: { id: executionId },
+  /** Render a card for a virtual position at an explicit mark. No sending. */
+  async renderPositionCard(positionId: string, markPrice: number, volumeOverride?: number) {
+    const position = await this.prisma.virtualPosition.findUnique({
+      where: { id: positionId },
+      include: {
+        signal: { include: { versions: { orderBy: { versionNumber: "desc" }, take: 1 }, source: true } },
+      },
     });
-    if (!execution) throw new NotFoundException(`execution ${executionId} not found`);
-    const command = await this.prisma.executionCommand.findUnique({
-      where: { id: execution.executionCommandId },
-    });
-    if (!command) throw new NotFoundException("execution command not found");
-
-    const signal = command.signalId
-      ? await this.prisma.signal.findUnique({
-          where: { id: command.signalId },
-          include: {
-            versions: { orderBy: { versionNumber: "desc" }, take: 1 },
-            source: true,
-          },
-        })
-      : null;
-    const version = signal?.versions[0];
+    if (!position) throw new NotFoundException(`position ${positionId} not found`);
+    if (!Number.isFinite(markPrice)) throw new ConflictException("INVALID markPrice: refusing to guess");
+    const version = position.signal?.versions[0];
     const sourceMessage = version
       ? await this.prisma.sourceMessage.findFirst({
           where: {
-            sourceId: signal?.sourceId,
+            sourceId: position.signal?.sourceId,
             externalMessageId: (
               version.normalizedPayloadJson as { source_message_id?: string } | null
             )?.source_message_id,
           },
         })
       : null;
-
-    const accountId = command.accountId || this.config.mt5AccountId;
-    const positions = await this.brokerState.positions(accountId);
-    const position = positions.find((p) => p.positionId === execution.brokerPositionId);
-    if (!position) throw new ConflictException("POSITION_NOT_OPEN: nothing to render");
-    if (position.profit === null || position.profit === undefined) {
-      throw new ConflictException("MISSING_REQUIRED_FIELD: broker did not provide P&L");
-    }
-    if (position.currentPrice === null || position.currentPrice === undefined) {
-      throw new ConflictException("MISSING_REQUIRED_FIELD: broker did not provide quote");
-    }
-    const entry = execution.fillPrice ? Number(execution.fillPrice) : Number(version?.entry ?? NaN);
-    const priceDigits = decimals(Number.isFinite(entry) ? entry : position.openPrice);
+    const volume = volumeOverride ?? asNumber(position.remainingSize);
+    const entry = asNumber(position.entryPrice);
+    const floating =
+      (position.direction === "LONG" ? 1 : -1) * (markPrice - entry) * volume;
     const snapshot: PositionSnapshot = {
-      accountId,
-      positionId: position.positionId,
-      executionId: execution.id,
-      symbol: position.symbol,
-      displaySymbol: position.symbol.replace(/\.a$/, ""),
+      accountId: position.accountId,
+      positionId: position.id,
+      executionId: null,
+      symbol: position.coin,
+      displaySymbol: displayBase(position.coin),
       direction: position.direction === "SHORT" ? "SELL" : "BUY",
-      volume: position.volume,
-      entryPrice: Number.isFinite(entry) ? entry : position.openPrice,
-      currentPrice: position.currentPrice,
-      floatingProfit: position.profit,
-      profitCurrency: "USD",
+      volume,
+      entryPrice: entry,
+      currentPrice: markPrice,
+      floatingProfit: floating,
+      profitCurrency: "USDC",
       brokerSnapshotAt: new Date().toISOString(),
-      snapshotId,
-      status: "OPEN",
-      priceDigits,
-      volumeDigits: decimals(position.volume),
+      snapshotId: `snap_${position.id}_${Date.now()}`,
+      status: volume > 0 ? "OPEN" : "CLOSED",
+      priceDigits: decimals(entry),
+      volumeDigits: decimals(volume),
     };
-
     const rendered = await this.renderer.render(snapshot);
     if (!rendered.ok) throw new ConflictException(`render failed: ${rendered.code}`);
-    return { snapshot, artifact: rendered.artifact, execution, command, signal, version, sourceMessage };
+    return { snapshot, artifact: rendered.artifact, position, signal: position.signal, version, sourceMessage };
   }
 
-  /** Render + send inline. Called by the worker; never touches execution state. */
-  async publishNow(
+  /** Render + send inline. Called by the worker; never touches trading state. */
+  async publishPositionCardNow(
     publicationId: string,
-    request: PublishRequest,
+    request: PositionPublishRequest & { destinationChatId: string },
     actor: string,
   ) {
-    let card: Awaited<ReturnType<PublicationsService["renderExecutionCard"]>>;
+    let card: Awaited<ReturnType<PublicationsService["renderPositionCard"]>>;
     try {
-      card = await this.renderExecutionCard(request.executionId, `snap_${publicationId}`);
+      card = await this.renderPositionCard(request.positionId, request.markPrice);
     } catch (err) {
       const code = err instanceof Error ? err.message.split(":")[0] : "UNKNOWN";
       await this.prisma.telegramPublication.update({
@@ -248,13 +254,12 @@ export class PublicationsService {
       });
       throw err;
     }
-    const { artifact, execution, signal, version, sourceMessage, snapshot } = card;
+    const { artifact, position, signal, version, sourceMessage, snapshot } = card;
     await this.renders.saveArtifact({
       renderId: `pub_${publicationId}`,
       snapshotId: snapshot.snapshotId,
       accountId: snapshot.accountId,
-      positionId: snapshot.positionId,
-      executionId: snapshot.executionId,
+      virtualPositionId: position.id,
       png: artifact.png,
       contentHash: artifact.contentHash,
       width: artifact.width,
@@ -262,13 +267,16 @@ export class PublicationsService {
       templateVersion: artifact.templateVersion,
     });
 
+    const tps: number[] = Array.isArray(version?.takeProfits)
+      ? (version.takeProfits as number[])
+      : [];
     const caption = buildOpenCaption({
-      direction: version?.direction === "SHORT" ? "SHORT" : "LONG",
+      direction: position.direction === "SHORT" ? "SHORT" : "LONG",
       instrument: snapshot.displaySymbol,
-      status: "filled",
+      status: request.status,
       entry: String(snapshot.entryPrice),
-      stopLoss: execution.actualSl ? String(Number(execution.actualSl)) : "",
-      takeProfit: execution.actualTp ? String(Number(execution.actualTp)) : "",
+      stopLoss: position.stopLoss === null ? "" : String(asNumber(position.stopLoss)),
+      takeProfit: tps.length > 0 ? String(tps[tps.length - 1]) : "",
       sourceDisplayName: signal?.source.displayName ?? "unknown source",
       sourceUrl: sourceMessage?.sourceUrl ?? null,
     });
@@ -313,7 +321,6 @@ export class PublicationsService {
     });
     return updated;
   }
-
 }
 
 export function createDefaultRenderer(): FloatingPnLCardRenderer {

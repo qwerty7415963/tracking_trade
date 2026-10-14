@@ -1,0 +1,113 @@
+import { ApprovalFlowService } from "./approval-flow.service";
+
+function flow(overrides: Record<string, unknown> = {}) {
+  return new ApprovalFlowService(
+    (overrides.prisma ?? {}) as never,
+    (overrides.audit ?? { record: jest.fn() }) as never,
+    (overrides.signals ?? {}) as never,
+    (overrides.trading ?? {}) as never,
+    (overrides.accounts ?? {}) as never,
+    (overrides.publications ?? {}) as never,
+  );
+}
+
+describe("ApprovalFlowService.approveSignal", () => {
+  it("approves, opens, and publishes when destination exists", async () => {
+    const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
+    const trading = { openApproved: jest.fn(async () => ({ position: { id: "pos1" }, created: true })) };
+    const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
+    const publications = { requestPositionPublish: jest.fn(async () => ({})) };
+    const svc = flow({ signals, trading, accounts, publications });
+    const out = await svc.approveSignal(
+      "s1",
+      { signalVersionId: "v1" },
+      "alice",
+      "acc1",
+      "@chan",
+    );
+    expect(out.openError).toBeNull();
+    expect((out.position as { id: string }).id).toBe("pos1");
+    expect(out.published).toBe(true);
+    expect(publications.requestPositionPublish).toHaveBeenCalledWith(
+      "pos1",
+      "filled",
+      expect.objectContaining({ destinationChatId: "@chan" }),
+      "alice",
+    );
+  });
+
+  it("keeps approval but reports open failure without throwing", async () => {
+    const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
+    const trading = {
+      openApproved: jest.fn(async () => {
+        throw new Error("NO_QUOTE for ETH");
+      }),
+    };
+    const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
+    const svc = flow({ signals, trading, accounts, publications: {} });
+    const out = await svc.approveSignal("s1", { signalVersionId: "v1" }, "alice", "acc1", "@chan");
+    expect(out.position).toBeNull();
+    expect(out.openError).toContain("NO_QUOTE");
+    expect(out.published).toBe(false);
+  });
+
+  it("skips publish with audit when no destination configured", async () => {
+    const audit = { record: jest.fn(async () => ({})) };
+    const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
+    const trading = { openApproved: jest.fn(async () => ({ position: { id: "pos1" }, created: true })) };
+    const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
+    const svc = flow({ signals, trading, accounts, publications: {}, audit });
+    const out = await svc.approveSignal("s1", { signalVersionId: "v1" }, "alice", "acc1");
+    expect(out.published).toBe(false);
+    expect(audit.record).toHaveBeenCalledWith(
+      "alice",
+      "publication.skipped",
+      expect.objectContaining({ positionId: "pos1" }),
+    );
+  });
+});
+
+describe("ApprovalFlowService.processNewSignal", () => {
+  it("auto-opens clean signals in AUTO mode as system", async () => {
+    const prisma = {
+      signal: {
+        findUnique: jest.fn(async () => ({
+          id: "s1",
+          status: "PENDING_APPROVAL",
+          versions: [{ id: "v1" }],
+        })),
+      },
+    };
+    const accounts = { defaultAccount: jest.fn(async () => ({ id: "acc1", mode: "AUTO" })) };
+    const flowSvc = flow({ prisma, accounts });
+    const approveSignal = jest.fn(async () => ({ position: { id: "pos1" } }));
+    (flowSvc as unknown as { approveSignal: unknown }).approveSignal = approveSignal;
+    const out = await flowSvc.processNewSignal("s1");
+    expect(out).toEqual({ action: "opened", positionId: "pos1" });
+    expect(approveSignal).toHaveBeenCalledWith("s1", { signalVersionId: "v1" }, "system:auto", "acc1");
+  });
+
+  it("waits in APPROVE mode", async () => {
+    const prisma = {
+      signal: {
+        findUnique: jest.fn(async () => ({
+          id: "s1",
+          status: "PENDING_APPROVAL",
+          versions: [{ id: "v1" }],
+        })),
+      },
+    };
+    const accounts = { defaultAccount: jest.fn(async () => ({ id: "acc1", mode: "APPROVE" })) };
+    const svc = flow({ prisma, accounts });
+    await expect(svc.processNewSignal("s1")).resolves.toEqual({ action: "wait" });
+  });
+
+  it("skips review/non-clean signals without throwing", async () => {
+    const prisma = {
+      signal: { findUnique: jest.fn(async () => ({ id: "s1", status: "NEEDS_REVIEW", versions: [] })) },
+    };
+    const accounts = { defaultAccount: jest.fn(async () => ({ id: "acc1", mode: "AUTO" })) };
+    const svc = flow({ prisma, accounts });
+    await expect(svc.processNewSignal("s1")).resolves.toEqual({ action: "skip", reason: "not-clean" });
+  });
+});

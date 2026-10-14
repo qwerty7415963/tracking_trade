@@ -9,7 +9,7 @@
 - Giá và volume dùng **decimal-safe representation** (không dùng float).
 - Không chỉ dựa vào Redis hoặc in-memory cache để deduplicate.
 - Không lưu secret dạng plaintext trong logs.
-- **Broker là nguồn sự thật** về vị thế thực tế; DB là hệ thống ghi chép nhất quán.
+- **Giá Hyperliquid là nguồn sự thật** cho mark price; DB + ledger là hệ thống ghi chép nhất quán.
 - Xóa nguồn là **soft delete** để giữ lịch sử.
 
 ## 2. Các bảng chính
@@ -164,47 +164,54 @@ Lưu từng phiên bản tín hiệu **bất biến**.
 
 > Approval phải gắn với chính xác `signal_version_id`. Nếu version thay đổi, approval cũ **không còn quyền cho phép execute**.
 
-### 2.9 `execution_commands`
+### 2.9 `virtual_accounts`
+
+Tài khoản giấy (paper) mô phỏng cross-margin Hyperliquid.
 
 | Trường | Ghi chú |
 |---|---|
 | `id` | Khóa chính |
-| `idempotency_key` | Khóa idempotency (unique) |
-| `account_id` | Tài khoản MT5 |
-| `signal_id` | FK tới `signals` |
-| `signal_version_id` | FK tới `signal_versions` |
-| `command_type` | `OPEN` / `MODIFY_SLTP` / `PARTIAL_CLOSE` / `CLOSE_POSITION` / `CLOSE_ALL_TARGET` / `QUERY_STATE` |
-| `payload_json` | Payload lệnh |
-| `status` | Trạng thái vòng đời command |
-| `correlation_id` | ID tương quan |
-| `created_at` | Thời điểm tạo |
-| `expires_at` | Thời điểm hết hạn |
+| `name` | Tên tài khoản |
+| `balance` | Số dư USDC (chỉ đổi khi nạp/rút/chốt lãi-lỗ) |
+| `leverage` | Đòn bẩy mặc định (mặc định 10, 1..50) |
+| `mode` | `APPROVE` (mặc định) \| `AUTO` |
+| `margin_type` | Luôn `CROSS` trong MVP |
+| `created_at` / `updated_at` | Thời điểm |
 
-### 2.10 `executions`
+### 2.10 `virtual_positions`
+
+Vị thế giấy theo dõi giá Hyperliquid.
 
 | Trường | Ghi chú |
 |---|---|
 | `id` | Khóa chính |
-| `execution_command_id` | FK tới `execution_commands` |
-| `broker_order_id` | Order ID từ broker |
-| `broker_deal_id` | Deal ID từ broker |
-| `broker_position_id` | Position ID từ broker |
-| `requested_volume` | Volume yêu cầu |
-| `filled_volume` | Volume khớp |
-| `fill_price` | Giá khớp |
-| `actual_sl` | SL thực tế |
-| `actual_tp` | TP thực tế |
-| `execution_status` | Trạng thái execution |
-| `opened_at` | Thời điểm mở |
-| `closed_at` | Thời điểm đóng |
+| `account_id` | FK tới `virtual_accounts` |
+| `signal_id` / `signal_version_id` | FK tới tín hiệu gốc (traceability) |
+| `coin` | Tên coin Hyperliquid đã resolve (ví dụ `ETH`, `PAXG`) |
+| `direction` | `LONG` \| `SHORT` |
+| `size` | Size mở (đơn vị coin) |
+| `entry_price` | Giá mid lúc mở |
+| `stop_loss` | SL (bắt buộc) |
+| `take_profits` | Mảng TP theo thứ tự |
+| `leverage` | Đòn bẩy lúc mở (snapshot từ account) |
+| `remaining_size` | Size còn mở |
+| `filled_tps` | Các TP đã chạm |
+| `status` | `OPEN` / `TP_HIT` / `SL_HIT` / `CLOSED` / `CANCELLED` |
+| `opened_at` / `closed_at` | Thời điểm |
+| `close_price` | Giá đóng cuối |
+| `realized_pnl` | Lãi-lỗ đã chốt cộng dồn (USDC) |
 
-> **Order ID, deal ID và position ID là các định danh khác nhau, không được gộp làm một.**
+Quy tắc multi-TP: TP1 đóng 50%, các TP còn lại chia đều phần còn lại; TP duy nhất đóng 100%; SL đóng toàn bộ phần còn lại.
 
-### 2.11 `risk_events`
+### 2.11 `virtual_transactions`
 
-Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối.
+Sổ cái (ledger) mọi biến động số dư: `DEPOSIT` / `WITHDRAW` / `REALIZED_PNL`, kèm `reference` và thời điểm. Nguồn duy nhất tính balance history và daily loss.
 
-### 2.12 `telegram_sender_accounts`
+### 2.12 `risk_events`
+
+Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối (cho cả mở lệnh ảo).
+
+### 2.13 `telegram_sender_accounts`
 
 | Trường | Ghi chú |
 |---|---|
@@ -216,7 +223,7 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối.
 | `last_validated_at` | Lần xác thực gần nhất |
 | `last_error` | Lỗi gần nhất |
 
-### 2.13 `telegram_destinations`
+### 2.14 `telegram_destinations`
 
 | Trường | Ghi chú |
 |---|---|
@@ -226,7 +233,7 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối.
 | `channel_name` | Tên kênh |
 | `enabled` | Bật/tắt |
 
-### 2.14 `reporting_templates`
+### 2.15 `reporting_templates`
 
 | Trường | Ghi chú |
 |---|---|
@@ -241,7 +248,7 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối.
 | `created_by` | Người tạo |
 | `updated_by` | Người sửa |
 
-### 2.15 `reporting_routes`
+### 2.16 `reporting_routes`
 
 | Trường | Ghi chú |
 |---|---|
@@ -252,12 +259,12 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối.
 | `enabled` | Bật/tắt |
 | `priority` | Độ ưu tiên |
 
-### 2.16 `telegram_publications`
+### 2.17 `telegram_publications`
 
 | Trường | Ghi chú |
 |---|---|
 | `id` | Khóa chính |
-| `execution_id` | FK tới `executions` |
+| `virtual_position_id` | FK tới `virtual_positions` (nullable, bài báo cáo chung) |
 | `sender_account_id` | Sender |
 | `destination_id` | Destination |
 | `template_id` | Template |
@@ -276,7 +283,7 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối.
 
 > `telegram_publications` là **snapshot** tại thời điểm tạo publication intent — template thay đổi sau đó không làm đổi bài đã xếp hàng.
 
-### 2.17 `render_artifacts`
+### 2.18 `render_artifacts`
 
 Lưu ảnh card P&L gen bằng code (không chụp MT5).
 
@@ -285,9 +292,8 @@ Lưu ảnh card P&L gen bằng code (không chụp MT5).
 | `id` | Khóa chính |
 | `render_id` | ID render duy nhất (unique) |
 | `snapshot_id` | Snapshot vị thế đã dùng |
-| `account_id` | Tài khoản MT5 |
-| `position_id` | Vị thế broker |
-| `execution_id` | Execution nội bộ |
+| `account_id` | ID tài khoản ảo |
+| `virtual_position_id` | FK tới `virtual_positions` |
 | `artifact_path` | Đường dẫn file PNG (local volume) |
 | `content_hash` | SHA-256 của PNG |
 | `width` / `height` | Kích thước (mặc định 1280×180) |
@@ -297,10 +303,9 @@ Lưu ảnh card P&L gen bằng code (không chụp MT5).
 
 Retention 7 ngày (xóa file + row). Idempotency theo `render_id` (cùng snapshot + template).
 
-### 2.18 Các bảng khác
+### 2.19 Các bảng khác
 
 - `audit_logs` — lịch sử mọi thao tác tài chính và quản trị.
-- `bridge_heartbeats` — heartbeat từ MT5 bridge.
 - `outbox_events` — transactional outbox.
 
 ## 3. Data integrity
@@ -310,11 +315,10 @@ Retention 7 ngày (xóa file + row). Idempotency theo `render_id` (cùng snapsho
 - Giá/volume dùng decimal-safe representation.
 - Deduplicate không dựa vào Redis/in-memory.
 - Không lưu secret trong logs.
-- Broker là nguồn sự thật về vị thế.
+- Giá Hyperliquid là nguồn sự thật cho mark price; thiếu quote thì từ chối, không đoán.
 
 ## 4. Liên kết tài liệu
 
-- Vòng đời trạng thái: [state-machines.md](state-machines.md)
-- Vòng đời command & execution: [04-risk-execution/mt5-bridge.md](../04-risk-execution/mt5-bridge.md)
+- Vòng đời trạng thái (signal/update/vị thế ảo/publication): [state-machines.md](state-machines.md)
 - Outbox: [ADR-0005](../adr/ADR-0005-transactional-outbox.md)
 - Idempotency: [04-risk-execution/retry-idempotency.md](../04-risk-execution/retry-idempotency.md)

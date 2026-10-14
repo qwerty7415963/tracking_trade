@@ -6,11 +6,13 @@ export interface AppConfig {
   tradingEnabled: boolean;
   databaseUrl: string;
   redisUrl: string;
-  mt5BridgeUrl: string;
-  mt5BridgeApiKey: string;
-  mt5AccountId: string;
+  hyperliquidApiUrl: string;
+  riskBudgetUsdc: number;
+  defaultAccountId: string;
+  reportDestinationChatId: string;
+  reviewChatId: string;
+  marketPollMs: number;
   signalMaxAgeHours: number;
-  bridgeTimeoutMs: number;
 }
 
 function parseUsernames(raw: string | undefined): string[] {
@@ -21,6 +23,12 @@ function parseUsernames(raw: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
+function parseNumber(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     operatorUsernames: parseUsernames(env.OPERATOR_USERNAMES),
@@ -28,10 +36,12 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     tradingEnabled: false,
     databaseUrl: env.DATABASE_URL ?? "postgresql://tracking:tracking@localhost:5434/tracking",
     redisUrl: env.REDIS_URL ?? "redis://localhost:6379",
-    mt5BridgeUrl: env.MT5_BRIDGE_URL ?? "http://localhost:8080",
-    mt5BridgeApiKey: env.MT5_BRIDGE_API_KEY ?? "",
-    mt5AccountId: env.MT5_ACCOUNT_ID ?? "",
+    hyperliquidApiUrl: env.HYPERLIQUID_API_URL ?? "https://api.hyperliquid.xyz",
+    riskBudgetUsdc: parseNumber(env.RISK_BUDGET_USDC, 50),
+    defaultAccountId: env.VIRTUAL_DEFAULT_ACCOUNT_ID ?? "",
+    reportDestinationChatId: env.REPORT_DESTINATION_CHAT_ID ?? "",
+    reviewChatId: env.REVIEW_CHAT_ID ?? "",
+    marketPollMs: parseNumber(env.MARKET_POLL_MS, 5000),
     signalMaxAgeHours: Number(env.SIGNAL_MAX_AGE_HOURS ?? 24),
-    bridgeTimeoutMs: Number(env.BRIDGE_TIMEOUT_MS ?? 15000),
   };
 }

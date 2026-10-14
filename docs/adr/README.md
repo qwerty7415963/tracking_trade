@@ -14,17 +14,18 @@ Lưu trữ các quyết định kiến trúc quan trọng của dự án. Mỗi 
 | [0004](ADR-0004-signal-versioning.md) | Signal versioning bất biến cho approval | Accepted |
 | [0005](ADR-0005-transactional-outbox.md) | Transactional outbox | Accepted |
 | [0006](ADR-0006-at-least-once-va-idempotency.md) | At-least-once + idempotency (không exactly-once) | Accepted |
-| [0007](ADR-0007-mt5-bridge-outbound-authenticated.md) | MT5 bridge MQL5 EA, outbound authenticated | Accepted |
+| [0007](ADR-0007-mt5-bridge-outbound-authenticated.md) | MT5 bridge MQL5 EA, outbound authenticated | Superseded by 0018 |
 | [0008](ADR-0008-x-connector-playwright.md) | X connector bằng Playwright, tách biệt + circuit breaker | Accepted |
-| [0009](ADR-0009-broker-source-of-truth-va-reconciliation.md) | Broker là source of truth + reconciliation | Accepted |
+| [0009](ADR-0009-broker-source-of-truth-va-reconciliation.md) | Broker là source of truth + reconciliation | Superseded by 0018 |
 | [0010](ADR-0010-kill-switch.md) | Kill switch 2 chế độ | Accepted |
-| [0011](ADR-0011-live-trading-disabled-mac-dinh.md) | Live trading disabled mặc định sau restart/deploy | Accepted |
+| [0011](ADR-0011-live-trading-disabled-mac-dinh.md) | Live trading disabled mặc định sau restart/deploy | Superseded by 0018 (paper-only) |
 | [0012](ADR-0012-publication-snapshot.md) | Publication snapshot (template/version cố định khi queue) | Accepted |
 | [0013](ADR-0013-telegram-collection-user-session.md) | Telegram collection dùng USER_SESSION, reporting ưu tiên BOT | Accepted |
 | [0014](ADR-0014-telegram-mtproto-teleproto.md) | Telegram MTProto client dùng teleproto (pin version + quy trình cập nhật) | Accepted |
 | [0015](ADR-0015-anh-bao-cao-gen-bang-code.md) | Ảnh báo cáo gen bằng code, không chụp MT5 | Accepted |
-| [0016](ADR-0016-mt5-wine-version-pin.md) | MT5 trên Linux Docker + Wine, ghim version | Accepted |
+| [0016](ADR-0016-mt5-wine-version-pin.md) | MT5 trên Linux Docker + Wine, ghim version | Superseded by 0018 |
 | [0017](ADR-0017-deploy-actions-ssh.md) | Deploy qua Actions SSH, build trên VPS | Accepted |
+| [0018](ADR-0018-paper-trading-hyperliquid.md) | Paper trading trên giá Hyperliquid, bỏ MT5 | Accepted |
 
 ## 3. Template chuẩn
 

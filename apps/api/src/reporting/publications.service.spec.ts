@@ -32,54 +32,64 @@ describe("buildOpenCaption (template #11)", () => {
 
 function service(overrides: Record<string, unknown> = {}) {
   const prisma = {
-    execution: { findUnique: jest.fn() },
-    executionCommand: { findUnique: jest.fn() },
+    virtualPosition: { findUnique: jest.fn() },
     signal: { findUnique: jest.fn() },
     sourceMessage: { findFirst: jest.fn() },
-    telegramPublication: { update: jest.fn(async (args: unknown) => args) },
+    telegramPublication: {
+      update: jest.fn(async (args: unknown) => args),
+      create: jest.fn(async (args: unknown) => ({ id: "pub1" })),
+      findFirst: jest.fn(async () => null),
+    },
     ...(overrides.prisma as Record<string, unknown> | undefined),
   };
   return new PublicationsService(
     prisma as never,
     { record: jest.fn() } as never,
-    (overrides.brokerState ?? {}) as never,
     (overrides.renderer ?? {}) as never,
     (overrides.sender ?? {}) as never,
-    (overrides.config ?? { mt5AccountId: "acc1" }) as never,
+    (overrides.config ?? {}) as never,
     (overrides.redis ?? {}) as never,
     (overrides.renders ?? { saveArtifact: jest.fn(async () => ({})) }) as never,
   );
 }
 
-const EXECUTION = { id: "e1", executionCommandId: "c1", brokerPositionId: "p1", fillPrice: 100, actualSl: 99, actualTp: 102 };
-const COMMAND = { id: "c1", accountId: "acc1", signalId: "s1" };
+const POSITION = {
+  id: "pos1",
+  accountId: "acc1",
+  signalId: "s1",
+  coin: "ETH",
+  direction: "LONG",
+  size: 0.5,
+  entryPrice: 2500,
+  stopLoss: 2400,
+  takeProfits: [2600, 2700],
+  leverage: 10,
+  remainingSize: 0.5,
+  filledTps: [],
+  status: "OPEN",
+  realizedPnl: 0,
+  signal: {
+    sourceId: "src1",
+    versions: [{ direction: "LONG", normalizedPayloadJson: { source_message_id: "m1" } }],
+    source: { displayName: "Chan" },
+  },
+};
 const SIGNAL = {
   sourceId: "src1",
-  versions: [{ direction: "LONG", entry: 100, normalizedPayloadJson: { source_message_id: "m1" } }],
+  versions: [{ direction: "LONG", normalizedPayloadJson: { source_message_id: "m1" } }],
   source: { displayName: "Chan" },
 };
-const POSITION = {
-  positionId: "p1",
-  orderId: "o1",
-  symbol: "XAUUSD.a",
-  direction: "LONG" as const,
-  volume: 0.05,
-  openPrice: 100,
-  stopLoss: 99,
-  takeProfit: 102,
-  profit: 5,
-  currentPrice: 101,
-};
 
-describe("PublicationsService.publishNow", () => {
+describe("PublicationsService.publishPositionCardNow", () => {
   function okSetup() {
     const prisma = {
-      execution: { findUnique: jest.fn(async () => EXECUTION) },
-      executionCommand: { findUnique: jest.fn(async () => COMMAND) },
+      virtualPosition: { findUnique: jest.fn(async () => POSITION) },
       signal: { findUnique: jest.fn(async () => SIGNAL) },
       sourceMessage: { findFirst: jest.fn(async () => ({ sourceUrl: "https://t.me/c/1" })) },
       telegramPublication: {
         update: jest.fn(async (args: { data: Record<string, unknown> }) => ({ id: "pub1", ...args.data })),
+        create: jest.fn(async () => ({ id: "pub1" })),
+        findFirst: jest.fn(async () => null),
       },
     };
     const renderer = {
@@ -91,15 +101,16 @@ describe("PublicationsService.publishNow", () => {
     const sender = {
       sendPhoto: jest.fn(async () => ({ ok: true, telegramMessageId: "777", unknown: false })),
     };
-    const brokerState = { positions: jest.fn(async () => [POSITION]), symbolInfo: jest.fn(), account: jest.fn(), isAlive: jest.fn() };
-    return { prisma, renderer, sender, brokerState };
+    return { prisma, renderer, sender };
   }
 
   it("publishes photo with caption and records message id", async () => {
     const setup = okSetup();
     const svc = service(setup);
-    const result = (await svc.publishNow("pub1", {
-      executionId: "e1",
+    const result = (await svc.publishPositionCardNow("pub1", {
+      positionId: "pos1",
+      status: "filled",
+      markPrice: 2550,
       destinationChatId: "@chan",
       replyToMessageId: "111",
     }, "alice")) as { publicationStatus: string; telegramMessageId: string };
@@ -107,16 +118,21 @@ describe("PublicationsService.publishNow", () => {
     expect(result.telegramMessageId).toBe("777");
     const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
     expect(sendArgs.replyToMessageId).toBe("111");
-    expect(String(sendArgs.caption)).toContain("Long XAUUSD");
+    expect(String(sendArgs.caption)).toContain("Long ETH");
+    expect(String(sendArgs.caption)).toContain("filled");
   });
 
-  it("refuses closed positions without sending", async () => {
+  it("refuses invalid mark price without sending", async () => {
     const setup = okSetup();
-    setup.brokerState.positions = jest.fn(async () => []);
     const svc = service(setup);
     await expect(
-      svc.publishNow("pub1", { executionId: "e1", destinationChatId: "@chan" }, "alice"),
-    ).rejects.toThrow(/POSITION_NOT_OPEN/);
+      svc.publishPositionCardNow("pub1", {
+        positionId: "pos1",
+        status: "filled",
+        markPrice: NaN,
+        destinationChatId: "@chan",
+      }, "alice"),
+    ).rejects.toThrow(/INVALID/);
     expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
   });
 
@@ -128,10 +144,22 @@ describe("PublicationsService.publishNow", () => {
       unknown: true,
     })) as never;
     const svc = service(setup);
-    const result = (await svc.publishNow("pub1", { executionId: "e1", destinationChatId: "@chan" }, "alice")) as {
+    const result = (await svc.publishPositionCardNow("pub1", {
+      positionId: "pos1",
+      status: "tp",
+      markPrice: 2600,
+      destinationChatId: "@chan",
+    }, "alice")) as {
       status: string;
     };
     expect(result.status).toBe("UNKNOWN");
   });
-});
 
+  it("requires a destination chat", async () => {
+    const setup = okSetup();
+    const svc = service({ ...setup, config: {} });
+    await expect(
+      svc.requestPositionPublish("pos1", "filled", { markPrice: 2550 }, "alice"),
+    ).rejects.toThrow(/no destination chat/);
+  });
+});

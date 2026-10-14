@@ -1,6 +1,6 @@
 import { Module } from "@nestjs/common";
 import { AppConfigModule } from "../config/config.module";
-import { ExecutionModule } from "../execution/execution.module";
+import { MarketDataModule } from "../market-data/market-data.module";
 import { QueueModule } from "../queue/queue.module";
 import { BotApiSender, CARD_RENDERER, TELEGRAM_SENDER, createDefaultRenderer } from "./publications.service";
 import {
@@ -12,7 +12,7 @@ import { RendersService } from "./renders.service";
 import { PublicationsService } from "./publications.service";
 
 @Module({
-  imports: [AppConfigModule, ExecutionModule, QueueModule],
+  imports: [AppConfigModule, MarketDataModule, QueueModule],
   controllers: [PositionRendersController, RendersController, PublicationsController],
   providers: [
     RendersService,

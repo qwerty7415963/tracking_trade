@@ -32,7 +32,7 @@ Parser chuyển nội dung thô thành **normalized signal** với các trườn
 
 - **Không tự điền các trường còn thiếu.**
 - Mapping symbol phải rõ ràng, ví dụ: `GOLD → XAUUSD.a`.
-- **Không fuzzy-match symbol broker.**
+- **Không fuzzy-match symbol sàn** (chỉ map data-driven từ universe Hyperliquid).
 
 ## 2. Matching update với tín hiệu gốc
 
@@ -67,7 +67,7 @@ Thứ tự ưu tiên khi khớp update với tín hiệu gốc:
 ### Quy tắc chung
 
 - Mọi update tự động phải qua **risk checks** và **action allowlist**.
-- Update mơ hồ / không xác thực → không tác động MT5, đưa review.
+- Update mơ hồ / không xác thực → không mở/đóng vị thế, đưa review (hỏi operator).
 - Update đồng thời phải được **serialize theo signal/position**.
 
 ## 4. Liên kết tài liệu

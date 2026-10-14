@@ -12,7 +12,7 @@ COPY packages/card-renderer/package.json packages/card-renderer/package.json
 COPY packages/connectors/package.json packages/connectors/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/domain/package.json packages/domain/package.json
-COPY packages/mt5-bridge-contract/package.json packages/mt5-bridge-contract/package.json
+COPY packages/market-data/package.json packages/market-data/package.json
 COPY packages/reporting/package.json packages/reporting/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY prisma ./prisma
@@ -35,8 +35,8 @@ COPY --from=builder /app/packages/database/dist ./packages/database/dist
 COPY --from=builder /app/packages/database/package.json ./packages/database/package.json
 COPY --from=builder /app/packages/domain/dist ./packages/domain/dist
 COPY --from=builder /app/packages/domain/package.json ./packages/domain/package.json
-COPY --from=builder /app/packages/mt5-bridge-contract/dist ./packages/mt5-bridge-contract/dist
-COPY --from=builder /app/packages/mt5-bridge-contract/package.json ./packages/mt5-bridge-contract/package.json
+COPY --from=builder /app/packages/market-data/dist ./packages/market-data/dist
+COPY --from=builder /app/packages/market-data/package.json ./packages/market-data/package.json
 COPY --from=builder /app/packages/reporting/dist ./packages/reporting/dist
 COPY --from=builder /app/packages/reporting/package.json ./packages/reporting/package.json
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
@@ -53,3 +53,4 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/home/app/.cache/ms-playwright
 ENV ARTIFACTS_DIR=/data/artifacts
 USER app
 CMD ["node", "dist/apps/screenshot-worker/src/main.js"]
+

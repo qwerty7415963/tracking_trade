@@ -14,12 +14,9 @@ packages/
   domain/
   database/
   connectors/
-  mt5-bridge-contract/
+  market-data/
   reporting/
   shared/
-
-mt5/
-  bridge-ea/
 
 deploy/
   docker-compose.yml
@@ -83,9 +80,10 @@ Mục tiêu: chống supply-chain attack (package bị chiếm quyền, chèn m�
 - File mẫu **`.env.example` nằm ở thư mục gốc dự án**; copy thành `.env` rồi điền giá trị thật.
 - **Không commit `.env`** (đưa vào `.gitignore` khi scaffold repo); file `.env` trên VPS đặt quyền `600`.
 - Không điền secret thật vào `.env.example`; không bake secret vào Docker image — truyền qua environment khi chạy container.
-- `MT5_SERVER` mặc định `vantagemarkets-demo` (broker Vantage Markets, môi trường demo).
-- `OPERATOR_USERNAMES`: danh sách username duy nhất có quyền approve/kill switch (comma-separated).
-- Xoay (rotate) secret định kỳ: Telegram session, bot token, MT5 password.
+- `HYPERLIQUID_API_URL` mặc định `https://api.hyperliquid.xyz` (public, không key).
+- `RISK_BUDGET_USDC` mặc định 50 (size tính sao cho SL hit lỗ đúng budget).
+- `OPERATOR_USERNAMES`: danh sách username duy nhất có quyền approve/kill switch/quản trị (comma-separated).
+- Xoay (rotate) secret định kỳ: Telegram session, bot token.
 
 ## 6. Quy tắc production
 
@@ -110,9 +108,8 @@ Mục tiêu: chống supply-chain attack (package bị chiếm quyền, chèn m�
 
 Backup mã hóa offsite về máy operator theo mô hình pull (restic, retention 7 ngày, drill restore hàng tháng). Chi tiết đầy đủ: [backup-restore.md](backup-restore.md).
 
-## 8. Liên kết tài liệu
+## 9. Liên kết tài liệu
 
-- MT5 Docker spike: [mt5-docker-spike.md](mt5-docker-spike.md)
 - Recovery sau restart: [recovery.md](recovery.md)
 - Backup & restore: [backup-restore.md](backup-restore.md)
 - Security: [10-chuan/security-checklist.md](../10-chuan/security-checklist.md)

@@ -4,21 +4,18 @@
 
 ## 1. Quy trình
 
-1. Giữ **execution disabled**.
+1. Hệ thống chỉ giao dịch giấy — không có live trading để bật/tắt.
 2. Kiểm tra **database, Redis và cấu hình**.
-3. Kiểm tra **terminal, account và bridge heartbeat**.
-4. **Reconcile command SENT/UNKNOWN**.
-5. Khôi phục **queue và publication pending**.
-6. Chỉ cho phép giao dịch khi **operator xác nhận các điều kiện an toàn**.
+3. Kiểm tra **market data** (Hyperliquid reachable).
+4. Khôi phục **queue và publication pending**.
+5. Vị thế OPEN/TP_HIT giữ nguyên, tiếp tục theo dõi từ chu kỳ poll tiếp theo.
 
 ## 2. Nguyên tắc
 
-- **Không tự bật live trading** sau restart/deploy.
-- Trạng thái UNKNOWN không được bỏ qua; phải reconcile với broker.
+- Không có trạng thái tiền nào nằm ngoài DB + ledger.
 - Mọi bước recovery phải có audit trail.
 
 ## 3. Liên kết tài liệu
 
-- Reconcile: [04-risk-execution/mt5-bridge.md](../04-risk-execution/mt5-bridge.md)
+- Vòng đời vị thế: [02-du-lieu/state-machines.md](../02-du-lieu/state-machines.md)
 - Kill switch: [04-risk-execution/risk-engine.md](../04-risk-execution/risk-engine.md)
-- ADR: [ADR-0011](../adr/ADR-0011-live-trading-disabled-mac-dinh.md)
