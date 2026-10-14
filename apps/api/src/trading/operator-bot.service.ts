@@ -118,6 +118,10 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
       console.warn("[operator-bot] disabled: TELEGRAM_BOT_TOKEN not set");
       return;
     }
+    if (!this.config.operatorBotEnabled) {
+      console.warn("[operator-bot] disabled: OPERATOR_BOT_ENABLED is not true");
+      return;
+    }
     this.bootedAt = new Date();
     this.running = true;
     void this.sendBootDigest().catch(() => undefined);

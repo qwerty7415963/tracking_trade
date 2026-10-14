@@ -20,6 +20,12 @@ describe("loadAppConfig", () => {
     expect(loadAppConfig({}).operatorChatIds).toEqual([]);
   });
 
+  it("gates the operator bot poller (default off)", () => {
+    expect(loadAppConfig({}).operatorBotEnabled).toBe(false);
+    expect(loadAppConfig({ OPERATOR_BOT_ENABLED: "true" }).operatorBotEnabled).toBe(true);
+    expect(loadAppConfig({ OPERATOR_BOT_ENABLED: "yes" }).operatorBotEnabled).toBe(false);
+  });
+
   it("always boots with trading disabled", () => {
     expect(loadAppConfig({ OPERATOR_USERNAMES: "alice" }).tradingEnabled).toBe(false);
   });

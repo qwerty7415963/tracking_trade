@@ -4,6 +4,7 @@ export const APP_VERSION = "0.1.0";
 export interface AppConfig {
   operatorUsernames: string[];
   operatorChatIds: string[];
+  operatorBotEnabled: boolean;
   tradingEnabled: boolean;
   databaseUrl: string;
   redisUrl: string;
@@ -41,6 +42,8 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     operatorUsernames: parseUsernames(env.OPERATOR_USERNAMES),
     operatorChatIds: parseChatIds(env.OPERATOR_CHAT_IDS),
+    // Single poller only: enable in worker, keep off in api to avoid duplicate DMs.
+    operatorBotEnabled: env.OPERATOR_BOT_ENABLED === "true",
     // ADR-0011: live trading is always disabled by default after boot.
     tradingEnabled: false,
     databaseUrl: env.DATABASE_URL ?? "postgresql://tracking:tracking@localhost:5434/tracking",

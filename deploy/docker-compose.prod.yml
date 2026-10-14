@@ -54,6 +54,8 @@ services:
       DATABASE_URL: postgresql://tracking:tracking@postgres:5432/tracking
       REDIS_URL: redis://redis:6379
       ARTIFACTS_DIR: /data/artifacts
+      # Single operator-bot poller lives here; api keeps it off (no duplicate DMs).
+      OPERATOR_BOT_ENABLED: "true"
     volumes:
       - artifacts:/data/artifacts
     depends_on:
