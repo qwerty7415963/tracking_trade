@@ -92,8 +92,25 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     return process.env.TELEGRAM_BOT_TOKEN ?? "";
   }
 
-  private get reviewChatId(): string {
-    return this.config.reviewChatId;
+  /** DM targets for review/alert notifications (fail-open list, may be empty). */
+  private notifyTargets(): string[] {
+    return this.config.operatorChatIds;
+  }
+
+  /** Fan-out to every operator DM; one blocked user must not break the rest. */
+  private async notifyAll(text: string, replyMarkup?: unknown): Promise<void> {
+    const targets = this.notifyTargets();
+    if (targets.length === 0) {
+      console.warn("[operator-bot] no OPERATOR_CHAT_IDS configured, notification dropped");
+      return;
+    }
+    for (const chatId of targets) {
+      try {
+        await this.send(chatId, text, replyMarkup);
+      } catch {
+        // One failing target must never break the rest.
+      }
+    }
   }
 
   onModuleInit(): void {
@@ -400,7 +417,6 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async sendBootDigest(): Promise<void> {
-    if (!this.reviewChatId) return;
     const [sigs, upds] = await Promise.all([
       this.signals.list("NEEDS_REVIEW"),
       this.updates.reviewQueue(),
@@ -408,14 +424,12 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     for (const s of sigs) this.seen.add(`s:${s.id}`);
     for (const u of upds as Array<{ id: string }>) this.seen.add(`u:${u.id}`);
     if (sigs.length === 0 && upds.length === 0) return;
-    await this.send(
-      this.reviewChatId,
+    await this.notifyAll(
       `Review backlog on boot — signals: ${sigs.length}, updates: ${upds.length}. Use /review.`,
     );
   }
 
   async pollReviews(): Promise<void> {
-    if (!this.reviewChatId) return;
     const [sigs, upds] = await Promise.all([
       this.signals.list("NEEDS_REVIEW"),
       this.updates.reviewQueue(),
@@ -424,8 +438,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
       const key = `s:${s.id}`;
       if (this.seen.has(key)) continue;
       this.seen.add(key);
-      await this.send(
-        this.reviewChatId,
+      await this.notifyAll(
         `REVIEW signal ${s.id}\n${s.instrument} ${s.direction}`,
         this.reviewKeyboard("signal", s.id),
       );
@@ -434,8 +447,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
       const key = `u:${u.id}`;
       if (this.seen.has(key)) continue;
       this.seen.add(key);
-      await this.send(
-        this.reviewChatId,
+      await this.notifyAll(
         `REVIEW update ${u.id}`,
         this.reviewKeyboard("update", u.id),
       );

@@ -21,7 +21,11 @@ describe("isOperator", () => {
 function bot(overrides: Record<string, unknown> = {}) {
   const sent: Array<{ chat: number | string; text: string }> = [];
   const svc = new OperatorBotService(
-    { operatorUsernames: ["alice"], reviewChatId: "", reportDestinationChatId: "" } as never,
+    {
+      operatorUsernames: ["alice"],
+      operatorChatIds: (overrides.chatIds ?? ["100"]) as string[],
+      reportDestinationChatId: "",
+    } as never,
     { record: jest.fn() } as never,
     (overrides.signals ?? {}) as never,
     (overrides.updates ?? {}) as never,
@@ -89,6 +93,42 @@ describe("OperatorBotService.handleMessage", () => {
     });
     await svc.handleMessage({ ...PRIVATE_ALICE, text: "/positions" });
     expect(sent[0].text).toContain("Failed: ConflictException: boom");
+  });
+});
+
+describe("OperatorBotService review fan-out", () => {
+  function reviewBot(chatIds: string[]) {
+    const signals = { list: jest.fn(async () => [{ id: "s1", instrument: "ETH", direction: "LONG" }]) };
+    const updates = { reviewQueue: jest.fn(async () => [{ id: "u1" }]) };
+    const { svc, sent } = bot({ signals, updates, chatIds });
+    return { svc, sent };
+  }
+
+  it("sends review notifications to every operator DM", async () => {
+    const { svc, sent } = reviewBot(["100", "200"]);
+    await svc.pollReviews();
+    const chats = sent.map((s) => String(s.chat)).sort();
+    // 2 targets x (1 signal + 1 update)
+    expect(sent).toHaveLength(4);
+    expect(chats).toEqual(["100", "100", "200", "200"]);
+    expect(sent[0].text).toContain("REVIEW signal s1");
+  });
+
+  it("one blocked operator does not break the rest", async () => {
+    const { svc, sent } = reviewBot(["100", "200"]);
+    const origSend = (svc as unknown as { send: (chat: number | string, text: string) => Promise<void> }).send;
+    (svc as unknown as { send: unknown }).send = async (chat: number | string, text: string) => {
+      if (String(chat) === "100") throw new Error("bot blocked by user");
+      return origSend(chat, text);
+    };
+    await svc.pollReviews();
+    expect(sent.map((s) => String(s.chat)).sort()).toEqual(["200", "200"]);
+  });
+
+  it("sends nothing when no operator chats configured", async () => {
+    const { svc, sent } = reviewBot([]);
+    await svc.pollReviews();
+    expect(sent).toHaveLength(0);
   });
 });
 

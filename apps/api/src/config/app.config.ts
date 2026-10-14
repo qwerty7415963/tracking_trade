@@ -3,6 +3,7 @@ export const APP_VERSION = "0.1.0";
 
 export interface AppConfig {
   operatorUsernames: string[];
+  operatorChatIds: string[];
   tradingEnabled: boolean;
   databaseUrl: string;
   redisUrl: string;
@@ -10,7 +11,6 @@ export interface AppConfig {
   riskBudgetUsdc: number;
   defaultAccountId: string;
   reportDestinationChatId: string;
-  reviewChatId: string;
   marketPollMs: number;
   signalMaxAgeHours: number;
 }
@@ -23,6 +23,14 @@ function parseUsernames(raw: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
+function parseChatIds(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => /^-?\d+$/.test(s));
+}
+
 function parseNumber(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const n = Number(raw);
@@ -32,6 +40,7 @@ function parseNumber(raw: string | undefined, fallback: number): number {
 export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     operatorUsernames: parseUsernames(env.OPERATOR_USERNAMES),
+    operatorChatIds: parseChatIds(env.OPERATOR_CHAT_IDS),
     // ADR-0011: live trading is always disabled by default after boot.
     tradingEnabled: false,
     databaseUrl: env.DATABASE_URL ?? "postgresql://tracking:tracking@localhost:5434/tracking",
@@ -40,7 +49,6 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     riskBudgetUsdc: parseNumber(env.RISK_BUDGET_USDC, 50),
     defaultAccountId: env.VIRTUAL_DEFAULT_ACCOUNT_ID ?? "",
     reportDestinationChatId: env.REPORT_DESTINATION_CHAT_ID ?? "",
-    reviewChatId: env.REVIEW_CHAT_ID ?? "",
     marketPollMs: parseNumber(env.MARKET_POLL_MS, 5000),
     signalMaxAgeHours: Number(env.SIGNAL_MAX_AGE_HOURS ?? 24),
   };

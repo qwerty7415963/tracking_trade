@@ -12,6 +12,14 @@ describe("loadAppConfig", () => {
     expect(loadAppConfig({}).operatorUsernames).toEqual([]);
   });
 
+  it("parses operator chat ids, dropping junk", () => {
+    expect(loadAppConfig({ OPERATOR_CHAT_IDS: "123, -100456 ,abc,," }).operatorChatIds).toEqual([
+      "123",
+      "-100456",
+    ]);
+    expect(loadAppConfig({}).operatorChatIds).toEqual([]);
+  });
+
   it("always boots with trading disabled", () => {
     expect(loadAppConfig({ OPERATOR_USERNAMES: "alice" }).tradingEnabled).toBe(false);
   });

@@ -83,7 +83,9 @@
 | `/review` | Hàng đợi review (signals + updates) |
 | `/kill [new\|all]` | Bật kill switch (`STOP NEW TRADES` / `STOP ALL AUTOMATED MUTATIONS`) |
 
-Review mơ hồ: bot đẩy noti kèm nút **Approve** / **Reject** (inline buttons); bấm Reject từ chối ngay.
+Review mơ hồ: bot **DM thẳng từng operator** (theo `OPERATOR_CHAT_IDS`) kèm nút **Approve** / **Reject** (inline buttons); bấm Reject từ chối ngay. Một operator block bot không ảnh hưởng người còn lại; chưa cấu hình chat nào thì không gửi (log warn).
+
+> Điều kiện tiên quyết: mỗi operator nhắn `/start` cho bot **một lần**, nếu không Telegram chặn DM từ bot. Lấy chat_id bằng cách forward 1 tin nhắn bất kỳ cho @userinfobot.
 
 ### Quy tắc
 
