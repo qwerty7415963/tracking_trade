@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "node --watch -r ts-node/register -r tsconfig-paths/register apps/api/src/main.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p packages/domain && tsc -p packages/card-renderer && tsc -p packages/market-data && tsc -p packages/connectors && tsc -p packages/database && tsc -p packages/reporting && tsc -p packages/shared && tsc -p apps/api && tsc -p apps/worker && tsc -p apps/screenshot-worker",
     "test": "jest",
@@ -22,6 +23,8 @@
     "prisma": "6.19.3",
     "supertest": "7.3.1",
     "ts-jest": "29.4.14",
+    "ts-node": "10.9.2",
+    "tsconfig-paths": "4.2.0",
     "typescript": "5.9.3"
   },
   "dependencies": {

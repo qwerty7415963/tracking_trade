@@ -10,11 +10,30 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { OperatorGuard } from "../auth/operator.guard";
-import { CreateSourceDto, UpdateSourceDto } from "./dto/source.dto";
+import { CreateSourceDto, SOURCE_KINDS, UpdateSourceDto } from "./dto/source.dto";
 import { SourcesService } from "./sources.service";
+import { ArrayNotEmpty, IsArray, IsIn, IsOptional, IsString } from "class-validator";
 
 interface OperatorRequest {
   operatorUsername?: string;
+}
+
+class BulkCreateDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  lines!: string[];
+
+  @IsOptional()
+  @IsIn(SOURCE_KINDS as unknown as string[])
+  sourceKind?: string;
+}
+
+class BulkDeleteDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  refs!: string[];
 }
 
 @Controller("v1/sources")
@@ -34,6 +53,21 @@ export class SourcesController {
   @UseGuards(OperatorGuard)
   create(@Body() dto: CreateSourceDto, @Req() req: OperatorRequest) {
     return this.sources.create(dto, this.actor(req));
+  }
+
+  @Post("bulk")
+  @UseGuards(OperatorGuard)
+  bulkCreate(@Body() dto: BulkCreateDto, @Req() req: OperatorRequest) {
+    return this.sources.bulkCreate(
+      dto.lines.map((raw) => ({ raw, sourceKind: dto.sourceKind })),
+      this.actor(req),
+    );
+  }
+
+  @Post("bulk-delete")
+  @UseGuards(OperatorGuard)
+  bulkDelete(@Body() dto: BulkDeleteDto, @Req() req: OperatorRequest) {
+    return this.sources.bulkRemove(dto.refs, this.actor(req));
   }
 
   @Get(":id")

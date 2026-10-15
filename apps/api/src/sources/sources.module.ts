@@ -18,5 +18,6 @@ import { SourcesService } from "./sources.service";
     XCollectorService,
     { provide: TELEGRAM_PORT_FACTORY, useFactory: () => defaultPortFactory },
   ],
+  exports: [SourcesService, TelegramCollectorService],
 })
 export class SourcesModule {}

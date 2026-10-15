@@ -83,6 +83,8 @@ Mục tiêu: chống supply-chain attack (package bị chiếm quyền, chèn m�
 - `HYPERLIQUID_API_URL` mặc định `https://api.hyperliquid.xyz` (public, không key).
 - `RISK_BUDGET_USDC` mặc định 50 (size tính sao cho SL hit lỗ đúng budget).
 - `OPERATOR_USERNAMES`: danh sách username duy nhất có quyền approve/kill switch/quản trị (comma-separated).
+- `OPERATOR_BOT_ENABLED`: chỉ bật ở **service api** (bot chạy chung backend); worker luôn `false` để tránh 2 poller Telegram trên cùng token.
+- `ARTIFACTS_DIR=/data/artifacts` cho **cả `api` và `worker`** (volume `artifacts` dùng chung; API cần quyền ghi/đọc).
 - Xoay (rotate) secret định kỳ: Telegram session, bot token.
 
 ## 6. Quy tắc production

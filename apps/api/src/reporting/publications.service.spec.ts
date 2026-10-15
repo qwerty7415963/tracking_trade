@@ -39,17 +39,17 @@ function service(overrides: Record<string, unknown> = {}) {
       update: jest.fn(async (args: unknown) => args),
       create: jest.fn(async (args: unknown) => ({ id: "pub1" })),
       findFirst: jest.fn(async () => null),
+      findUnique: jest.fn(async () => ({ id: "pub1", publicationStatus: "PENDING" })),
     },
     ...(overrides.prisma as Record<string, unknown> | undefined),
   };
   return new PublicationsService(
     prisma as never,
     { record: jest.fn() } as never,
-    (overrides.renderer ?? {}) as never,
     (overrides.sender ?? {}) as never,
     (overrides.config ?? {}) as never,
-    (overrides.redis ?? {}) as never,
-    (overrides.renders ?? { saveArtifact: jest.fn(async () => ({})) }) as never,
+    (overrides.renders ??
+      { readArtifact: jest.fn(async () => Buffer.from("png-bytes")) }) as never,
   );
 }
 
@@ -80,7 +80,7 @@ const SIGNAL = {
   source: { displayName: "Chan" },
 };
 
-describe("PublicationsService.publishPositionCardNow", () => {
+describe("PublicationsService.sendPublication", () => {
   function okSetup() {
     const prisma = {
       virtualPosition: { findUnique: jest.fn(async () => POSITION) },
@@ -90,30 +90,40 @@ describe("PublicationsService.publishPositionCardNow", () => {
         update: jest.fn(async (args: { data: Record<string, unknown> }) => ({ id: "pub1", ...args.data })),
         create: jest.fn(async () => ({ id: "pub1" })),
         findFirst: jest.fn(async () => null),
+        findUnique: jest.fn(async () => ({ id: "pub1", publicationStatus: "PENDING" })),
       },
-    };
-    const renderer = {
-      render: jest.fn(async () => ({
-        ok: true,
-        artifact: { png: Buffer.from("png"), contentHash: "h", width: 1280, height: 180, templateVersion: 1 },
-      })),
     };
     const sender = {
       sendPhoto: jest.fn(async () => ({ ok: true, telegramMessageId: "777", unknown: false })),
     };
-    return { prisma, renderer, sender };
+    const renders = {
+      readArtifact: jest.fn(async () => Buffer.from("png-bytes")),
+    };
+    return { prisma, sender, renders };
   }
 
-  it("publishes photo with caption and records message id", async () => {
-    const setup = okSetup();
-    const svc = service(setup);
-    const result = (await svc.publishPositionCardNow("pub1", {
+  function sendInput(overrides: Record<string, unknown> = {}) {
+    return {
+      publicationId: "pub1",
       positionId: "pos1",
-      status: "filled",
+      status: "filled" as const,
       markPrice: 2550,
       destinationChatId: "@chan",
       replyToMessageId: "111",
-    }, "alice")) as { publicationStatus: string; telegramMessageId: string };
+      artifactPath: "/tmp/pub1.png",
+      actor: "alice",
+      ...overrides,
+    };
+  }
+
+  it("sends a worker-rendered photo with caption and records message id", async () => {
+    const setup = okSetup();
+    const svc = service(setup);
+    const result = (await svc.sendPublication("pub1", sendInput())) as {
+      publicationStatus: string;
+      telegramMessageId: string;
+    };
+    expect(setup.renders.readArtifact).toHaveBeenCalledWith("pub1");
     expect(result.publicationStatus).toBe("PUBLISHED");
     expect(result.telegramMessageId).toBe("777");
     const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
@@ -125,14 +135,9 @@ describe("PublicationsService.publishPositionCardNow", () => {
   it("refuses invalid mark price without sending", async () => {
     const setup = okSetup();
     const svc = service(setup);
-    await expect(
-      svc.publishPositionCardNow("pub1", {
-        positionId: "pos1",
-        status: "filled",
-        markPrice: NaN,
-        destinationChatId: "@chan",
-      }, "alice"),
-    ).rejects.toThrow(/INVALID/);
+    await expect(svc.sendPublication("pub1", sendInput({ markPrice: NaN }))).rejects.toThrow(
+      /INVALID/,
+    );
     expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
   });
 
@@ -144,15 +149,27 @@ describe("PublicationsService.publishPositionCardNow", () => {
       unknown: true,
     })) as never;
     const svc = service(setup);
-    const result = (await svc.publishPositionCardNow("pub1", {
-      positionId: "pos1",
-      status: "tp",
-      markPrice: 2600,
-      destinationChatId: "@chan",
-    }, "alice")) as {
+    const result = (await svc.sendPublication(
+      "pub1",
+      sendInput({ status: "tp", markPrice: 2600, replyToMessageId: undefined }),
+    )) as {
       status: string;
     };
     expect(result.status).toBe("UNKNOWN");
+  });
+
+  it("skips already-published publications without resending", async () => {
+    const setup = okSetup();
+    (setup.prisma.telegramPublication.findUnique as jest.Mock).mockResolvedValueOnce({
+      id: "pub1",
+      publicationStatus: "PUBLISHED",
+    });
+    const svc = service(setup);
+    await expect(svc.sendPublication("pub1", sendInput())).resolves.toEqual({
+      id: "pub1",
+      publicationStatus: "PUBLISHED",
+    });
+    expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
   });
 
   it("requires a destination chat", async () => {
@@ -161,5 +178,30 @@ describe("PublicationsService.publishPositionCardNow", () => {
     await expect(
       svc.requestPositionPublish("pos1", "filled", { markPrice: 2550 }, "alice"),
     ).rejects.toThrow(/no destination chat/);
+  });
+
+  it("enqueues a render job instead of publishing inline", async () => {
+    const setup = okSetup();
+    const requestRender = jest.fn(async () => ({ id: "render:pub1" }));
+    const svc = service({
+      ...setup,
+      config: { reportDestinationChatId: "@chan" },
+      renders: { ...setup.renders, requestRender },
+    });
+    const result = await svc.requestPositionPublish("pos1", "filled", { markPrice: 2550 }, "alice");
+    expect(result).toEqual({ publicationId: "pub1", status: "PENDING" });
+    expect(requestRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        virtualPositionId: "pos1",
+        markPrice: 2550,
+        publicationId: "pub1",
+        status: "filled",
+        destinationChatId: "@chan",
+        actor: "alice",
+      }),
+      "alice",
+      "render:pub1",
+    );
+    expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
   });
 });

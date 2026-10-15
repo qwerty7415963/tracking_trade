@@ -90,7 +90,7 @@ Telegram Connector ---- X Connector
 7. **Virtual Trading Service** tính size từ risk budget, chạy risk gate, chia multi-TP (TP1 50%, còn lại chia đều).
 8. **Virtual Positions** lưu vị thế giấy gắn signal gốc (traceability).
 9. **Hyperliquid Market Data** (`allMids`, mapping data-driven từ `meta`) + **TP/SL detector** poll giá, phát hiện hit.
-10. **Screenshot Worker + Telegram Publisher** render card PNG và đăng báo cáo, reply đúng bài gốc.
+10. **Screenshot Worker** chỉ render card PNG; **API** dựng caption, gửi báo cáo Telegram, reply đúng bài gốc và chạy market-watch TP/SL.
 
 ## 4. Nguyên tắc thiết kế chủ đạo
 

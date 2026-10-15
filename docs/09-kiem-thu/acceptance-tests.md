@@ -6,6 +6,8 @@
 
 - Message trùng **không tạo tín hiệu trùng**.
 - Edit/revision được **lưu đúng**.
+- Message **edit nối version mới** vào signal gốc (`eventType: EDIT`), không tạo signal trùng; approval cũ mất hiệu lực.
+- Signal `FINAL` bị edit giữ nguyên trạng thái.
 - Thiếu entry/SL/TP chuyển sang **review**.
 - Nhiều hướng giao dịch **mâu thuẫn** chuyển sang review.
 - Raw message và parser version được lưu.
@@ -33,7 +35,7 @@
 ## 4. Reporting
 
 - Card `filled` chỉ sau khi vị thế đã mở (không báo trước).
-- Render lỗi **không mở/đóng vị thế**.
+- Worker chỉ render PNG; API gửi Telegram — render lỗi **không mở/đóng vị thế**.
 - Telegram retry **không làm thay đổi vị thế**.
 - Bài TP/SL/close **reply đúng bài gốc**.
 - Template thay đổi **không làm đổi publication snapshot**.
@@ -50,6 +52,8 @@
 - Non-operator gửi lệnh bot bị **từ chối**; lệnh trong group/channel bị **bỏ qua**.
 - `/resume` thiếu `/confirm` thì **vô hiệu** (trading vẫn disabled).
 - Mọi lệnh bot đổi trạng thái đều có **audit log** ghi username thực hiện.
+- Thêm nguồn hàng loạt chấp nhận **mỗi dòng một handle/ID**, bỏ qua trùng tương đương handle, lỗi từng dòng **không hủy batch**.
+- Định danh mơ hồ **không được đoán**, phải yêu cầu operator dùng ID; xóa nguồn qua bot luôn là **soft delete**.
 
 ## 6. CI/CD và recovery
 

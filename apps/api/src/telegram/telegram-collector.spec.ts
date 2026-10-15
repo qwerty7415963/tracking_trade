@@ -15,6 +15,7 @@ function fakePort(overrides: Partial<TelegramPort> = {}): TelegramPort {
     disconnect: async () => {},
     fetchLatest: async () => [],
     subscribe: () => {},
+    subscribeEdits: () => {},
     ...overrides,
   };
 }
@@ -73,6 +74,44 @@ describe("TelegramCollectorService", () => {
       ok: false,
       code: "MISSING_CREDENTIALS",
     });
+  });
+
+  it("ingestEdit bumps revision instead of overwriting", async () => {
+    const findFirst = jest.fn(async () => ({ id: "m1", revision: 1 }));
+    const create = jest.fn(async () => ({ id: "m2" }));
+    const svc = service({ sourceMessage: { findFirst, create } }, fakePort());
+    await expect(svc.ingestEdit("s1", { id: "42", text: "edited text" })).resolves.toEqual({
+      deduplicated: false,
+      id: "m2",
+      revision: 2,
+    });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ revision: 2 }) }),
+    );
+  });
+
+  it("ingestEdit falls back to revision 1 for unseen messages", async () => {
+    const create = jest.fn(async () => ({ id: "m1" }));
+    const svc = service(
+      { sourceMessage: { findFirst: jest.fn(async () => null), create } },
+      fakePort(),
+    );
+    await expect(svc.ingestEdit("s1", { id: "42", text: "late original" })).resolves.toEqual({
+      deduplicated: false,
+      id: "m1",
+      revision: 1,
+    });
+  });
+
+  it("subscribeEditMessages delegates to the port", async () => {
+    process.env.TELEGRAM_API_ID = "123";
+    process.env.TELEGRAM_API_HASH = "hash";
+    process.env.TELEGRAM_SESSION_STRING = "session";
+    const subscribeEdits = jest.fn();
+    const svc = service({}, fakePort({ subscribeEdits }));
+    const handler = async () => {};
+    await svc.subscribeEditMessages("chan", handler);
+    expect(subscribeEdits).toHaveBeenCalledWith("chan", handler);
   });
 
   it("ingestMessage treats P2002 as deduplicated", async () => {

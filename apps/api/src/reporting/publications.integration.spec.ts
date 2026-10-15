@@ -4,16 +4,16 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { AppModule } from "../app.module";
 import { PrismaService } from "../database/prisma.service";
-import { CARD_RENDERER, TELEGRAM_SENDER } from "./publications.service";
+import { TELEGRAM_SENDER } from "./publications.service";
 import { PublicationsService } from "./publications.service";
-import { createDefaultRenderer } from "./publications.service";
+import { RendersService } from "./renders.service";
 
-// Live-DB + real browser render, fake Telegram sender.
+// Live-DB + filesystem artifact, fake Telegram sender.
 // Runs only with INTEGRATION_TESTS=1 so plain `npm test` (and CI) stays hermetic.
 const describeIntegration = process.env.INTEGRATION_TESTS ? describe : describe.skip;
 
-describeIntegration("Publish flow (live DB, fake sender, real render)", () => {
-  it("renders card, saves artifact, sends photo replying to the original", async () => {
+describeIntegration("Publish flow (live DB, worker-written artifact, fake sender)", () => {
+  it("sends a worker-rendered photo replying to the original", async () => {
     process.env.ARTIFACTS_DIR = join(tmpdir(), `it-artifacts-${Date.now()}`);
     const sentCalls: Array<Record<string, unknown>> = [];
     const fakeSender = {
@@ -26,13 +26,12 @@ describeIntegration("Publish flow (live DB, fake sender, real render)", () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(TELEGRAM_SENDER)
       .useValue(fakeSender)
-      .overrideProvider(CARD_RENDERER)
-      .useValue(createDefaultRenderer())
       .compile();
     const app = moduleRef.createNestApplication();
     await app.init();
 
     const publications = app.get(PublicationsService);
+    const renders = app.get(RendersService);
     const prisma = app.get(PrismaService);
 
     const account = await prisma.virtualAccount.create({
@@ -95,17 +94,20 @@ describeIntegration("Publish flow (live DB, fake sender, real render)", () => {
       data: { virtualPositionId: position.id, publicationStatus: "PENDING" },
     });
 
-    const result = (await publications.publishPositionCardNow(
+    const artifactPath = await renders.writeArtifact(
       publication.id,
-      {
-        positionId: position.id,
-        status: "filled",
-        markPrice: 2580,
-        destinationChatId: "@testchan",
-        replyToMessageId: "111",
-      },
-      "alice",
-    )) as { publicationStatus: string; telegramMessageId: string; renderedText: string };
+      Buffer.alloc(1500, 1),
+    );
+    const result = (await publications.sendPublication(publication.id, {
+      publicationId: publication.id,
+      positionId: position.id,
+      status: "filled",
+      markPrice: 2580,
+      destinationChatId: "@testchan",
+      replyToMessageId: "111",
+      artifactPath,
+      actor: "alice",
+    })) as { publicationStatus: string; telegramMessageId: string; renderedText: string };
 
     expect(result.publicationStatus).toBe("PUBLISHED");
     expect(result.telegramMessageId).toBe("999");
@@ -115,16 +117,12 @@ describeIntegration("Publish flow (live DB, fake sender, real render)", () => {
     expect(sentCalls[0].replyToMessageId).toBe("111");
     expect(Buffer.isBuffer(sentCalls[0].photo)).toBe(true);
 
-    const artifact = await prisma.renderArtifact.findFirst({
-      where: { virtualPositionId: position.id },
-    });
-    expect(artifact).toBeTruthy();
-    const stat = await fs.stat(artifact!.artifactPath);
+    const stat = await fs.stat(artifactPath);
     expect(stat.size).toBeGreaterThan(1000);
 
     // Cleanup.
+    await fs.unlink(artifactPath);
     await prisma.telegramPublication.delete({ where: { id: publication.id } });
-    await prisma.renderArtifact.deleteMany({ where: { virtualPositionId: position.id } });
     await prisma.virtualPosition.delete({ where: { id: position.id } });
     await prisma.approval.deleteMany({ where: { signalId: signal.id } });
     await prisma.signalVersion.delete({ where: { id: version.id } });

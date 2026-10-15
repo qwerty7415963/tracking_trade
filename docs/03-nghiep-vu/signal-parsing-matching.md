@@ -53,6 +53,13 @@ Thứ tự ưu tiên khi khớp update với tín hiệu gốc:
 - Nội dung **gần giống nhau từ 2 channel khác nhau không tính là trùng**: mỗi bên tạo signal riêng, đi qua approval và risk riêng.
 - Hệ quả: nhiều channel cùng hô 1 lệnh có thể mở nhiều vị thế cùng chiều cùng symbol → RiskEngine chặn bằng **max positions / max positions per symbol**.
 
+### Message edit → version mới (không tạo signal trùng)
+
+- Chủ channel **sửa bài** (edit) → hệ thống lưu **revision mới** của cùng `(sourceId, externalMessageId)`, không ghi đè lịch sử.
+- Revision > 1 parse ra NEW sẽ **nối version mới** (`eventType: EDIT`) vào signal đã sinh từ revision cũ, thay vì tạo signal trùng.
+- Version mới làm **approval cũ mất hiệu lực** (approve bắt đúng version id mới nhất); signal `FINAL` (REJECTED/CLOSED/...) giữ nguyên trạng thái.
+- Không tìm được signal gốc (ví dụ bản gốc chưa từng thấy) → fallback tạo signal mới như thường.
+
 ## 3. Quy tắc update
 
 | Hành động | Quy tắc |

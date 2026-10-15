@@ -46,6 +46,7 @@ COPY --from=builder --chown=app:app /app/packages/reporting/dist ./packages/repo
 COPY --from=builder --chown=app:app /app/packages/reporting/package.json ./packages/reporting/package.json
 COPY --from=builder --chown=app:app /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder --chown=app:app /app/packages/shared/package.json ./packages/shared/package.json
+RUN mkdir -p /data/artifacts && chown -R app:app /data/artifacts
 USER app
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

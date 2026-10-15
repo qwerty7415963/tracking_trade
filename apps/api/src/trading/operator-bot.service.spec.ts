@@ -1,4 +1,10 @@
-import { isOperator, parseCommand, OperatorBotService } from "./operator-bot.service";
+import {
+  commandLines,
+  commandLineTokens,
+  isOperator,
+  parseCommand,
+  OperatorBotService,
+} from "./operator-bot.service";
 
 describe("parseCommand", () => {
   it("parses name and args, strips bot suffix", () => {
@@ -32,6 +38,7 @@ function bot(overrides: Record<string, unknown> = {}) {
     (overrides.flow ?? {}) as never,
     (overrides.accounts ?? {}) as never,
     (overrides.trading ?? {}) as never,
+    (overrides.sources ?? {}) as never,
   );
   (svc as unknown as { send: unknown }).send = async (chat: number | string, text: string) => {
     sent.push({ chat, text });
@@ -93,6 +100,147 @@ describe("OperatorBotService.handleMessage", () => {
     });
     await svc.handleMessage({ ...PRIVATE_ALICE, text: "/positions" });
     expect(sent[0].text).toContain("Failed: ConflictException: boom");
+  });
+});
+
+describe("OperatorBotService source commands", () => {
+  async function dispatchSource(
+    name: string,
+    args: string[],
+    rawText: string | undefined,
+    sources: Record<string, unknown>,
+  ): Promise<string[]> {
+    const { svc } = bot({ sources });
+    const replies: string[] = [];
+    await svc.dispatch({ name, args }, "tg:alice", async (text) => {
+      replies.push(text);
+    }, rawText);
+    return replies;
+  }
+
+  it("splits multi-line items and quoted command-line values", () => {
+    expect(commandLines("/source_add\n@alpha\n\n  @beta  \n")).toEqual(["@alpha", "@beta"]);
+    expect(
+      commandLineTokens('/source_edit@bot @chan name="My Channel" priority=1'),
+    ).toEqual(["@chan", 'name="My Channel"', "priority=1"]);
+  });
+
+  it("lists sources compactly", async () => {
+    const replies = await dispatchSource(
+      "sources",
+      [],
+      "/sources",
+      {
+        list: jest.fn(async () => [
+          { id: "abcdefgh12345678", displayName: "Alpha", platform: "TELEGRAM", priority: 1, enabled: true },
+          { id: "ijklmnop12345678", displayName: "Beta", platform: "X", priority: 0, enabled: false },
+        ]),
+      },
+    );
+    expect(replies[0]).toContain("✅ Alpha (TELEGRAM) p1 abcdefgh");
+    expect(replies[0]).toContain("⏸️ Beta (X) p0 ijklmnop");
+  });
+
+  it("adds one source per message line and reports mixed results", async () => {
+    const bulkCreate = jest.fn(async () => [
+      { input: "@alpha", status: "created", sourceId: "s1", reason: null },
+      { input: "@beta", status: "skipped-duplicate", sourceId: "s2", reason: null },
+      { input: "@bad", status: "failed", sourceId: null, reason: "validation failed" },
+    ]);
+    const replies = await dispatchSource(
+      "source_add",
+      [],
+      "/source_add\n@alpha\n@beta\n@bad",
+      { bulkCreate },
+    );
+    expect(bulkCreate).toHaveBeenCalledWith(
+      [{ raw: "@alpha" }, { raw: "@beta" }, { raw: "@bad" }],
+      "tg:alice",
+    );
+    expect(replies[0]).toContain("✅ @alpha — created");
+    expect(replies[0]).toContain("⏭️ @beta — skipped-duplicate");
+    expect(replies[0]).toContain("❌ @bad — failed: validation failed");
+  });
+
+  it("falls back to same-line refs for delete", async () => {
+    const bulkRemove = jest.fn(async () => [
+      { input: "@gone", status: "deleted", sourceId: "s9", reason: null },
+    ]);
+    const replies = await dispatchSource(
+      "source_del",
+      ["@gone"],
+      "/source_del @gone",
+      { bulkRemove },
+    );
+    expect(bulkRemove).toHaveBeenCalledWith(["@gone"], "tg:alice");
+    expect(replies[0]).toContain("🗑️ @gone — deleted");
+  });
+
+  it("edits a resolved source with validated key=value pairs", async () => {
+    const resolve = jest.fn(async () => ({ id: "s1" }));
+    const update = jest.fn(async () => ({
+      displayName: "My Channel",
+      platform: "TELEGRAM",
+      priority: 2,
+    }));
+    const replies = await dispatchSource(
+      "source_edit",
+      [],
+      '/source_edit @chan name="My Channel" kind=news priority=2',
+      { resolve, update },
+    );
+    expect(update).toHaveBeenCalledWith(
+      "s1",
+      { displayName: "My Channel", sourceKind: "NEWS", priority: 2 },
+      "tg:alice",
+    );
+    expect(replies[0]).toContain("Updated My Channel (TELEGRAM) p2.");
+  });
+
+  it("rejects invalid kinds before touching the database", async () => {
+    const update = jest.fn();
+    const replies = await dispatchSource(
+      "source_edit",
+      ["@chan", "kind=BAD"],
+      undefined,
+      { resolve: jest.fn(), update },
+    );
+    expect(update).not.toHaveBeenCalled();
+    expect(replies[0]).toContain("kind must be one of");
+  });
+
+  it("toggles each ref independently and reports stored health", async () => {
+    const resolve = jest.fn(async (ref: string) => {
+      if (ref === "@bad") throw new Error("no source matches");
+      return { id: "s1", displayName: "Chan" };
+    });
+    const setEnabled = jest.fn(async () => ({}));
+    const toggleReplies = await dispatchSource(
+      "source_disable",
+      ["@chan", "@bad"],
+      "/source_disable @chan @bad",
+      { resolve, update: jest.fn(), setEnabled },
+    );
+    expect(setEnabled).toHaveBeenCalledWith("s1", false, "tg:alice");
+    expect(toggleReplies[0]).toContain("⏸️ Chan disabled");
+    expect(toggleReplies[0]).toContain("❌ @bad — no source matches");
+
+    const healthReplies = await dispatchSource(
+      "source_health",
+      ["@chan"],
+      "/source_health @chan",
+      {
+        resolve: jest.fn(async () => ({ id: "s1", displayName: "Chan" })),
+        health: jest.fn(async () => ({
+          enabled: false,
+          status: "error",
+          lastErrorCode: "NOT_A_MEMBER",
+          lastErrorAt: "2026-10-15T00:00:00.000Z",
+        })),
+      },
+    );
+    expect(healthReplies[0]).toContain("⚠️ Chan — disabled, status=error");
+    expect(healthReplies[0]).toContain("lastError=NOT_A_MEMBER");
   });
 });
 

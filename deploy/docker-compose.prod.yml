@@ -29,6 +29,12 @@ services:
       PORT: "3000"
       DATABASE_URL: postgresql://tracking:tracking@postgres:5432/tracking
       REDIS_URL: redis://redis:6379
+      ARTIFACTS_DIR: /data/artifacts
+      # Operator bot lives in the API process: one HTTP service, one poller.
+      # Keep OPERATOR_BOT_ENABLED=false on worker to avoid duplicate DMs (409).
+      OPERATOR_BOT_ENABLED: "true"
+    volumes:
+      - artifacts:/data/artifacts
     ports:
       - "3000:3000"
     depends_on:
@@ -54,8 +60,8 @@ services:
       DATABASE_URL: postgresql://tracking:tracking@postgres:5432/tracking
       REDIS_URL: redis://redis:6379
       ARTIFACTS_DIR: /data/artifacts
-      # Single operator-bot poller lives here; api keeps it off (no duplicate DMs).
-      OPERATOR_BOT_ENABLED: "true"
+      # Bot poller is hosted by the api service; worker must stay off.
+      OPERATOR_BOT_ENABLED: "false"
     volumes:
       - artifacts:/data/artifacts
     depends_on:

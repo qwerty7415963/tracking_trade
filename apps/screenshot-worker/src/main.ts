@@ -9,25 +9,22 @@ import { DatabaseModule } from "../../api/src/database/database.module";
 import { AuditModule } from "../../api/src/audit/audit.module";
 import { ReportingModule } from "../../api/src/reporting/reporting.module";
 import { TradingModule } from "../../api/src/trading/trading.module";
-import { RendersService, RENDER_QUEUE_NAME, PUBLISH_QUEUE_NAME } from "../../api/src/reporting/renders.service";
-import { PublicationsService, PositionPublishRequest } from "../../api/src/reporting/publications.service";
-import { VirtualTradingService, MARKET_WATCH_QUEUE_NAME } from "../../api/src/trading/virtual-trading.service";
+import {
+  PUBLISH_SEND_QUEUE_NAME,
+  RENDER_QUEUE_NAME,
+  RendersService,
+  RenderJobData,
+  SEND_JOB_ID_PREFIX,
+} from "../../api/src/reporting/renders.service";
+import { PublicationsService } from "../../api/src/reporting/publications.service";
 import { MarketDataService } from "../../api/src/market-data/market-data.service";
 import { PrismaService } from "../../api/src/database/prisma.service";
+import { createDefaultRenderer } from "./renderer";
 
 @Module({
   imports: [AppConfigModule, DatabaseModule, AuditModule, ReportingModule, TradingModule],
 })
 class WorkerModule {}
-
-interface RenderJobData {
-  virtualPositionId: string;
-}
-
-interface PublishJobData extends PositionPublishRequest {
-  publicationId: string;
-  destinationChatId: string;
-}
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.createApplicationContext(WorkerModule, {
@@ -39,86 +36,79 @@ async function bootstrap(): Promise<void> {
   });
   const renders = app.get(RendersService);
   const publications = app.get(PublicationsService);
-  const trading = app.get(VirtualTradingService);
   const marketData = app.get(MarketDataService);
   const prisma = app.get(PrismaService);
+  const renderer = createDefaultRenderer();
+  const sendQueue = new Queue(PUBLISH_SEND_QUEUE_NAME, { connection: redis });
 
   const renderWorker = new Worker(
     RENDER_QUEUE_NAME,
     async (job: Job) => {
-      const { virtualPositionId } = job.data as RenderJobData;
-      const position = await prisma.virtualPosition.findUnique({ where: { id: virtualPositionId } });
-      if (!position) throw new Error(`POSITION_NOT_FOUND: ${virtualPositionId}`);
-      const mid = await marketData.getMid(position.coin);
-      if (mid === null) throw new Error(`NO_QUOTE for ${position.coin}`);
-      const card = await publications.renderPositionCard(virtualPositionId, mid);
-      const row = await renders.saveArtifact({
-        renderId: String(job.id),
-        snapshotId: card.snapshot.snapshotId,
-        accountId: card.snapshot.accountId,
-        virtualPositionId: card.snapshot.positionId,
-        png: card.artifact.png,
-        contentHash: card.artifact.contentHash,
-        width: card.artifact.width,
-        height: card.artifact.height,
-        templateVersion: card.artifact.templateVersion,
-      });
-      return { artifactId: row.id };
-    },
-    { connection: redis },
-  );
-
-  const publishWorker = new Worker(
-    PUBLISH_QUEUE_NAME,
-    async (job: Job) => {
-      const { publicationId, positionId, status, markPrice, destinationChatId, replyToMessageId } =
-        job.data as PublishJobData;
-      return publications.publishPositionCardNow(
-        publicationId,
-        { positionId, status, markPrice, destinationChatId, replyToMessageId },
-        "worker",
-      );
-    },
-    { connection: redis },
-  );
-
-  const marketWorker = new Worker(
-    MARKET_WATCH_QUEUE_NAME,
-    async () => {
-      const events = await trading.pollMarketOnce();
-      for (const ev of events) {
-        await publications.requestPositionPublish(
-          ev.positionId,
-          ev.kind === "SL" ? "sl" : "tp",
-          { markPrice: ev.closePrice },
-          "worker",
-        );
+      const data = job.data as RenderJobData;
+      const renderId = data.publicationId ?? String(job.id);
+      try {
+        let markPrice = data.markPrice;
+        if (markPrice === undefined) {
+          const position = await prisma.virtualPosition.findUnique({
+            where: { id: data.virtualPositionId },
+          });
+          if (!position) throw new Error(`POSITION_NOT_FOUND: ${data.virtualPositionId}`);
+          const mid = await marketData.getMid(position.coin);
+          if (mid === null) throw new Error(`NO_QUOTE for ${position.coin}`);
+          markPrice = mid;
+        }
+        const card = await publications.buildSnapshot(data.virtualPositionId, markPrice);
+        const rendered = await renderer.render(card.snapshot);
+        if (!rendered.ok) throw new Error(`RENDER_FAILED: ${rendered.code}`);
+        const artifactPath = await renders.writeArtifact(renderId, rendered.artifact.png);
+        if (data.publicationId) {
+          await sendQueue.add(
+            "send-photo",
+            {
+              publicationId: data.publicationId,
+              positionId: data.virtualPositionId,
+              status: data.status ?? "filled",
+              markPrice,
+              destinationChatId: data.destinationChatId ?? "",
+              replyToMessageId: data.replyToMessageId,
+              artifactPath,
+              actor: data.actor ?? "worker",
+            },
+            {
+              jobId: `${SEND_JOB_ID_PREFIX}${data.publicationId}`,
+              attempts: 5,
+              backoff: { type: "exponential", delay: 5000 },
+              removeOnComplete: 100,
+              removeOnFail: 200,
+            },
+          );
+        }
+        return { artifactPath };
+      } catch (err) {
+        if (data.publicationId) {
+          const code = err instanceof Error ? err.message.split(":")[0] : "UNKNOWN";
+          await prisma.telegramPublication
+            .update({
+              where: { id: data.publicationId },
+              data: { publicationStatus: "FINAL_FAILURE", renderedText: code },
+            })
+            .catch(() => {});
+        }
+        throw err;
       }
-      return { hits: events.length };
     },
     { connection: redis },
   );
-
-  // Repeatable price watch (deduplicated by scheduler id).
-  const watchQueue = new Queue(MARKET_WATCH_QUEUE_NAME, { connection: redis });
-  const appConfig = app.get<AppConfig>(APP_CONFIG);
-  await watchQueue.upsertJobScheduler(
-    "market-watch",
-    { every: appConfig.marketPollMs },
-    { name: "watch", data: {} },
-  );
-  await watchQueue.close();
 
   const shutdown = async () => {
     await renderWorker.close();
-    await publishWorker.close();
-    await marketWorker.close();
+    await sendQueue.close();
     redis.disconnect();
     await app.close();
   };
   process.on("SIGTERM", () => void shutdown());
   process.on("SIGINT", () => void shutdown());
-  console.log("render+publish+watch worker running");
+  console.log("render worker running");
 }
 
 void bootstrap();

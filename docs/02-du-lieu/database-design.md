@@ -283,25 +283,12 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối (cho
 
 > `telegram_publications` là **snapshot** tại thời điểm tạo publication intent — template thay đổi sau đó không làm đổi bài đã xếp hàng.
 
-### 2.18 `render_artifacts`
+### 2.18 Ảnh card (không lưu DB)
 
-Lưu ảnh card P&L gen bằng code (không chụp MT5).
+Ảnh card P&L gen bằng code **không lưu metadata trong database** — worker ghi file PNG vào volume `artifacts` dùng chung (`<renderId>.png`), API đọc file khi gửi. Trạng thái đăng vẫn theo dõi qua `telegram_publications`.
 
-| Trường | Ghi chú |
-|---|---|
-| `id` | Khóa chính |
-| `render_id` | ID render duy nhất (unique) |
-| `snapshot_id` | Snapshot vị thế đã dùng |
-| `account_id` | ID tài khoản ảo |
-| `virtual_position_id` | FK tới `virtual_positions` |
-| `artifact_path` | Đường dẫn file PNG (local volume) |
-| `content_hash` | SHA-256 của PNG |
-| `width` / `height` | Kích thước (mặc định 1280×180) |
-| `mime_type` | `image/png` |
-| `template_version` | Version template card |
-| `created_at` | Thời điểm tạo |
-
-Retention 7 ngày (xóa file + row). Idempotency theo `render_id` (cùng snapshot + template).
+- Retention 7 ngày: API quét folder theo mtime, không cần bảng.
+- Idempotency theo `publicationId` (`telegram-send` jobId `send:<publicationId>`, render jobId `render:<publicationId>`).
 
 ### 2.19 Các bảng khác
 

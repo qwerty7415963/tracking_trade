@@ -74,8 +74,78 @@ export class SignalsService {
       const updateId = await this.handleUpdate(message.sourceId, message.authorId, parsed, actor);
       return { kind: "UPDATE", updateId, status: "CREATED" };
     }
+    if (message.revision > 1) {
+      const edited = await this.appendEditVersion(message, parsed, actor);
+      if (edited) return { kind: "SIGNAL", signalId: edited.id, status: edited.status };
+    }
     const signal = await this.handleNewSignal(message.sourceId, parsed, actor);
     return { kind: "SIGNAL", signalId: signal.id, status: signal.status };
+  }
+
+  /**
+   * An edited message supersedes the signal created from an earlier revision
+   * of the same (sourceId, externalMessageId) instead of spawning a duplicate.
+   * Old approvals stay bound to the old version id, so they go stale
+   * automatically (approve() requires the latest version id).
+   * Returns null when no originating signal exists — caller falls back to new.
+   */
+  private async appendEditVersion(
+    message: { id: string; sourceId: string; externalMessageId: string },
+    parsed: NormalizedSignal,
+    actor: string,
+  ): Promise<{ id: string; status: string } | null> {
+    const priorRows = await this.prisma.sourceMessage.findMany({
+      where: { sourceId: message.sourceId, externalMessageId: message.externalMessageId },
+      select: { id: true },
+    });
+    const priorIds = priorRows.map((r) => r.id).filter((id) => id !== message.id);
+    if (priorIds.length === 0) return null;
+    const linked = await this.prisma.signalVersion.findMany({
+      where: {
+        OR: priorIds.map((id) => ({
+          normalizedPayloadJson: { path: ["source_message_id"], equals: id },
+        })),
+      },
+      orderBy: { versionNumber: "desc" },
+      select: { signalId: true },
+    });
+    if (linked.length === 0) return null;
+    const signal = await this.prisma.signal.findUnique({
+      where: { id: linked[0].signalId },
+      include: { versions: { orderBy: { versionNumber: "desc" }, take: 1 } },
+    });
+    if (!signal) return null;
+    const next = (signal.versions[0]?.versionNumber ?? 0) + 1;
+    const missing = missingRequiredFields(parsed);
+    const recomputed =
+      missing.length > 0 || parsed.ambiguities.length > 0 ? "NEEDS_REVIEW" : "PENDING_APPROVAL";
+    // A FINAL signal stays FINAL: editing a decided signal must not reopen it.
+    const status = FINAL.includes(signal.status) ? signal.status : recomputed;
+    return this.prisma.$transaction(async (tx) => {
+      await tx.signalVersion.create({
+        data: {
+          signalId: signal.id,
+          versionNumber: next,
+          eventType: "EDIT",
+          instrument: parsed.instrument ?? "UNKNOWN",
+          direction: parsed.direction ?? "UNKNOWN",
+          orderType: parsed.orderType,
+          entry: parsed.entry,
+          stopLoss: parsed.stopLoss,
+          takeProfits: (parsed.takeProfits ?? []) as Prisma.InputJsonValue,
+          normalizedPayloadJson: { ...parsed } as unknown as Prisma.InputJsonValue,
+          parserVersion: parsed.parserVersion,
+        },
+      });
+      const updated = await tx.signal.update({ where: { id: signal.id }, data: { status } });
+      await this.audit.record(
+        actor,
+        "signal.edited",
+        { signalId: signal.id, versionNumber: next, status, missing },
+        tx,
+      );
+      return updated;
+    });
   }
 
   private async handleNewSignal(

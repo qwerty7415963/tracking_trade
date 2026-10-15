@@ -51,7 +51,7 @@ Hai chế độ:
 | Chế độ | Ý nghĩa |
 |---|---|
 | `STOP NEW TRADES` | Chặn mở mới |
-| `STOP ALL AUTOMATED MUTATIONS` | Chặn mọi mutation tự động (kể cả TP/SL worker bỏ qua chu kỳ) |
+| `STOP ALL AUTOMATED MUTATIONS` | Chặn mọi mutation tự động (kể cả API market-watch bỏ qua chu kỳ TP/SL) |
 
 ### Quy tắc
 

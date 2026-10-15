@@ -1,18 +1,14 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
-import { Queue } from "bullmq";
-import Redis from "ioredis";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../database/prisma.service";
-import { REDIS_CLIENT } from "../queue/redis.provider";
+import { PositionSnapshot } from "@tracking-auto/card-renderer";
 import {
-  FloatingPnLCardRenderer,
-  PositionSnapshot,
-} from "@tracking-auto/card-renderer";
-import { chromium } from "playwright";
-import { PUBLISH_QUEUE_NAME, RendersService } from "./renders.service";
+  RENDER_JOB_ID_PREFIX,
+  RendersService,
+  SendJobData,
+} from "./renders.service";
 
-export const CARD_RENDERER = "CARD_RENDERER";
 export const TELEGRAM_SENDER = "TELEGRAM_SENDER";
 
 export interface TelegramSendResult {
@@ -138,10 +134,8 @@ export class PublicationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    @Inject(CARD_RENDERER) private readonly renderer: FloatingPnLCardRenderer,
     @Inject(TELEGRAM_SENDER) private readonly sender: TelegramSender,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
-    @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @Inject(RendersService) private readonly renders: RendersService,
   ) {}
 
@@ -163,24 +157,26 @@ export class PublicationsService {
       });
       replyTo = original?.telegramMessageId ?? undefined;
     }
-    const queue = new Queue(PUBLISH_QUEUE_NAME, { connection: this.redis });
-    try {
-      const publication = await this.prisma.telegramPublication.create({
-        data: { virtualPositionId: positionId, publicationStatus: "PENDING" },
-      });
-      const job = await queue.add(
-        "publish-position",
-        { ...opts, positionId, status, publicationId: publication.id, destinationChatId: destination, replyToMessageId: replyTo },
-        { attempts: 5, backoff: { type: "exponential", delay: 5000 }, removeOnComplete: 100, removeOnFail: 200 },
-      );
-      await this.audit.record(actor, "publication.requested", {
+    const publication = await this.prisma.telegramPublication.create({
+      data: { virtualPositionId: positionId, publicationStatus: "PENDING" },
+    });
+    await this.renders.requestRender(
+      {
+        virtualPositionId: positionId,
+        markPrice: opts.markPrice,
         publicationId: publication.id,
-        jobId: job.id,
-      });
-      return { publicationId: publication.id, status: "PENDING" };
-    } finally {
-      await queue.close();
-    }
+        status,
+        destinationChatId: destination,
+        replyToMessageId: replyTo,
+        actor,
+      },
+      actor,
+      `${RENDER_JOB_ID_PREFIX}${publication.id}`,
+    );
+    await this.audit.record(actor, "publication.requested", {
+      publicationId: publication.id,
+    });
+    return { publicationId: publication.id, status: "PENDING" };
   }
 
   async getPublication(id: string) {
@@ -189,8 +185,8 @@ export class PublicationsService {
     return publication;
   }
 
-  /** Render a card for a virtual position at an explicit mark. No sending. */
-  async renderPositionCard(positionId: string, markPrice: number, volumeOverride?: number) {
+  /** Build card data for a virtual position at an explicit mark. No rendering. */
+  async buildSnapshot(positionId: string, markPrice: number, volumeOverride?: number) {
     const position = await this.prisma.virtualPosition.findUnique({
       where: { id: positionId },
       include: {
@@ -232,41 +228,25 @@ export class PublicationsService {
       priceDigits: decimals(entry),
       volumeDigits: decimals(volume),
     };
-    const rendered = await this.renderer.render(snapshot);
-    if (!rendered.ok) throw new ConflictException(`render failed: ${rendered.code}`);
-    return { snapshot, artifact: rendered.artifact, position, signal: position.signal, version, sourceMessage };
+    return { snapshot, position, signal: position.signal, version, sourceMessage };
   }
 
-  /** Render + send inline. Called by the worker; never touches trading state. */
-  async publishPositionCardNow(
-    publicationId: string,
-    request: PositionPublishRequest & { destinationChatId: string },
-    actor: string,
-  ) {
-    let card: Awaited<ReturnType<PublicationsService["renderPositionCard"]>>;
-    try {
-      card = await this.renderPositionCard(request.positionId, request.markPrice);
-    } catch (err) {
-      const code = err instanceof Error ? err.message.split(":")[0] : "UNKNOWN";
-      await this.prisma.telegramPublication.update({
-        where: { id: publicationId },
-        data: { publicationStatus: "FINAL_FAILURE", renderedText: code },
-      });
-      throw err;
+  /**
+   * Send a worker-rendered card. Caption is built in the API from live DB
+   * data; the PNG is read from the shared artifacts directory. Never touches
+   * trading state.
+   */
+  async sendPublication(publicationId: string, request: SendJobData) {
+    const publication = await this.getPublication(publicationId);
+    if (publication.publicationStatus === "PUBLISHED") return publication;
+    if (!request.destinationChatId.trim()) {
+      throw new Error("PUBLICATION_VALIDATION_FAILED: no destination chat configured");
     }
-    const { artifact, position, signal, version, sourceMessage, snapshot } = card;
-    await this.renders.saveArtifact({
-      renderId: `pub_${publicationId}`,
-      snapshotId: snapshot.snapshotId,
-      accountId: snapshot.accountId,
-      virtualPositionId: position.id,
-      png: artifact.png,
-      contentHash: artifact.contentHash,
-      width: artifact.width,
-      height: artifact.height,
-      templateVersion: artifact.templateVersion,
-    });
-
+    const { position, signal, version, sourceMessage, snapshot } = await this.buildSnapshot(
+      request.positionId,
+      request.markPrice,
+    );
+    const photo = await this.renders.readArtifact(publicationId);
     const tps: number[] = Array.isArray(version?.takeProfits)
       ? (version.takeProfits as number[])
       : [];
@@ -283,7 +263,7 @@ export class PublicationsService {
 
     const sent = await this.sender.sendPhoto({
       chatId: request.destinationChatId,
-      photo: artifact.png,
+      photo,
       caption,
       replyToMessageId: request.replyToMessageId,
     });
@@ -292,7 +272,7 @@ export class PublicationsService {
         where: { id: publicationId },
         data: { publicationStatus: "UNKNOWN", renderedText: caption },
       });
-      await this.audit.record(actor, "publication.unknown", { publicationId });
+      await this.audit.record(request.actor, "publication.unknown", { publicationId });
       return { status: "UNKNOWN" as const };
     }
     if (!sent.ok) {
@@ -315,15 +295,10 @@ export class PublicationsService {
         publishedAt: new Date(),
       },
     });
-    await this.audit.record(actor, "publication.published", {
+    await this.audit.record(request.actor, "publication.published", {
       publicationId,
       telegramMessageId: sent.telegramMessageId,
     });
     return updated;
   }
-}
-
-export function createDefaultRenderer(): FloatingPnLCardRenderer {
-  // Import only; the browser launches on first render, never in unit tests.
-  return new FloatingPnLCardRenderer(() => chromium.launch());
 }

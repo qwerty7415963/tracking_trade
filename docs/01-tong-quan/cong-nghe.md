@@ -18,8 +18,8 @@
 | MarketDataService | Giá Hyperliquid (meta/allMids, mapping data-driven) |
 | OperatorBotService | Lệnh operator + nút Approve/Reject trên Telegram |
 | RiskEngine | Kiểm tra giới hạn rủi ro (virtual, thích ứng từ bản MT5) |
-| ScreenshotWorker | Render card + publish + market-watch poll |
-| TelegramPublisher | Render template, gửi báo cáo và reply |
+| ScreenshotWorker | Chỉ render card PNG (Chromium) theo yêu cầu từ queue `card-render` |
+| TelegramPublisher | API gửi báo cáo (caption ở API) + market-watch poll (queue `telegram-send`, `market-watch`) |
 | AuditService | Lưu lịch sử thao tác |
 | OperationsAPI | API vận hành và quản trị |
 

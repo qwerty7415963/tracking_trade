@@ -98,7 +98,14 @@ https://t.me/traderosho/4375
 - Thiếu `source_url` bắt buộc → validation error/review, **không bịa link**.
 - Ngoại lệ rule "luôn có tên destination channel": mẫu này không in tên kênh vì bài đăng nằm ngay trong channel đích (tên kênh là implicit).
 
-## 6. Liên kết tài liệu
+## 6. Tách render/gửi (worker/API)
+
+- Worker (`card-render`): chỉ render PNG bằng Chromium vào volume `artifacts` chung.
+- API (`telegram-send`): dựng caption từ DB, đọc PNG, gửi Telegram, cập nhật `telegram_publications`.
+- API (`market-watch`): poll giá TP/SL, enqueue publish khi hit.
+- Không lưu metadata ảnh trong DB; file PNG dọn theo mtime sau 7 ngày.
+
+## 7. Liên kết tài liệu
 
 - API: [06-api/reporting-api.md](../06-api/reporting-api.md)
 - Vòng đời publication: [02-du-lieu/state-machines.md](../02-du-lieu/state-machines.md)

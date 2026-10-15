@@ -196,7 +196,6 @@ model VirtualPosition {
   signal       Signal?              @relation(fields: [signalId], references: [id])
   version      SignalVersion?       @relation(fields: [signalVersionId], references: [id])
   publications TelegramPublication[]
-  artifacts    RenderArtifact[]
 
   @@index([accountId, status])
   @@map("virtual_positions")
@@ -314,26 +313,6 @@ model TelegramPublication {
   template    ReportingTemplate?     @relation(fields: [templateId], references: [id])
 
   @@map("telegram_publications")
-}
-
-model RenderArtifact {
-  id             String   @id @default(uuid())
-  renderId       String   @unique @map("render_id")
-  snapshotId     String   @map("snapshot_id")
-  accountId      String   @map("account_id")
-  virtualPositionId String? @map("virtual_position_id")
-  artifactPath   String   @map("artifact_path")
-  contentHash    String   @map("content_hash")
-  width          Int
-  height         Int
-  mimeType       String   @default("image/png") @map("mime_type")
-  templateVersion Int     @default(1) @map("template_version")
-  createdAt      DateTime @default(now()) @map("created_at")
-
-  virtualPosition VirtualPosition? @relation(fields: [virtualPositionId], references: [id])
-
-  @@index([virtualPositionId, createdAt])
-  @@map("render_artifacts")
 }
 
 model AuditLog {

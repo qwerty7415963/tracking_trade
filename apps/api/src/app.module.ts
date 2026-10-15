@@ -3,6 +3,7 @@ import { ConfigModule } from "@nestjs/config";
 import { AppConfigModule } from "./config/config.module";
 import { DatabaseModule } from "./database/database.module";
 import { HealthController } from "./health/health.controller";
+import { IngestionModule } from "./ingestion/ingestion.module";
 import { AuthModule } from "./auth/auth.module";
 import { AuditModule } from "./audit/audit.module";
 import { MarketDataModule } from "./market-data/market-data.module";
@@ -23,6 +24,7 @@ import { TradingModule } from "./trading/trading.module";
     MarketDataModule,
     SourcesModule,
     SignalsModule,
+    IngestionModule,
     TradingModule,
     ReportingModule,
   ],

@@ -6,6 +6,8 @@ import { SignalsService } from "../signals/signals.service";
 import { ApprovalFlowService } from "./approval-flow.service";
 import { VirtualAccountsService } from "./virtual-accounts.service";
 import { VirtualTradingService } from "./virtual-trading.service";
+import { SOURCE_KINDS } from "../sources/dto/source.dto";
+import { SourcesService } from "../sources/sources.service";
 
 interface TgUser {
   id: number;
@@ -66,8 +68,45 @@ const HELP = [
   "/withdraw <accountId> <amount> - remove virtual funds",
   "/reset <accountId> <balance> - close all + reset balance",
   "/review - pending review queue",
+  "/sources - list followed channels",
+  "/source_add - add channels (1 per line after command)",
+  "/source_del - delete channels (1 per line, handle or id)",
+  "/source_edit <handle|id> name=.. kind=.. priority=.. - edit channel",
+  "/source_enable|/source_disable <handle|id> [...] - toggle channels",
+  "/source_health <handle|id> [...] - show stored channel health",
   "/help - this message",
 ].join("\n");
+
+/** Lines after the /command line: one item per line, blanks ignored. */
+export function commandLines(rawText: string | undefined): string[] {
+  if (!rawText) return [];
+  return rawText
+    .split("\n")
+    .slice(1)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+}
+
+/**
+ * Tokens on the /command line. Quoted values keep spaces:
+ * `/source_edit @chan name="My Channel" priority=1`.
+ */
+export function commandLineTokens(rawText: string | undefined): string[] {
+  if (!rawText) return [];
+  const withoutCommand = rawText.split("\n")[0].trim().replace(/^\/[^\s]+\s*/, "");
+  const tokens =
+    withoutCommand.match(/[^\s"']+="[^"]*"|[^\s"']+='[^']*'|"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return tokens.map((token) => {
+    if (
+      token.length >= 2 &&
+      ((token.startsWith('"') && token.endsWith('"')) ||
+        (token.startsWith("'") && token.endsWith("'")))
+    ) {
+      return token.slice(1, -1);
+    }
+    return token;
+  });
+}
 
 @Injectable()
 export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
@@ -86,6 +125,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     private readonly flow: ApprovalFlowService,
     private readonly accounts: VirtualAccountsService,
     private readonly trading: VirtualTradingService,
+    private readonly sources: SourcesService,
   ) {}
 
   private get token(): string {
@@ -203,7 +243,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     const actor = `tg:${username}`;
     const reply = async (text: string) => this.send(msg.chat.id, text);
     try {
-      await this.dispatch(parsed, actor, reply);
+      await this.dispatch(parsed, actor, reply, msg.text);
     } catch (err) {
       await reply(`Failed: ${err instanceof Error ? err.message : "unknown error"}`);
     }
@@ -213,6 +253,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     parsed: ParsedCommand,
     actor: string,
     reply: (text: string) => Promise<void>,
+    rawText?: string,
   ): Promise<void> {
     const [a, b] = parsed.args;
     switch (parsed.name) {
@@ -353,6 +394,153 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           ...sigs.slice(0, 5).map((s) => `- ${s.id} ${s.instrument} ${s.direction}`),
           `updates: ${upds.length}`,
         ];
+        await reply(lines.join("\n"));
+        return;
+      }
+      case "sources": {
+        const rows = await this.sources.list();
+        if (rows.length === 0) {
+          await reply("No sources followed yet. Use /source_add to add the first channel.");
+          return;
+        }
+        const icon = (enabled: boolean) => (enabled ? "✅" : "⏸️");
+        await reply(
+          rows
+            .slice(0, 15)
+            .map(
+              (s) =>
+                `${icon(s.enabled)} ${s.displayName} (${s.platform}) p${s.priority} ${s.id.slice(0, 8)}`,
+            )
+            .join("\n") + (rows.length > 15 ? `\n… +${rows.length - 15} more` : ""),
+        );
+        return;
+      }
+      case "source_add": {
+        const items = commandLines(rawText);
+        const lines = items.length > 0 ? items : parsed.args;
+        if (lines.length === 0) {
+          await reply("Usage:\n/source_add\n@channel1\n@channel2");
+          return;
+        }
+        const results = await this.sources.bulkCreate(lines.map((raw) => ({ raw })), actor);
+        const icon: Record<string, string> = {
+          created: "✅",
+          "skipped-duplicate": "⏭️",
+          deleted: "🗑️",
+          failed: "❌",
+        };
+        await reply(
+          results
+            .map(
+              (r) =>
+                `${icon[r.status] ?? "•"} ${r.input} — ${r.status}${r.reason ? `: ${r.reason}` : ""}`,
+            )
+            .join("\n"),
+        );
+        return;
+      }
+      case "source_del": {
+        const items = commandLines(rawText);
+        const refs = items.length > 0 ? items : parsed.args;
+        if (refs.length === 0) {
+          await reply("Usage:\n/source_del\n@channel1\n@channel2");
+          return;
+        }
+        const results = await this.sources.bulkRemove(refs, actor);
+        await reply(
+          results
+            .map((r) => `${r.status === "deleted" ? "🗑️" : "❌"} ${r.input} — ${r.status}${r.reason ? `: ${r.reason}` : ""}`)
+            .join("\n"),
+        );
+        return;
+      }
+      case "source_edit": {
+        const tokens = commandLineTokens(rawText);
+        const [ref, ...rest] = tokens.length > 0 ? tokens : parsed.args;
+        if (!ref) {
+          await reply('Usage: /source_edit <handle|id> name=".." kind=.. priority=..');
+          return;
+        }
+        const patch: Record<string, string | number> = {};
+        for (const token of rest) {
+          const eq = token.indexOf("=");
+          if (eq <= 0) continue;
+          const key = token.slice(0, eq).toLowerCase();
+          let value = token.slice(eq + 1);
+          if (
+            value.length >= 2 &&
+            ((value.startsWith('"') && value.endsWith('"')) ||
+              (value.startsWith("'") && value.endsWith("'")))
+          ) {
+            value = value.slice(1, -1);
+          }
+          if (key === "name" && value) {
+            patch.displayName = value;
+          } else if (key === "kind" && value) {
+            const kind = value.toUpperCase();
+            if (!(SOURCE_KINDS as readonly string[]).includes(kind)) {
+              await reply(`kind must be one of: ${SOURCE_KINDS.join(", ")}`);
+              return;
+            }
+            patch.sourceKind = kind;
+          } else if (key === "priority" && value !== "") {
+            const priority = Number(value);
+            if (!Number.isInteger(priority) || priority < 0) {
+              await reply("priority must be an integer >= 0");
+              return;
+            }
+            patch.priority = priority;
+          }
+        }
+        if (Object.keys(patch).length === 0) {
+          await reply('Usage: /source_edit <handle|id> name=".." kind=.. priority=..');
+          return;
+        }
+        const target = await this.sources.resolve(ref);
+        const updated = await this.sources.update(target.id, patch, actor);
+        await reply(`Updated ${updated.displayName} (${updated.platform}) p${updated.priority}.`);
+        return;
+      }
+      case "source_enable":
+      case "source_disable": {
+        if (parsed.args.length === 0) {
+          await reply(`Usage: /${parsed.name} <handle|id> [handle|id ...]`);
+          return;
+        }
+        const enable = parsed.name === "source_enable";
+        const lines: string[] = [];
+        for (const ref of parsed.args) {
+          try {
+            const target = await this.sources.resolve(ref);
+            await this.sources.setEnabled(target.id, enable, actor);
+            lines.push(`${enable ? "✅" : "⏸️"} ${target.displayName} ${enable ? "enabled" : "disabled"}`);
+          } catch (err) {
+            lines.push(`❌ ${ref} — ${err instanceof Error ? err.message : "unknown error"}`);
+          }
+        }
+        await reply(lines.join("\n"));
+        return;
+      }
+      case "source_health": {
+        if (parsed.args.length === 0) {
+          await reply("Usage: /source_health <handle|id> [handle|id ...]");
+          return;
+        }
+        const lines: string[] = [];
+        for (const ref of parsed.args) {
+          try {
+            const target = await this.sources.resolve(ref);
+            const health = await this.sources.health(target.id);
+            const error = health.lastErrorCode
+              ? ` lastError=${health.lastErrorCode} at=${health.lastErrorAt ?? "unknown"}`
+              : "";
+            lines.push(
+              `${health.status === "ok" ? "✅" : "⚠️"} ${target.displayName} — ${target.enabled ? "enabled" : "disabled"}, status=${health.status}${error}`,
+            );
+          } catch (err) {
+            lines.push(`❌ ${ref} — ${err instanceof Error ? err.message : "unknown error"}`);
+          }
+        }
         await reply(lines.join("\n"));
         return;
       }

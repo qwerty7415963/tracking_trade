@@ -17,6 +17,7 @@ Gen ảnh **card floating P&L bằng code** (`FloatingPnLCardRenderer`: HTML/CSS
 - Tích cực: P&L/current price lấy từ broker, thiếu thì từ chối render thay vì bịa.
 - Tiêu cực: thêm Playwright + browser vào image (nặng); cần volume lưu artifacts + retention.
 - Ràng buộc: local volume + retention 7 ngày; API async qua BullMQ; template version cố định theo snapshot.
+- Cập nhật 2026-10-15: worker **chỉ render** PNG vào volume chung; **API** dựng caption, gửi Telegram và chạy market-watch. Không lưu metadata ảnh trong DB.
 
 ## Alternatives considered
 
