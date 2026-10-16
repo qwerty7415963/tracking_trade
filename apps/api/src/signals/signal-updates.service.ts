@@ -21,7 +21,12 @@ export class SignalUpdatesService {
     return this.prisma.signalUpdate.findMany({
       where: { validationStatus: { in: REVIEW_STATUSES } },
       orderBy: { createdAt: "asc" },
-      include: { sourceMessage: true },
+      include: {
+        sourceMessage: { include: { source: true } },
+        matchedSignal: {
+          include: { versions: { orderBy: { versionNumber: "desc" }, take: 1 } },
+        },
+      },
     });
   }
 

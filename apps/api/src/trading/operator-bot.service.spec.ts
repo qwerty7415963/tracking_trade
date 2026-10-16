@@ -1,8 +1,16 @@
+import { ConflictException } from "@nestjs/common";
 import {
   commandLines,
   commandLineTokens,
+  displayOrDash,
+  formatReviewReason,
+  formatSignalReviewCard,
+  formatUpdateReviewCard,
+  forwardTarget,
   isOperator,
   parseCommand,
+  postLink,
+  truncateText,
   OperatorBotService,
 } from "./operator-bot.service";
 
@@ -24,6 +32,99 @@ describe("isOperator", () => {
   });
 });
 
+describe("review card helpers", () => {
+  it("truncates long original posts", () => {
+    expect(truncateText("abc", 800)).toBe("abc");
+    expect(truncateText("x".repeat(900), 800)).toHaveLength(801);
+  });
+
+  it("never shows raw UNKNOWN to operators", () => {
+    expect(displayOrDash("UNKNOWN")).toBe("—");
+    expect(displayOrDash(null)).toBe("—");
+    expect(displayOrDash("ETH")).toBe("ETH");
+  });
+
+  it("explains the review reason", () => {
+    expect(formatReviewReason(["entry"], [])).toBe("thiếu entry");
+    expect(formatReviewReason([], ["conflicting_directions"])).toBe("conflicting_directions");
+    expect(formatReviewReason([], [])).toBe("đủ field cơ bản");
+  });
+
+  it("builds exact post links, preferring stored URLs", () => {
+    expect(postLink("TELEGRAM", "traderosho", "4375", null)).toBe(
+      "https://t.me/traderosho/4375",
+    );
+    expect(postLink("TELEGRAM", "@traderosho", "4375", null)).toBe(
+      "https://t.me/traderosho/4375",
+    );
+    expect(postLink("TELEGRAM", "traderosho", "4375", "https://t.me/c/1/2")).toBe(
+      "https://t.me/c/1/2",
+    );
+    expect(postLink("X", "watcher", "123", null)).toBeNull();
+    expect(postLink("TELEGRAM", "traderosho", "abc", null)).toBeNull();
+    expect(postLink("TELEGRAM", "", "4375", null)).toBeNull();
+    expect(postLink("TELEGRAM", "traderosho", null, null)).toBeNull();
+  });
+
+  it("only allows real forwards for Telegram numeric messages", () => {
+    expect(forwardTarget("TELEGRAM", "traderosho", "4375")).toEqual({
+      chatId: "@traderosho",
+      messageId: 4375,
+    });
+    expect(forwardTarget("TELEGRAM", "@traderosho", "4375")).toEqual({
+      chatId: "@traderosho",
+      messageId: 4375,
+    });
+    expect(forwardTarget("X", "watcher", "123")).toBeNull();
+    expect(forwardTarget("TELEGRAM", "traderosho", "not-a-number")).toBeNull();
+  });
+
+  it("formats a signal card with original post, never ids", () => {
+    const text = formatSignalReviewCard({
+      status: "NEEDS_REVIEW",
+      versionNumber: 1,
+      eventType: "NEW",
+      instrument: "ETH",
+      direction: "SHORT",
+      orderType: null,
+      entry: null,
+      stopLoss: "2597.17",
+      takeProfits: [],
+      leverage: null,
+      missing: ["entry", "take_profits"],
+      ambiguities: [],
+      sourceName: "Osho",
+      platform: "TELEGRAM",
+      messageText: "Short ETH SL 2597.17",
+      author: "Osho",
+      timestamp: "2026-10-15T12:33:00.000Z",
+      url: null,
+    });
+    expect(text).toContain("REVIEW — SHORT ETH");
+    expect(text).toContain("thiếu entry, take_profits");
+    expect(text).toContain("Bài gốc");
+    expect(text).toContain("Short ETH SL 2597.17");
+  });
+
+  it("formats an update card with match summary", () => {
+    const text = formatUpdateReviewCard({
+      action: "CLOSE_ALL",
+      validationStatus: "AMBIGUOUS",
+      confidence: null,
+      reason: "multiple candidates: s1,s2",
+      matchedSummary: null,
+      sourceName: "Osho",
+      platform: "TELEGRAM",
+      messageText: "close all now",
+      author: null,
+      timestamp: null,
+      url: null,
+    });
+    expect(text).toContain("REVIEW update — CLOSE_ALL [AMBIGUOUS]");
+    expect(text).toContain("chưa khớp signal nào");
+  });
+});
+
 function bot(overrides: Record<string, unknown> = {}) {
   const sent: Array<{ chat: number | string; text: string }> = [];
   const svc = new OperatorBotService(
@@ -39,6 +140,8 @@ function bot(overrides: Record<string, unknown> = {}) {
     (overrides.accounts ?? {}) as never,
     (overrides.trading ?? {}) as never,
     (overrides.sources ?? {}) as never,
+    (overrides.coins ?? {}) as never,
+    (overrides.openMode ?? { getMode: jest.fn(async () => "MANUAL") }) as never,
   );
   (svc as unknown as { send: unknown }).send = async (chat: number | string, text: string) => {
     sent.push({ chat, text });
@@ -244,10 +347,158 @@ describe("OperatorBotService source commands", () => {
   });
 });
 
+describe("OperatorBotService openmode command", () => {
+  async function dispatchOpenMode(
+    args: string[],
+    openMode: Record<string, unknown>,
+  ): Promise<string[]> {
+    const { svc } = bot({ openMode });
+    const replies: string[] = [];
+    await svc.dispatch({ name: "openmode", args }, "tg:alice", async (text) => {
+      replies.push(text);
+    });
+    return replies;
+  }
+
+  it("shows the current global mode", async () => {
+    const getMode = jest.fn(async () => "MANUAL");
+    const replies = await dispatchOpenMode([], { getMode });
+    expect(replies[0]).toBe("openmode=MANUAL");
+  });
+
+  it("sets MANUAL or AUTO, rejects the rest", async () => {
+    const setMode = jest.fn(async (mode: string) => mode);
+    const replies = await dispatchOpenMode(["auto"], { setMode });
+    expect(setMode).toHaveBeenCalledWith("AUTO", "tg:alice");
+    expect(replies[0]).toBe("openmode=AUTO");
+
+    const bad = await dispatchOpenMode(["sometimes"], { setMode });
+    expect(bad[0]).toContain("Usage: /openmode [manual|auto]");
+    expect(setMode).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("OperatorBotService coin commands", () => {
+  async function dispatchCoin(
+    name: string,
+    args: string[],
+    rawText: string | undefined,
+    coins: Record<string, unknown>,
+  ): Promise<string[]> {
+    const { svc } = bot({ coins });
+    const replies: string[] = [];
+    await svc.dispatch({ name, args }, "tg:alice", async (text) => {
+      replies.push(text);
+    }, rawText);
+    return replies;
+  }
+
+  it("lists tradable coins", async () => {
+    const replies = await dispatchCoin("coins", [], "/coins", {
+      list: jest.fn(async () => [
+        { id: "c1", symbol: "BTC", enabled: true },
+        { id: "c2", symbol: "ZEC", enabled: false },
+      ]),
+    });
+    expect(replies[0]).toContain("✅ BTC");
+    expect(replies[0]).toContain("⏸️ ZEC");
+  });
+
+  it("adds one coin per line, skips duplicates", async () => {
+    const create = jest
+      .fn()
+      .mockResolvedValueOnce({ id: "c1", symbol: "ZEC" })
+      .mockRejectedValueOnce(new ConflictException("coin BTC already exists"));
+    const replies = await dispatchCoin("coin_add", [], "/coin_add\nzec\nBTC", { create });
+    expect(create).toHaveBeenNthCalledWith(1, { symbol: "zec" }, "tg:alice");
+    expect(replies[0]).toContain("✅ ZEC — created");
+    expect(replies[0]).toContain("⏭️ BTC — skipped-duplicate");
+  });
+
+  it("deletes and toggles coins per line", async () => {
+    const resolve = jest.fn(async (ref: string) => {
+      if (ref === "NOPE") throw new Error('no coin matches "NOPE"');
+      return { id: "c1", symbol: "ZEC" };
+    });
+    const remove = jest.fn(async () => ({}));
+    const update = jest.fn(async () => ({ id: "c1", symbol: "ZEC" }));
+    const delReplies = await dispatchCoin("coin_del", ["ZEC", "NOPE"], "/coin_del ZEC NOPE", {
+      resolve,
+      remove,
+      update,
+    });
+    expect(remove).toHaveBeenCalledWith("c1", "tg:alice");
+    expect(delReplies[0]).toContain("🗑️ ZEC — deleted");
+    expect(delReplies[0]).toContain('❌ NOPE — no coin matches "NOPE"');
+
+    const toggleReplies = await dispatchCoin(
+      "coin_disable",
+      ["zec"],
+      "/coin_disable zec",
+      { resolve, remove, update },
+    );
+    expect(update).toHaveBeenCalledWith("c1", { enabled: false }, "tg:alice");
+    expect(toggleReplies[0]).toContain("⏸️ ZEC disabled");
+  });
+});
+
 describe("OperatorBotService review fan-out", () => {
   function reviewBot(chatIds: string[]) {
-    const signals = { list: jest.fn(async () => [{ id: "s1", instrument: "ETH", direction: "LONG" }]) };
-    const updates = { reviewQueue: jest.fn(async () => [{ id: "u1" }]) };
+    const signals = {
+      reviewQueueDetailed: jest.fn(async () => [
+        {
+          id: "s1",
+          status: "NEEDS_REVIEW",
+          instrument: "UNKNOWN",
+          direction: "UNKNOWN",
+          source: { displayName: "Osho", platform: "TELEGRAM", externalSourceId: "traderosho" },
+          versions: [
+            {
+              versionNumber: 1,
+              eventType: "NEW",
+              instrument: "ETH",
+              direction: "LONG",
+              orderType: null,
+              entry: 2583.79,
+              stopLoss: 2597.17,
+              takeProfits: [2499],
+              normalizedPayloadJson: { sourceMessageId: "m1", missingFields: [], ambiguities: [] },
+            },
+          ],
+        },
+      ]),
+      getReviewMessage: jest.fn(async (rowId: string | null | undefined) => {
+        if (!rowId) return null;
+        return {
+          contentRaw: "Short ETH limit Entry 2583.79 SL 2597.17 TP 2499",
+          authorName: "Osho",
+          sourceTimestamp: new Date("2026-10-15T12:33:00.000Z"),
+          sourceUrl: "https://t.me/traderosho/4375",
+          externalMessageId: "4375",
+          source: { displayName: "Osho", platform: "TELEGRAM", externalSourceId: "traderosho" },
+        };
+      }),
+    };
+    const updates = {
+      reviewQueue: jest.fn(async () => [
+        {
+          id: "u1",
+          actionType: "CLOSE_ALL",
+          validationStatus: "AMBIGUOUS",
+          matchConfidence: null,
+          reviewReason: "multiple candidates: s1,s2",
+          matchedSignal: null,
+          sourceMessage: {
+            contentRaw: "close all now",
+            authorName: "Osho",
+            sourceTimestamp: new Date("2026-10-15T12:35:00.000Z"),
+            sourceUrl: null,
+            externalMessageId: "4376",
+            source: { displayName: "Osho", platform: "TELEGRAM", externalSourceId: "traderosho" },
+          },
+        },
+      ]),
+    };
     const { svc, sent } = bot({ signals, updates, chatIds });
     return { svc, sent };
   }
@@ -259,7 +510,9 @@ describe("OperatorBotService review fan-out", () => {
     // 2 targets x (1 signal + 1 update)
     expect(sent).toHaveLength(4);
     expect(chats).toEqual(["100", "100", "200", "200"]);
-    expect(sent[0].text).toContain("REVIEW signal s1");
+    expect(sent[0].text).toContain("REVIEW — LONG ETH");
+    expect(sent[0].text).toContain("Bài gốc");
+    expect(sent[0].text).not.toContain("UNKNOWN UNKNOWN");
   });
 
   it("one blocked operator does not break the rest", async () => {
@@ -277,6 +530,52 @@ describe("OperatorBotService review fan-out", () => {
     const { svc, sent } = reviewBot([]);
     await svc.pollReviews();
     expect(sent).toHaveLength(0);
+  });
+
+  it("forwards the original post before the review card", async () => {
+    const { svc, sent } = reviewBot(["100"]);
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params });
+      if (method === "sendMessage") {
+        sent.push({ chat: Number(params.chat_id), text: String(params.text) });
+      }
+      return {};
+    };
+    await svc.pollReviews();
+    const forward = calls.find((c) => c.method === "forwardMessage");
+    expect(forward?.params).toMatchObject({
+      chat_id: "100",
+      from_chat_id: "@traderosho",
+      message_id: 4375,
+    });
+  });
+
+  it("falls back to stored text when forward fails", async () => {
+    const { svc, sent } = reviewBot(["100"]);
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "forwardMessage") throw new Error("telegram api forwardMessage failed: 400");
+      if (method === "sendMessage") {
+        sent.push({ chat: Number(params.chat_id), text: String(params.text) });
+      }
+      return {};
+    };
+    await svc.pollReviews();
+    expect(sent.some((s) => s.text.includes("Short ETH limit"))).toBe(true);
+  });
+
+  it("/review lists human-readable summaries", async () => {
+    const { svc } = reviewBot(["100"]);
+    const replies: string[] = [];
+    await svc.dispatch({ name: "review", args: [] }, "tg:alice", async (text) => {
+      replies.push(text);
+    }, "/review");
+    expect(replies[0]).toContain("signals: 1");
+    expect(replies[0]).toContain("LONG ETH [NEEDS_REVIEW] Osho");
+    expect(replies[0]).toContain("https://t.me/traderosho/4375");
+    expect(replies[0]).toContain("updates: 1");
+    expect(replies[0]).toContain("CLOSE_ALL [AMBIGUOUS]");
+    expect(replies[0]).toContain("https://t.me/traderosho/4376");
   });
 });
 

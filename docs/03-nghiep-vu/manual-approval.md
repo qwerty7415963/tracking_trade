@@ -6,6 +6,14 @@
 
 Mọi tín hiệu **mở lệnh mới** cần được **duyệt thủ công**. Hệ thống không được tự động mở lệnh mới khi chưa có approval hợp lệ.
 
+## 1.1 Switch toàn cục `open_mode`
+
+- Hai mode: `MANUAL` (mặc định, fail-safe) và `AUTO`, đổi runtime qua `POST /v1/operations/open-mode` hoặc `/openmode` (ghi audit).
+- `MANUAL`: mọi bài đều chờ duyệt tay, kể cả ví đang `AUTO`.
+- `AUTO`: giữ logic hiện tại — ví nào `AUTO` thì signal sạch (`PENDING_APPROVAL`) tự mở dưới tên `system:auto`; ví `APPROVE` vẫn chờ.
+- `NEEDS_REVIEW` không bao giờ tự mở ở mode nào.
+- Thứ tự ưu tiên: global `MANUAL` > mode từng ví.
+
 ## 2. Nội dung bắt buộc của approval
 
 Approval phải lưu:

@@ -7,6 +7,11 @@
 - Message trùng **không tạo tín hiệu trùng**.
 - Edit/revision được **lưu đúng**.
 - Message **edit nối version mới** vào signal gốc (`eventType: EDIT`), không tạo signal trùng; approval cũ mất hiệu lực.
+- Ingest lại **đúng row cũ** trả signal đã có (idempotent), không tạo mới, không đổi trạng thái.
+- Payload version lưu row id bài gốc ở key **camelCase `sourceMessageId`** (đọc cả snake_case cũ để tương thích); review/matching đều resolve qua key này.
+- Coin parse được phải có trong **coin list** (`tradable_coins`); coin lạ giữ tên thật + gắn `unmapped_symbol_<X>` → review, không đoán.
+- CRUD coin qua API/bot đều có audit; trùng symbol → `409`; xóa coin là xóa hẳn.
+- 3 bài mẫu (CoinCodeCap/Alwayswin/MegaLodon) là golden test chống regress parser.
 - Signal `FINAL` bị edit giữ nguyên trạng thái.
 - Thiếu entry/SL/TP chuyển sang **review**.
 - Nhiều hướng giao dịch **mâu thuẫn** chuyển sang review.
@@ -17,8 +22,11 @@
 
 - Mode `APPROVE`: không có manual approval thì **không mở vị thế mới**.
 - Mode `AUTO`: chỉ tự mở khi đủ field, không mơ hồ, map được coin.
+- Switch toàn cục `MANUAL` ép chờ **mọi ví** kể cả ví `AUTO`; `AUTO` giữ logic theo ví; đổi switch ghi audit; thiếu row fail-safe về `MANUAL`.
 - Signal version đổi làm **approval cũ mất hiệu lực**.
 - Update mơ hồ hoặc nguồn không xác thực **không mở/đóng vị thế** — đưa review + noti operator.
+- Noti review **không in id đầy đủ hay `UNKNOWN`**, luôn kèm bài gốc (forward thật nếu được, fallback text đã lưu) + nút Approve/Reject.
+- `/review` và card review kèm **link bài viết cụ thể** (`https://t.me/{channel}/{msgId}` hoặc URL đã lưu), không chỉ tên channel; nguồn X/id không số thì không có link.
 - Nút Reject từ chối ngay, ghi audit.
 - Update đồng thời **không gây mutation sai thứ tự**.
 

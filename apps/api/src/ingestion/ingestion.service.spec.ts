@@ -19,12 +19,14 @@ function harness(overrides: Record<string, unknown> = {}) {
     ingestEdit: jest.fn(async () => ({ deduplicated: false, id: "m2", revision: 2 })),
     ...(overrides.telegram as Record<string, unknown> | undefined),
   };
+  const flow = { processNewSignal: jest.fn(async () => ({ action: "wait" })) };
   const svc = new IngestionService(
     ((overrides.sources ?? { list: jest.fn(async () => ROWS) }) as never),
     telegram as never,
     ((overrides.signals ?? { ingestSourceMessage: jest.fn(async () => ({})) }) as never),
+    ((overrides.flow ?? flow) as never),
   );
-  return { svc, handlers, telegram };
+  return { svc, handlers, telegram, flow };
 }
 
 describe("IngestionService", () => {
@@ -90,6 +92,30 @@ describe("IngestionService", () => {
     ingestMessage.mockResolvedValueOnce({ deduplicated: true, id: null } as never);
     await handlers.new[0]({ id: "42", text: "BUY XAUUSD @1 SL 2 TP 3" });
     expect(ingestSourceMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs the AUTO hook for new signals only", async () => {
+    const ingestSourceMessage = jest.fn(async () => ({ kind: "SIGNAL", signalId: "s1" }));
+    const processNewSignal = jest.fn(async () => ({ action: "wait" }));
+    const { svc, handlers } = harness({
+      signals: { ingestSourceMessage },
+      flow: { processNewSignal },
+      telegram: {
+        subscribeNewMessages: jest.fn(async (_c: string, h: (m: unknown) => Promise<void>) => {
+          handlers.new.push(h);
+        }),
+        subscribeEditMessages: jest.fn(),
+        ingestMessage: jest.fn(async () => ({ deduplicated: false, id: "m1" })),
+        ingestEdit: jest.fn(),
+      },
+    });
+    await svc.resync();
+    await handlers.new[0]({ id: "42", text: "BUY XAUUSD @1 SL 2 TP 3" });
+    expect(processNewSignal).toHaveBeenCalledWith("s1");
+
+    ingestSourceMessage.mockResolvedValueOnce({ kind: "UPDATE", updateId: "u1" } as never);
+    await handlers.new[0]({ id: "43", text: "close all" });
+    expect(processNewSignal).toHaveBeenCalledTimes(1);
   });
 
   it("routes edits through ingestEdit", async () => {

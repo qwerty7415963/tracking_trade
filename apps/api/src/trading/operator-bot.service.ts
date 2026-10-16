@@ -1,11 +1,13 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { ConflictException, Inject, Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { SignalUpdatesService } from "../signals/signal-updates.service";
-import { SignalsService } from "../signals/signals.service";
+import { SignalsService, payloadRowId } from "../signals/signals.service";
 import { ApprovalFlowService } from "./approval-flow.service";
 import { VirtualAccountsService } from "./virtual-accounts.service";
 import { VirtualTradingService } from "./virtual-trading.service";
+import { OpenModeService } from "./open-mode.service";
+import { CoinsService } from "../coins/coins.service";
 import { SOURCE_KINDS } from "../sources/dto/source.dto";
 import { SourcesService } from "../sources/sources.service";
 
@@ -63,7 +65,8 @@ const HELP = [
   "/close <positionId> - close position at market",
   "/positions [status] - list virtual positions",
   "/account [id] - account summary (equity, margin, PnL)",
-  "/mode [auto|approve] [accountId] - get/set open mode",
+  "/mode [auto|approve] [accountId] - get/set per-account open mode",
+  "/openmode [manual|auto] - get/set global open switch",
   "/deposit <accountId> <amount> - add virtual funds",
   "/withdraw <accountId> <amount> - remove virtual funds",
   "/reset <accountId> <balance> - close all + reset balance",
@@ -74,6 +77,10 @@ const HELP = [
   "/source_edit <handle|id> name=.. kind=.. priority=.. - edit channel",
   "/source_enable|/source_disable <handle|id> [...] - toggle channels",
   "/source_health <handle|id> [...] - show stored channel health",
+  "/coins - list tradable coins",
+  "/coin_add - add coins (1 per line after command)",
+  "/coin_del - delete coins (1 per line)",
+  "/coin_enable|/coin_disable <SYM> [...] - toggle coins",
   "/help - this message",
 ].join("\n");
 
@@ -108,6 +115,133 @@ export function commandLineTokens(rawText: string | undefined): string[] {
   });
 }
 
+/** Shorten long original posts for review cards (Telegram 4096-char limit). */
+export function truncateText(text: string, max = 800): string {
+  const clean = text.trim();
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, max).trimEnd()}…`;
+}
+
+export function displayOrDash(value: string | null | undefined): string {
+  if (!value || value === "UNKNOWN") return "—";
+  return value;
+}
+
+export function formatReviewReason(missing: string[], ambiguities: string[]): string {
+  if (missing.length > 0) return `thiếu ${missing.join(", ")}`;
+  if (ambiguities.length > 0) return ambiguities.join(", ");
+  return "đủ field cơ bản";
+}
+
+export function formatReviewTime(iso: string | null | undefined): string {
+  if (!iso) return "không rõ giờ";
+  return iso.slice(0, 16).replace("T", " ");
+}
+
+/**
+ * Real Telegram forward target. Only Telegram numeric message ids qualify;
+ * X posts and non-numeric ids fall back to the stored-text copy in the card.
+ */
+export function forwardTarget(
+  platform: string,
+  sourceExternalId: string,
+  externalMessageId: string,
+): { chatId: string; messageId: number } | null {
+  if (platform !== "TELEGRAM") return null;
+  if (!/^\d+$/.test(externalMessageId)) return null;
+  const handle = sourceExternalId.trim().replace(/^@+/, "");
+  if (!handle) return null;
+  const chatId = /^-?\d+$/.test(handle) ? handle : `@${handle}`;
+  return { chatId, messageId: Number(externalMessageId) };
+}
+
+/**
+ * Link to the exact post under review. Prefers a stored URL, otherwise
+ * builds https://t.me/{channel}/{id} for Telegram numeric messages
+ * (ingestion never stores it, so this also covers old rows).
+ * Returns null when no link can be built (X sources, non-numeric ids).
+ */
+export function postLink(
+  platform: string,
+  sourceExternalId: string,
+  externalMessageId: string | null | undefined,
+  sourceUrl?: string | null,
+): string | null {
+  if (sourceUrl && sourceUrl.trim()) return sourceUrl;
+  if (platform !== "TELEGRAM" || !externalMessageId) return null;
+  if (!/^\d+$/.test(externalMessageId)) return null;
+  const handle = sourceExternalId.trim().replace(/^@+/, "");
+  if (!handle || /^-?\d+$/.test(handle)) return null;
+  return `https://t.me/${handle}/${externalMessageId}`;
+}
+
+export interface SignalReviewInput {
+  status: string;
+  versionNumber: number | null;
+  eventType: string | null;
+  instrument: string | null;
+  direction: string | null;
+  orderType: string | null;
+  entry: string | null;
+  stopLoss: string | null;
+  takeProfits: number[];
+  leverage: string | null;
+  missing: string[];
+  ambiguities: string[];
+  sourceName: string;
+  platform: string;
+  messageText: string | null;
+  author: string | null;
+  timestamp: string | null;
+  url: string | null;
+}
+
+export function formatSignalReviewCard(input: SignalReviewInput): string {
+  const lines = [
+    `🔍 REVIEW — ${displayOrDash(input.direction)} ${displayOrDash(input.instrument)} [${input.status}${input.versionNumber ? ` v${input.versionNumber}` : ""}]`,
+    `Lý do: ${formatReviewReason(input.missing, input.ambiguities)}`,
+    `Entry: ${displayOrDash(input.entry)} | SL: ${displayOrDash(input.stopLoss)} | TP: ${input.takeProfits.length > 0 ? input.takeProfits.join(", ") : "—"}${input.leverage ? ` | Lev: ${input.leverage}x` : ""}`,
+    `Nguồn: ${input.sourceName} (${input.platform}) • ${formatReviewTime(input.timestamp)}`,
+  ];
+  if (input.messageText && input.messageText.trim()) {
+    lines.push(`Bài gốc (${input.author?.trim() || "không rõ tác giả"}):`, `"${truncateText(input.messageText)}"`);
+  } else {
+    lines.push("Bài gốc: không còn lưu trong DB.");
+  }
+  if (input.url) lines.push(input.url);
+  return lines.join("\n");
+}
+
+export interface UpdateReviewInput {
+  action: string | null;
+  validationStatus: string;
+  confidence: string | null;
+  reason: string | null;
+  matchedSummary: string | null;
+  sourceName: string;
+  platform: string;
+  messageText: string | null;
+  author: string | null;
+  timestamp: string | null;
+  url: string | null;
+}
+
+export function formatUpdateReviewCard(input: UpdateReviewInput): string {
+  const lines = [
+    `🔍 REVIEW update — ${displayOrDash(input.action)} [${input.validationStatus}]`,
+    `Khớp: ${input.matchedSummary ?? "chưa khớp signal nào"}`,
+    `Lý do: ${input.reason ?? "—"}`,
+    `Nguồn: ${input.sourceName} (${input.platform}) • ${formatReviewTime(input.timestamp)}`,
+  ];
+  if (input.messageText && input.messageText.trim()) {
+    lines.push(`Bài gốc (${input.author?.trim() || "không rõ tác giả"}):`, `"${truncateText(input.messageText)}"`);
+  } else {
+    lines.push("Bài gốc: không còn lưu trong DB.");
+  }
+  if (input.url) lines.push(input.url);
+  return lines.join("\n");
+}
+
 @Injectable()
 export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
   private running = false;
@@ -126,6 +260,8 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     private readonly accounts: VirtualAccountsService,
     private readonly trading: VirtualTradingService,
     private readonly sources: SourcesService,
+    private readonly coins: CoinsService,
+    private readonly openMode: OpenModeService,
   ) {}
 
   private get token(): string {
@@ -146,6 +282,42 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     }
     for (const chatId of targets) {
       try {
+        await this.send(chatId, text, replyMarkup);
+      } catch {
+        // One failing target must never break the rest.
+      }
+    }
+  }
+
+  /**
+   * Review fan-out: try a real Telegram forward of the original post first,
+   * then always send the human-readable card with action buttons. A failed
+   * forward (private channel, protected content, X source) falls back to the
+   * stored-text copy already embedded in the card.
+   */
+  private async notifyReviewCard(
+    forward: { chatId: string; messageId: number } | null,
+    text: string,
+    replyMarkup?: unknown,
+  ): Promise<void> {
+    const targets = this.notifyTargets();
+    if (targets.length === 0) {
+      console.warn("[operator-bot] no OPERATOR_CHAT_IDS configured, notification dropped");
+      return;
+    }
+    for (const chatId of targets) {
+      try {
+        if (forward) {
+          try {
+            await this.api("forwardMessage", {
+              chat_id: chatId,
+              from_chat_id: forward.chatId,
+              message_id: forward.messageId,
+            });
+          } catch {
+            // Fall back to the stored-text copy in the card.
+          }
+        }
         await this.send(chatId, text, replyMarkup);
       } catch {
         // One failing target must never break the rest.
@@ -359,6 +531,20 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         await reply(`mode=${upper}`);
         return;
       }
+      case "openmode": {
+        if (!a) {
+          await reply(`openmode=${await this.openMode.getMode()}`);
+          return;
+        }
+        const upper = a.toUpperCase();
+        if (upper !== "MANUAL" && upper !== "AUTO") {
+          await reply("Usage: /openmode [manual|auto]");
+          return;
+        }
+        await this.openMode.setMode(upper, actor);
+        await reply(`openmode=${upper}`);
+        return;
+      }
       case "deposit":
       case "withdraw": {
         if (!a || !b || !(Number(b) > 0)) {
@@ -386,14 +572,37 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
       }
       case "review": {
         const [sigs, upds] = await Promise.all([
-          this.signals.list("NEEDS_REVIEW"),
+          this.signals.reviewQueueDetailed(),
           this.updates.reviewQueue(),
         ]);
-        const lines = [
-          `signals: ${sigs.length}`,
-          ...sigs.slice(0, 5).map((s) => `- ${s.id} ${s.instrument} ${s.direction}`),
-          `updates: ${upds.length}`,
-        ];
+        const lines = [`signals: ${sigs.length}`];
+        for (const s of sigs.slice(0, 3)) {
+          const version = s.versions[0];
+          const payload = (version?.normalizedPayloadJson ?? null) as {
+            missingFields?: string[];
+            ambiguities?: string[];
+          } | null;
+          const message = await this.signals.getReviewMessage(payloadRowId(version?.normalizedPayloadJson)).catch(() => null);
+          const link = message
+            ? postLink(message.source.platform, message.source.externalSourceId, message.externalMessageId, message.sourceUrl)
+            : null;
+          lines.push(
+            `- ${displayOrDash(version?.direction ?? s.direction)} ${displayOrDash(version?.instrument ?? s.instrument)} [${s.status}] ${s.source.displayName} — ${formatReviewReason(payload?.missingFields ?? [], payload?.ambiguities ?? [])}${link ? `\n  ${link}` : ""}`,
+          );
+        }
+        lines.push(`updates: ${upds.length}`);
+        for (const u of upds.slice(0, 3)) {
+          const matched = u.matchedSignal?.versions[0];
+          const link = postLink(
+            u.sourceMessage.source.platform,
+            u.sourceMessage.source.externalSourceId,
+            u.sourceMessage.externalMessageId,
+            u.sourceMessage.sourceUrl,
+          );
+          lines.push(
+            `- ${displayOrDash(u.actionType)} [${u.validationStatus}] ${matched ? `${displayOrDash(matched.direction)} ${displayOrDash(matched.instrument)}` : "chưa khớp"} — ${u.reviewReason ?? "—"}${link ? `\n  ${link}` : ""}`,
+          );
+        }
         await reply(lines.join("\n"));
         return;
       }
@@ -544,6 +753,79 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         await reply(lines.join("\n"));
         return;
       }
+      case "coins": {
+        const rows = await this.coins.list();
+        if (rows.length === 0) {
+          await reply("No tradable coins yet. Use /coin_add to add the first symbol.");
+          return;
+        }
+        const icon = (enabled: boolean) => (enabled ? "✅" : "⏸️");
+        await reply(rows.map((c) => `${icon(c.enabled)} ${c.symbol}`).join("\n"));
+        return;
+      }
+      case "coin_add": {
+        const items = commandLines(rawText);
+        const lines = items.length > 0 ? items : parsed.args;
+        if (lines.length === 0) {
+          await reply("Usage:\n/coin_add\nBTC\nZEC");
+          return;
+        }
+        const out: string[] = [];
+        for (const raw of lines) {
+          try {
+            const created = await this.coins.create({ symbol: raw }, actor);
+            out.push(`✅ ${created.symbol} — created`);
+          } catch (err) {
+            if (err instanceof ConflictException) {
+              out.push(`⏭️ ${raw.trim()} — skipped-duplicate`);
+            } else {
+              out.push(`❌ ${raw} — ${err instanceof Error ? err.message : "unknown error"}`);
+            }
+          }
+        }
+        await reply(out.join("\n"));
+        return;
+      }
+      case "coin_del": {
+        const items = commandLines(rawText);
+        const refs = items.length > 0 ? items : parsed.args;
+        if (refs.length === 0) {
+          await reply("Usage:\n/coin_del\nBTC\nZEC");
+          return;
+        }
+        const out: string[] = [];
+        for (const ref of refs) {
+          try {
+            const target = await this.coins.resolve(ref);
+            await this.coins.remove(target.id, actor);
+            out.push(`🗑️ ${target.symbol} — deleted`);
+          } catch (err) {
+            out.push(`❌ ${ref} — ${err instanceof Error ? err.message : "unknown error"}`);
+          }
+        }
+        await reply(out.join("\n"));
+        return;
+      }
+      case "coin_enable":
+      case "coin_disable": {
+        if (parsed.args.length === 0) {
+          await reply(`Usage: /${parsed.name} <SYM> [SYM ...]`);
+          return;
+        }
+        const enable = parsed.name === "coin_enable";
+        const out: string[] = [];
+        for (const ref of parsed.args) {
+          try {
+            const target = await this.coins.resolve(ref);
+            const updated = await this.coins.update(target.id, { enabled: enable }, actor);
+            out.push(`${enable ? "✅" : "⏸️"} ${updated.symbol} ${enable ? "enabled" : "disabled"}`);
+          } catch (err) {
+            out.push(`❌ ${ref} — ${err instanceof Error ? err.message : "unknown error"}`);
+          }
+        }
+        await reply(out.join("\n"));
+        return;
+      }
       default:
         await reply("Unknown command. /help for list.");
     }
@@ -623,26 +905,83 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
 
   async pollReviews(): Promise<void> {
     const [sigs, upds] = await Promise.all([
-      this.signals.list("NEEDS_REVIEW"),
+      this.signals.reviewQueueDetailed(),
       this.updates.reviewQueue(),
     ]);
-    for (const s of sigs as Array<{ id: string; instrument: string; direction: string }>) {
+    for (const s of sigs) {
       const key = `s:${s.id}`;
       if (this.seen.has(key)) continue;
       this.seen.add(key);
-      await this.notifyAll(
-        `REVIEW signal ${s.id}\n${s.instrument} ${s.direction}`,
-        this.reviewKeyboard("signal", s.id),
-      );
+      const version = s.versions[0];
+      const payload = (version?.normalizedPayloadJson ?? null) as {
+        missingFields?: string[];
+        ambiguities?: string[];
+        leverage?: number | null;
+      } | null;
+      const message = await this.signals.getReviewMessage(payloadRowId(version?.normalizedPayloadJson)).catch(() => null);
+      const tps = Array.isArray(version?.takeProfits)
+        ? (version?.takeProfits as number[]).map((n) => Number(n)).filter((n) => Number.isFinite(n))
+        : [];
+      const text = formatSignalReviewCard({
+        status: s.status,
+        versionNumber: version?.versionNumber ?? null,
+        eventType: version?.eventType ?? null,
+        instrument: version?.instrument ?? s.instrument,
+        direction: version?.direction ?? s.direction,
+        orderType: version?.orderType ?? null,
+        entry: version?.entry == null ? null : String(version.entry),
+        stopLoss: version?.stopLoss == null ? null : String(version.stopLoss),
+        takeProfits: tps,
+        leverage: typeof payload?.leverage === "number" ? String(payload.leverage) : null,
+        missing: payload?.missingFields ?? [],
+        ambiguities: payload?.ambiguities ?? [],
+        sourceName: s.source.displayName,
+        platform: s.source.platform,
+        messageText: message?.contentRaw ?? null,
+        author: message?.authorName ?? null,
+        timestamp: message?.sourceTimestamp ? message.sourceTimestamp.toISOString() : null,
+        url: message
+          ? postLink(message.source.platform, message.source.externalSourceId, message.externalMessageId, message.sourceUrl)
+          : null,
+      });
+      const forward = message
+        ? forwardTarget(message.source.platform, message.source.externalSourceId, message.externalMessageId)
+        : null;
+      await this.notifyReviewCard(forward, text, this.reviewKeyboard("signal", s.id));
     }
-    for (const u of upds as Array<{ id: string }>) {
+    for (const u of upds) {
       const key = `u:${u.id}`;
       if (this.seen.has(key)) continue;
       this.seen.add(key);
-      await this.notifyAll(
-        `REVIEW update ${u.id}`,
-        this.reviewKeyboard("update", u.id),
+      const matched = u.matchedSignal?.versions[0];
+      const text = formatUpdateReviewCard({
+        action: u.actionType,
+        validationStatus: u.validationStatus,
+        confidence: u.matchConfidence == null ? null : String(u.matchConfidence),
+        reason: u.reviewReason,
+        matchedSummary: matched
+          ? `${displayOrDash(matched.direction)} ${displayOrDash(matched.instrument)}`
+          : null,
+        sourceName: u.sourceMessage.source.displayName,
+        platform: u.sourceMessage.source.platform,
+        messageText: u.sourceMessage.contentRaw,
+        author: u.sourceMessage.authorName,
+        timestamp: u.sourceMessage.sourceTimestamp
+          ? u.sourceMessage.sourceTimestamp.toISOString()
+          : null,
+        url: postLink(
+          u.sourceMessage.source.platform,
+          u.sourceMessage.source.externalSourceId,
+          u.sourceMessage.externalMessageId,
+          u.sourceMessage.sourceUrl,
+        ),
+      });
+      const forward = forwardTarget(
+        u.sourceMessage.source.platform,
+        u.sourceMessage.source.externalSourceId,
+        u.sourceMessage.externalMessageId,
       );
+      await this.notifyReviewCard(forward, text, this.reviewKeyboard("update", u.id));
     }
   }
 }

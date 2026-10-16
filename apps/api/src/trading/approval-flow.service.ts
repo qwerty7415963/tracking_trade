@@ -4,6 +4,7 @@ import { PrismaService } from "../database/prisma.service";
 import { PublicationsService } from "../reporting/publications.service";
 import { ApproveSignalDto } from "../signals/dto/signal.dto";
 import { SignalsService } from "../signals/signals.service";
+import { OpenModeService } from "./open-mode.service";
 import { VirtualAccountsService } from "./virtual-accounts.service";
 import { VirtualTradingService } from "./virtual-trading.service";
 
@@ -23,6 +24,7 @@ export class ApprovalFlowService {
     private readonly trading: VirtualTradingService,
     private readonly accounts: VirtualAccountsService,
     private readonly publications: PublicationsService,
+    private readonly openMode: OpenModeService,
   ) {}
 
   private async resolveAccount(accountId?: string) {
@@ -129,6 +131,9 @@ export class ApprovalFlowService {
   async processNewSignal(
     signalId: string,
   ): Promise<{ action: "opened" | "wait" | "skip"; reason?: string; positionId?: string }> {
+    if ((await this.openMode.getMode()) !== "AUTO") {
+      return { action: "wait", reason: "manual-mode" };
+    }
     let account;
     try {
       account = await this.resolveAccount(undefined);

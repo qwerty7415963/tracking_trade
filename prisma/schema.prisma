@@ -315,6 +315,43 @@ model TelegramPublication {
   @@map("telegram_publications")
 }
 
+model ParserProfile {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  coinAliases Json?    @map("coin_aliases")
+  notes       String?
+  createdBy   String?  @map("created_by")
+  updatedBy   String?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("parser_profiles")
+}
+
+model TradableCoin {
+  id        String   @id @default(uuid())
+  symbol    String   @unique
+  enabled   Boolean  @default(true)
+  notes     String?
+  createdBy String?  @map("created_by")
+  updatedBy String?  @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("tradable_coins")
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  updatedBy String?  @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
 model AuditLog {
   id        String   @id @default(uuid())
   actor     String

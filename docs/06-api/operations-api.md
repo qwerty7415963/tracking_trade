@@ -19,6 +19,8 @@
 |---|---|---|
 | GET | `/api/v1/signals` | Danh sách tín hiệu |
 | GET | `/api/v1/signals/:id` | Chi tiết tín hiệu |
+| GET | `/api/v1/operations/open-mode` | Xem switch mở lệnh toàn cục |
+| POST | `/api/v1/operations/open-mode` | Đổi switch (`MANUAL`/`AUTO`), ghi audit |
 | POST | `/api/v1/signals/:id/approve` | Duyệt + mở vị thế ảo (approve = open) |
 | POST | `/api/v1/signals/:id/reject` | Từ chối tín hiệu |
 | POST | `/api/v1/signals/:id/expire` | Hết hạn tín hiệu |
@@ -78,7 +80,8 @@
 | `/close <positionId>` | Đóng vị thế theo giá thị trường |
 | `/positions [status]` | Danh sách vị thế ảo |
 | `/account [id]` | Tổng quan tài khoản (equity, margin, PnL) |
-| `/mode [auto\|approve] [accountId]` | Xem/đổi mode mở lệnh |
+| `/mode [auto\|approve] [accountId]` | Xem/đổi mode mở lệnh từng ví |
+| `/openmode [manual\|auto]` | Xem/đổi switch mở lệnh toàn cục |
 | `/deposit <accountId> <amount>` | Nạp vốn ảo |
 | `/withdraw <accountId> <amount>` | Rút vốn ảo |
 | `/reset <accountId> <balance>` | Đóng hết + đặt lại số dư |
@@ -89,9 +92,27 @@
 | `/source_edit <ref> name=".." kind=.. priority=..` | Sửa kênh theo handle/ID |
 | `/source_enable\|/source_disable <ref> [...]` | Bật/tắt thu thập từng kênh |
 | `/source_health <ref> [...]` | Xem health đã lưu của từng kênh |
+| `/coins` | Danh sách coin trade được |
+| `/coin_add` | Thêm nhiều coin, mỗi dòng một symbol; trùng được bỏ qua |
+| `/coin_del` | Xóa hẳn nhiều coin, giữ lịch sử audit |
+| `/coin_enable\|/coin_disable <SYM> [...]` | Bật/tắt từng coin |
 | `/kill [new\|all]` | Bật kill switch (`STOP NEW TRADES` / `STOP ALL AUTOMATED MUTATIONS`) |
 
 Review mơ hồ: bot **DM thẳng từng operator** (theo `OPERATOR_CHAT_IDS`) kèm nút **Approve** / **Reject** (inline buttons); bấm Reject từ chối ngay. Một operator block bot không ảnh hưởng người còn lại; chưa cấu hình chat nào thì không gửi (log warn).
+
+### Định dạng review (không hiện id/UNKNOWN)
+
+Mỗi thông báo review gồm card trực quan, không bao giờ in id đầy đủ hay `UNKNOWN UNKNOWN`:
+
+- Signal: hướng + coin + trạng thái + version, lý do review (ví dụ `thiếu entry`), Entry/SL/TP, tên nguồn + nền tảng + giờ bài gốc.
+- Update: action + trạng thái validation, tóm tắt signal đã khớp (hoặc “chưa khớp”), lý do review.
+- `/review` liệt kê tối đa 3 signal + 3 update dạng một dòng tương tự, mỗi dòng kèm **link tới bài viết gốc** (dựng từ handle + message id, ưu tiên URL đã lưu).
+
+### Forward bài gốc
+
+- Với nguồn Telegram có `external_message_id` là số: bot thử `forwardMessage` bài gốc vào DM trước, rồi gửi card kèm nút.
+- Forward thất bại (kênh private, nội dung bảo vệ, nguồn X, id không phải số) → fallback gửi **nội dung text đã lưu trong `source_messages`** kèm tác giả/giờ/nguồn/URL.
+- Hiện chỉ forward/gửi text đã lưu; media chưa được ingestion lưu nên chưa kèm được.
 
 > Điều kiện tiên quyết: mỗi operator nhắn `/start` cho bot **một lần**, nếu không Telegram chặn DM từ bot. Lấy chat_id bằng cách forward 1 tin nhắn bất kỳ cho @userinfobot.
 

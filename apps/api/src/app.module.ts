@@ -5,6 +5,8 @@ import { DatabaseModule } from "./database/database.module";
 import { HealthController } from "./health/health.controller";
 import { IngestionModule } from "./ingestion/ingestion.module";
 import { AuthModule } from "./auth/auth.module";
+import { CoinsModule } from "./coins/coins.module";
+import { ProfilesModule } from "./profiles/profiles.module";
 import { AuditModule } from "./audit/audit.module";
 import { MarketDataModule } from "./market-data/market-data.module";
 import { ReportingModule } from "./reporting/reporting.module";
@@ -18,6 +20,8 @@ import { TradingModule } from "./trading/trading.module";
     ConfigModule.forRoot({ isGlobal: true }),
     AppConfigModule,
     AuthModule,
+    CoinsModule,
+    ProfilesModule,
     DatabaseModule,
     AuditModule,
     QueueModule,

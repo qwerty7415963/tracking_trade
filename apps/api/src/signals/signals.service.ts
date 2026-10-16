@@ -13,7 +13,9 @@ import {
   parseSignal,
 } from "@tracking-auto/domain";
 import { AuditService } from "../audit/audit.service";
+import { CoinsService } from "../coins/coins.service";
 import { PrismaService } from "../database/prisma.service";
+import { ProfilesService } from "../profiles/profiles.service";
 import { ApproveSignalDto, RejectSignalDto } from "./dto/signal.dto";
 
 const APPROVABLE = ["PENDING_APPROVAL", "NEEDS_REVIEW"];
@@ -26,11 +28,25 @@ export interface IngestOutcome {
   status: string;
 }
 
+/**
+ * Row id of the originating post inside a version payload. Payloads are
+ * stored camelCase (`sourceMessageId`); very old rows may use snake_case.
+ */
+export function payloadRowId(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as { sourceMessageId?: unknown; source_message_id?: unknown };
+  if (typeof p.sourceMessageId === "string" && p.sourceMessageId) return p.sourceMessageId;
+  if (typeof p.source_message_id === "string" && p.source_message_id) return p.source_message_id;
+  return null;
+}
+
 @Injectable()
 export class SignalsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly coins: CoinsService,
+    private readonly profiles: ProfilesService,
   ) {}
 
   list(status?: string): Promise<Signal[]> {
@@ -52,6 +68,27 @@ export class SignalsService {
     return signal;
   }
 
+  /** NEEDS_REVIEW signals with latest version + source, for human-readable review cards. */
+  reviewQueueDetailed() {
+    return this.prisma.signal.findMany({
+      where: { status: "NEEDS_REVIEW" },
+      orderBy: { createdAt: "asc" },
+      include: {
+        source: true,
+        versions: { orderBy: { versionNumber: "desc" }, take: 1 },
+      },
+    });
+  }
+
+  /** Original post backing a signal version payload (null when gone). */
+  getReviewMessage(rowId: string | null | undefined) {
+    if (!rowId) return Promise.resolve(null);
+    return this.prisma.sourceMessage.findUnique({
+      where: { id: rowId },
+      include: { source: true },
+    });
+  }
+
   async ingestSourceMessage(messageId: string, actor: string): Promise<IngestOutcome> {
     const message = await this.prisma.sourceMessage.findUnique({
       where: { id: messageId },
@@ -60,19 +97,35 @@ export class SignalsService {
     if (!message || message.source.deletedAt) {
       throw new NotFoundException(`source message ${messageId} not found`);
     }
-    const parsed = parseSignal({
-      text: message.contentRaw,
-      sourceMessageId: message.id,
-      sourcePlatform: message.source.platform,
-      sourceUrl: message.sourceUrl,
-      sourceTimestamp: message.sourceTimestamp ? message.sourceTimestamp.toISOString() : null,
-      threadId: message.threadId,
-      replyToMessageId: message.replyToMessageId,
-      quotedMessageId: message.quotedMessageId,
-    });
+    const coinUniverse = await this.coins.enabledSymbols().catch(() => [] as string[]);
+    const profile = await this.profiles
+      .getProfile(message.source.parserProfileId)
+      .catch(() => null);
+    const parsed = parseSignal(
+      {
+        text: message.contentRaw,
+        sourceMessageId: message.id,
+        sourcePlatform: message.source.platform,
+        sourceUrl: message.sourceUrl,
+        sourceTimestamp: message.sourceTimestamp ? message.sourceTimestamp.toISOString() : null,
+        threadId: message.threadId,
+        replyToMessageId: message.replyToMessageId,
+        quotedMessageId: message.quotedMessageId,
+      },
+      { coinUniverse, profile },
+    );
+    if (parsed.eventType === "NEW" && parsed.instrument && !coinUniverse.includes(parsed.instrument)) {
+      parsed.ambiguities.push(`unmapped_symbol_${parsed.instrument}`);
+    }
     if (parsed.eventType === "UPDATE") {
       const updateId = await this.handleUpdate(message.sourceId, message.authorId, parsed, actor);
       return { kind: "UPDATE", updateId, status: "CREATED" };
+    }
+    // Same row re-ingested (retry/redelivery): idempotent, return existing.
+    const sameRowSignalId = await this.findSignalIdByPostRows([message.id]);
+    if (sameRowSignalId) {
+      const current = await this.prisma.signal.findUnique({ where: { id: sameRowSignalId } });
+      if (current) return { kind: "SIGNAL", signalId: current.id, status: current.status };
     }
     if (message.revision > 1) {
       const edited = await this.appendEditVersion(message, parsed, actor);
@@ -80,6 +133,26 @@ export class SignalsService {
     }
     const signal = await this.handleNewSignal(message.sourceId, parsed, actor);
     return { kind: "SIGNAL", signalId: signal.id, status: signal.status };
+  }
+
+  /**
+   * Signal already spawned from any of these post rows (highest version
+   * first). One indexed-plus-JSON query per NEW ingest; fine at this scale.
+   */
+  private async findSignalIdByPostRows(rowIds: string[]): Promise<string | null> {
+    if (rowIds.length === 0) return null;
+    const linked = await this.prisma.signalVersion.findMany({
+      where: {
+        OR: rowIds.flatMap((id) => [
+          { normalizedPayloadJson: { path: ["sourceMessageId"], equals: id } },
+          { normalizedPayloadJson: { path: ["source_message_id"], equals: id } },
+        ]),
+      },
+      orderBy: { versionNumber: "desc" },
+      select: { signalId: true },
+    });
+    if (linked.length === 0) return null;
+    return linked[0].signalId;
   }
 
   /**
@@ -100,18 +173,10 @@ export class SignalsService {
     });
     const priorIds = priorRows.map((r) => r.id).filter((id) => id !== message.id);
     if (priorIds.length === 0) return null;
-    const linked = await this.prisma.signalVersion.findMany({
-      where: {
-        OR: priorIds.map((id) => ({
-          normalizedPayloadJson: { path: ["source_message_id"], equals: id },
-        })),
-      },
-      orderBy: { versionNumber: "desc" },
-      select: { signalId: true },
-    });
-    if (linked.length === 0) return null;
+    const signalId = await this.findSignalIdByPostRows(priorIds);
+    if (!signalId) return null;
     const signal = await this.prisma.signal.findUnique({
-      where: { id: linked[0].signalId },
+      where: { id: signalId },
       include: { versions: { orderBy: { versionNumber: "desc" }, take: 1 } },
     });
     if (!signal) return null;
@@ -232,27 +297,29 @@ export class SignalsService {
       },
     });
     const externalIds = new Set<string>();
+    const rowIds = new Set<string>();
     for (const s of signals) {
-      const payload = s.versions[0]?.normalizedPayloadJson as {
-        source_message_id?: string;
-      } | null;
-      if (payload?.source_message_id) externalIds.add(payload.source_message_id);
+      const rowId = payloadRowId(s.versions[0]?.normalizedPayloadJson);
+      if (rowId) rowIds.add(rowId);
       for (const u of s.updates) externalIds.add(u.sourceMessage.externalMessageId);
     }
     const messages = await this.prisma.sourceMessage.findMany({
       where: { externalMessageId: { in: [...externalIds] }, sourceId },
     });
     const byExternalId = new Map(messages.map((m) => [m.externalMessageId, m]));
+    const originRows =
+      rowIds.size > 0
+        ? await this.prisma.sourceMessage.findMany({ where: { id: { in: [...rowIds] } } })
+        : [];
+    const byRowId = new Map(originRows.map((m) => [m.id, m]));
     const candidates = signals.map((s) => {
       const payload = s.versions[0]?.normalizedPayloadJson as {
-        source_message_id?: string;
         thread_id?: string | null;
       } | null;
-      const origin = payload?.source_message_id
-        ? byExternalId.get(payload.source_message_id)
-        : undefined;
+      const originRowId = payloadRowId(s.versions[0]?.normalizedPayloadJson);
+      const origin = originRowId ? byRowId.get(originRowId) : undefined;
       const ids = [
-        ...(payload?.source_message_id ? [payload.source_message_id] : []),
+        ...(origin ? [origin.externalMessageId] : []),
         ...s.updates.map((u) => u.sourceMessage.externalMessageId),
       ];
       return {

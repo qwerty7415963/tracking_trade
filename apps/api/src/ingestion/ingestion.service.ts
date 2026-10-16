@@ -3,6 +3,7 @@ import { Source } from "@prisma/client";
 import { SignalsService } from "../signals/signals.service";
 import { SourcesService } from "../sources/sources.service";
 import { TelegramCollectorService, TelegramMessageInput } from "../telegram/telegram-collector.service";
+import { ApprovalFlowService } from "../trading/approval-flow.service";
 
 /** Re-check for newly added/enabled sources (no restart needed after /source_add). */
 const RESYNC_MS = 60_000;
@@ -22,6 +23,7 @@ export class IngestionService implements OnModuleInit, OnModuleDestroy {
     private readonly sources: SourcesService,
     private readonly telegram: TelegramCollectorService,
     private readonly signals: SignalsService,
+    private readonly flow: ApprovalFlowService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -71,7 +73,7 @@ export class IngestionService implements OnModuleInit, OnModuleDestroy {
     try {
       const res = await this.telegram.ingestMessage(sourceId, msg);
       if (res.deduplicated || !res.id) return;
-      await this.signals.ingestSourceMessage(res.id, "ingestion");
+      await this.parseAndMaybeAutoOpen(res.id);
     } catch {
       // One bad message must never kill the loop.
     }
@@ -82,9 +84,17 @@ export class IngestionService implements OnModuleInit, OnModuleDestroy {
     try {
       const res = await this.telegram.ingestEdit(sourceId, msg);
       if (res.deduplicated || !res.id) return;
-      await this.signals.ingestSourceMessage(res.id, "ingestion");
+      await this.parseAndMaybeAutoOpen(res.id);
     } catch {
       // One bad message must never kill the loop.
+    }
+  }
+
+  /** Parse a fresh message, then run the AUTO hook (no-op unless global AUTO). */
+  private async parseAndMaybeAutoOpen(rowId: string): Promise<void> {
+    const outcome = await this.signals.ingestSourceMessage(rowId, "ingestion");
+    if (outcome.kind === "SIGNAL" && outcome.signalId) {
+      await this.flow.processNewSignal(outcome.signalId);
     }
   }
 }

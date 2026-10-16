@@ -25,7 +25,7 @@ Các quyết định sau **chưa được chốt** và phải được quyết �
 | 15 | Mô hình deploy production | ĐÃ CHỐT | B: Actions SSH vào VPS, build tại chỗ khi merge `main` (gate CI trước, rollback tự động); GHCR dời lại sau |
 | 16 | Nguồn giá + phạm vi symbol | ĐÃ CHỐT | Hyperliquid `meta`/`allMids` public (không key); mapping data-driven từ universe (vàng → `PAXG` đã verify live); không match → review |
 | 17 | Virtual account | ĐÃ CHỐT | Cross margin, đòn bẩy mặc định x10 (1..50); MVP chỉ PnL + margin ratio + liquidation xấp xỉ (chưa fee/funding) |
-| 18 | Mode mở lệnh | ĐÃ CHỐT | `APPROVE` (mặc định, approve = mở) / `AUTO` (tự mở khi đủ field); đổi qua API + bot `/mode` |
+| 18 | Mode mở lệnh | ĐÃ CHỐT | Switch toàn cục `MANUAL` (mặc định, fail-safe) / `AUTO`, đổi runtime qua API + bot `/openmode` (audit); `AUTO` giữ logic cũ theo mode từng ví (`/mode`); `NEEDS_REVIEW` không bao giờ tự mở |
 | 19 | Multi-TP | ĐÃ CHỐT | TP1 đóng 50%, còn lại chia đều; TP duy nhất đóng 100%; SL đóng hết phần còn lại |
 | 20 | Review mơ hồ | ĐÃ CHỐT | Hỏi operator qua noti + nút inline Approve/Reject; private-chat + allowlist + rate limit |
 

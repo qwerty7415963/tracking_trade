@@ -1,5 +1,21 @@
 import { ConflictException } from "@nestjs/common";
-import { SignalsService } from "./signals.service";
+import { SignalsService, payloadRowId } from "./signals.service";
+
+describe("payloadRowId", () => {
+  it("reads the camelCase key stored by ingest", () => {
+    expect(payloadRowId({ sourceMessageId: "m1" })).toBe("m1");
+  });
+
+  it("falls back to legacy snake_case rows", () => {
+    expect(payloadRowId({ source_message_id: "m1" })).toBe("m1");
+  });
+
+  it("rejects missing and non-string values", () => {
+    expect(payloadRowId(null)).toBeNull();
+    expect(payloadRowId({})).toBeNull();
+    expect(payloadRowId({ sourceMessageId: 42 })).toBeNull();
+  });
+});
 
 describe("SignalsService.ingestSourceMessage (edits)", () => {
   const EDIT_ROW = {
@@ -25,7 +41,12 @@ describe("SignalsService.ingestSourceMessage (edits)", () => {
         findUnique: jest.fn(async () => EDIT_ROW),
         findMany: jest.fn(async () => [{ id: "m1" }]),
       },
-      signalVersion: { findMany: jest.fn(async () => [{ signalId: "sig1" }]) },
+      // Same-row lookup (references "m2") finds nothing yet; prior rows link sig1.
+      signalVersion: {
+        findMany: jest.fn(async ({ where }: { where: unknown }) =>
+          JSON.stringify(where).includes('"m2"') ? [] : [{ signalId: "sig1" }],
+        ),
+      },
       signal: {
         findUnique: jest.fn(async () => ({
           id: "sig1",
@@ -36,7 +57,14 @@ describe("SignalsService.ingestSourceMessage (edits)", () => {
       $transaction: jest.fn(async (fn: (t: unknown) => unknown) => fn(tx)),
       ...(overrides as Record<string, unknown>),
     };
-    const svc = new SignalsService(prisma as never, { record: jest.fn() } as never);
+    const coins = { enabledSymbols: jest.fn(async () => ["XAU", "ETH", "BTC"]) };
+    const profiles = { getProfile: jest.fn(async () => null) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      coins as never,
+      profiles as never,
+    );
     return { svc, prisma, tx };
   }
 
@@ -90,6 +118,160 @@ describe("SignalsService.ingestSourceMessage (edits)", () => {
   });
 });
 
+describe("SignalsService.ingestSourceMessage (coin gate)", () => {
+  function gateService(allowed: string[]) {
+    const tx = {
+      signal: {
+        create: jest.fn(async () => ({ id: "sig-new" })),
+        update: jest.fn(async (args: { data: Record<string, unknown> }) => ({
+          id: "sig-new",
+          ...args.data,
+        })),
+      },
+      signalVersion: { create: jest.fn(async () => ({})) },
+    };
+    const prisma = {
+      sourceMessage: {
+        findUnique: jest.fn(async () => ({
+          id: "m1",
+          sourceId: "s1",
+          externalMessageId: "42",
+          revision: 1,
+          contentRaw: "#$ZEC LONG Entry 1 SL 0.9 TP 1.1",
+          authorId: "a1",
+          source: { platform: "TELEGRAM", deletedAt: null, parserProfileId: null },
+        })),
+      },
+      signalVersion: { findMany: jest.fn(async () => []) },
+      $transaction: jest.fn(async (fn: (t: unknown) => unknown) => fn(tx)),
+    };
+    const coins = { enabledSymbols: jest.fn(async () => allowed) };
+    const profiles = { getProfile: jest.fn(async () => null) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      coins as never,
+      profiles as never,
+    );
+    return { svc, tx };
+  }
+
+  it("sends unlisted coins to review with a visible reason", async () => {
+    const { svc, tx } = gateService([]);
+    await expect(svc.ingestSourceMessage("m1", "ingestion")).resolves.toEqual({
+      kind: "SIGNAL",
+      signalId: "sig-new",
+      status: "NEEDS_REVIEW",
+    });
+    expect(tx.signalVersion.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          instrument: "ZEC",
+          normalizedPayloadJson: expect.objectContaining({
+            ambiguities: expect.arrayContaining(["unmapped_symbol_ZEC"]),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("approves the queue for listed coins", async () => {
+    const { svc } = gateService(["ZEC"]);
+    await expect(svc.ingestSourceMessage("m1", "ingestion")).resolves.toEqual({
+      kind: "SIGNAL",
+      signalId: "sig-new",
+      status: "PENDING_APPROVAL",
+    });
+  });
+
+  it("applies the source channel profile aliases", async () => {
+    const tx = {
+      signal: {
+        create: jest.fn(async () => ({ id: "sig-new" })),
+        update: jest.fn(async (args: { data: Record<string, unknown> }) => ({
+          id: "sig-new",
+          ...args.data,
+        })),
+      },
+      signalVersion: { create: jest.fn(async () => ({})) },
+    };
+    const prisma = {
+      sourceMessage: {
+        findUnique: jest.fn(async () => ({
+          id: "m1",
+          sourceId: "s1",
+          externalMessageId: "42",
+          revision: 1,
+          contentRaw: "BUY PAWS Entry 1 SL 0.9 TP 1.1",
+          authorId: "a1",
+          source: { platform: "TELEGRAM", deletedAt: null, parserProfileId: "p1" },
+        })),
+      },
+      signalVersion: { findMany: jest.fn(async () => []) },
+      $transaction: jest.fn(async (fn: (t: unknown) => unknown) => fn(tx)),
+    };
+    const coins = { enabledSymbols: jest.fn(async () => ["BTC"]) };
+    const profiles = { getProfile: jest.fn(async () => ({ coinAliases: { PAWS: "BTC" } })) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      coins as never,
+      profiles as never,
+    );
+    await expect(svc.ingestSourceMessage("m1", "ingestion")).resolves.toEqual({
+      kind: "SIGNAL",
+      signalId: "sig-new",
+      status: "PENDING_APPROVAL",
+    });
+    expect(profiles.getProfile).toHaveBeenCalledWith("p1");
+    expect(tx.signalVersion.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ instrument: "BTC" }) }),
+    );
+  });
+});
+
+describe("SignalsService.ingestSourceMessage (idempotent re-ingest)", () => {
+  it("returns the existing signal when the same row is ingested twice", async () => {
+    const tx = {
+      signalVersion: { create: jest.fn() },
+      signal: { create: jest.fn(), update: jest.fn() },
+    };
+    const prisma = {
+      sourceMessage: {
+        findUnique: jest.fn(async () => ({
+          id: "m1",
+          sourceId: "s1",
+          externalMessageId: "42",
+          revision: 1,
+          contentRaw: "BUY XAUUSD @2600 SL 2590 TP 2620",
+          authorId: "a1",
+          source: { platform: "TELEGRAM", deletedAt: null, parserProfileId: null },
+        })),
+      },
+      signalVersion: { findMany: jest.fn(async () => [{ signalId: "sig1" }]) },
+      signal: {
+        findUnique: jest.fn(async () => ({ id: "sig1", status: "PENDING_APPROVAL" })),
+      },
+      $transaction: jest.fn(async (fn: (t: unknown) => unknown) => fn(tx)),
+    };
+    const coins = { enabledSymbols: jest.fn(async () => ["XAU"]) };
+    const profiles = { getProfile: jest.fn(async () => null) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      coins as never,
+      profiles as never,
+    );
+    await expect(svc.ingestSourceMessage("m1", "ingestion")).resolves.toEqual({
+      kind: "SIGNAL",
+      signalId: "sig1",
+      status: "PENDING_APPROVAL",
+    });
+    expect(tx.signal.create).not.toHaveBeenCalled();
+    expect(tx.signalVersion.create).not.toHaveBeenCalled();
+  });
+});
+
 describe("SignalsService.approve (stale version)", () => {
   it("rejects approval bound to an old version", async () => {
     const tx = {
@@ -103,7 +285,14 @@ describe("SignalsService.approve (stale version)", () => {
       approval: { create: jest.fn() },
     };
     const prisma = { $transaction: async (fn: (t: unknown) => unknown) => fn(tx) };
-    const svc = new SignalsService(prisma as never, { record: jest.fn() } as never);
+    const coins = { enabledSymbols: jest.fn(async () => [] as string[]) };
+    const profiles = { getProfile: jest.fn(async () => null) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      coins as never,
+      profiles as never,
+    );
 
     await expect(svc.approve("s1", { signalVersionId: "v1" }, "alice")).rejects.toThrow(
       ConflictException,

@@ -4,6 +4,7 @@ import { KillSwitchMode } from "@tracking-auto/domain";
 import { OperatorGuard } from "../auth/operator.guard";
 import { ApprovalFlowService } from "./approval-flow.service";
 import { KillSwitchService } from "./kill-switch.service";
+import { OpenModeService } from "./open-mode.service";
 import { VirtualAccountsService } from "./virtual-accounts.service";
 import { VirtualTradingService } from "./virtual-trading.service";
 
@@ -70,9 +71,17 @@ class KillSwitchDto {
   mode!: KillSwitchMode;
 }
 
+class OpenModeDto {
+  @IsIn(["MANUAL", "AUTO"])
+  mode!: string;
+}
+
 @Controller("v1/operations")
 export class OperationsController {
-  constructor(private readonly killSwitch: KillSwitchService) {}
+  constructor(
+    private readonly killSwitch: KillSwitchService,
+    private readonly openMode: OpenModeService,
+  ) {}
 
   private actor(req: OperatorRequest): string {
     return req.operatorUsername ?? "unknown";
@@ -82,6 +91,18 @@ export class OperationsController {
   @UseGuards(OperatorGuard)
   setKillSwitch(@Body() dto: KillSwitchDto, @Req() req: OperatorRequest) {
     return this.killSwitch.setMode(dto.mode, this.actor(req));
+  }
+
+  @Get("open-mode")
+  @UseGuards(OperatorGuard)
+  getOpenMode() {
+    return this.openMode.getMode().then((mode) => ({ mode }));
+  }
+
+  @Post("open-mode")
+  @UseGuards(OperatorGuard)
+  setOpenMode(@Body() dto: OpenModeDto, @Req() req: OperatorRequest) {
+    return this.openMode.setMode(dto.mode, this.actor(req)).then((mode) => ({ mode }));
   }
 }
 

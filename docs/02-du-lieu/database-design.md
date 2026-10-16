@@ -290,7 +290,31 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối (cho
 - Retention 7 ngày: API quét folder theo mtime, không cần bảng.
 - Idempotency theo `publicationId` (`telegram-send` jobId `send:<publicationId>`, render jobId `render:<publicationId>`).
 
-### 2.19 Các bảng khác
+### 2.19 `tradable_coins` (coin list do operator quản lý)
+
+| Trường | Ghi chú |
+|---|---|
+| `id` | Khóa chính |
+| `symbol` | Unique, chữ hoa (`BTC`, `ZEC`) |
+| `enabled` | Bật/tắt (tắt mềm an toàn hơn xóa) |
+| `notes` | Ghi chú |
+| `created_by` / `updated_by` | Audit |
+| `created_at` / `updated_at` | Thời điểm |
+
+Seed 8 mã: `BTC, ETH, SOL, XRP, DOGE, XAU, XAG, PAXG`. Xóa hẳn an toàn vì không có FK lịch sử.
+
+### 2.20 `parser_profiles` (alias coin theo channel)
+
+| Trường | Ghi chú |
+|---|---|
+| `id` | Khóa chính |
+| `name` | Unique |
+| `coin_aliases` | JSON `{NICKNAME: COIN}`, đè map mặc định |
+| `notes`, audit, timestamps | Như `tradable_coins` |
+
+Gán qua `sources.parser_profile_id` (`PATCH /v1/sources/:id`).
+
+### 2.21 Các bảng khác
 
 - `audit_logs` — lịch sử mọi thao tác tài chính và quản trị.
 - `outbox_events` — transactional outbox.

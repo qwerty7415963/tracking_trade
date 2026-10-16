@@ -19,6 +19,7 @@ export interface NormalizedSignal {
   entryZoneHigh: number | null;
   stopLoss: number | null;
   takeProfits: number[];
+  leverage: number | null;
   updateAction: UpdateAction;
   sourceMessageId: string;
   sourcePlatform: string;

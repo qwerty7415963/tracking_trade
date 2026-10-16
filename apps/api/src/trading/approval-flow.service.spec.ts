@@ -8,6 +8,7 @@ function flow(overrides: Record<string, unknown> = {}) {
     (overrides.trading ?? {}) as never,
     (overrides.accounts ?? {}) as never,
     (overrides.publications ?? {}) as never,
+    ((overrides.openMode ?? { getMode: jest.fn(async () => "AUTO") }) as never),
   );
 }
 
@@ -85,6 +86,20 @@ describe("ApprovalFlowService.processNewSignal", () => {
     const out = await flowSvc.processNewSignal("s1");
     expect(out).toEqual({ action: "opened", positionId: "pos1" });
     expect(approveSignal).toHaveBeenCalledWith("s1", { signalVersionId: "v1" }, "system:auto", "acc1");
+  });
+
+  it("forces wait in global MANUAL mode even on AUTO accounts", async () => {
+    const approveSignal = jest.fn();
+    const svc = flow({
+      openMode: { getMode: jest.fn(async () => "MANUAL") },
+      accounts: { defaultAccount: jest.fn(async () => ({ id: "acc1", mode: "AUTO" })) },
+    });
+    (svc as unknown as { approveSignal: unknown }).approveSignal = approveSignal;
+    await expect(svc.processNewSignal("s1")).resolves.toEqual({
+      action: "wait",
+      reason: "manual-mode",
+    });
+    expect(approveSignal).not.toHaveBeenCalled();
   });
 
   it("waits in APPROVE mode", async () => {

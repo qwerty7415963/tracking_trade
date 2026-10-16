@@ -34,6 +34,23 @@ Parser chuyển nội dung thô thành **normalized signal** với các trườn
 - Mapping symbol phải rõ ràng, ví dụ: `GOLD → XAUUSD.a`.
 - **Không fuzzy-match symbol sàn** (chỉ map data-driven từ universe Hyperliquid).
 
+### Chuẩn hoá text và coin (2026-10-16)
+
+- Parser chuẩn hoá trước regex: bỏ `$`/`#` đầu ticker, cắt `/USDT`/`/USD`/`/PERP`, xoá dấu phẩy ngăn nghìn (`1,223` → `1223`, quy ước format Mỹ).
+- Ticker có marker (`$ETH`, `#ZEC`, `ZEC/USDT`) luôn được tách; từ thường chỉ nhận nếu nằm trong coin list.
+- Coin trích được đối chiếu **coin list do operator quản lý** (`tradable_coins`): không có → giữ tên thật + gắn `unmapped_symbol_<X>` → `NEEDS_REVIEW`. Không bao giờ đoán coin.
+- Leverage `30x` được trích vào payload (sizing vẫn theo account, dùng sau).
+- Entry dạng vùng `1223 - 1154` → `entry=1223`, `entryZoneHigh=1154`.
+- TP phần trăm (`Tp: 20% 40% 60%`): có entry thì quy đổi ra giá theo hướng (LONG `entry*(1+p/100)`, SHORT ngược lại) + gắn `tp_percent_converted`; thiếu entry thì review. Giả định TP% = biên giá, không phải % vị thế.
+- Bài chỉ có ảnh (số nằm trong chart) → thiếu field → `NEEDS_REVIEW`, chờ OCR/vision giai đoạn sau.
+
+### Parser profile theo nguồn
+
+- Mỗi nguồn có thể gán `parserProfileId` (bảng `parser_profiles`).
+- Profile chứa `coinAliases` (ví dụ `{"PAWS": "BTC"}`), đè lên map mặc định khi parse bài của nguồn đó.
+- Flow vận hành: channel format lạ → `NEEDS_REVIEW` → operator xác nhận mapping **1 lần** → `PATCH /v1/sources/:id {parserProfileId}` → các bài sau tự động.
+- Coin sau alias vẫn phải qua coin list (`unmapped_symbol_<X>` nếu không có).
+
 ## 2. Matching update với tín hiệu gốc
 
 Thứ tự ưu tiên khi khớp update với tín hiệu gốc:
