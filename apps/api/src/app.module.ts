@@ -10,6 +10,7 @@ import { ProfilesModule } from "./profiles/profiles.module";
 import { AuditModule } from "./audit/audit.module";
 import { MarketDataModule } from "./market-data/market-data.module";
 import { ReportingModule } from "./reporting/reporting.module";
+import { ReportingConsumersModule } from "./reporting/reporting-consumers.module";
 import { QueueModule } from "./queue/queue.module";
 import { SignalsModule } from "./signals/signals.module";
 import { SourcesModule } from "./sources/sources.module";

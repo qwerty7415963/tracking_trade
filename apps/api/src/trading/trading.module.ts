@@ -24,7 +24,6 @@ import { VirtualTradingService } from "./virtual-trading.service";
     VirtualTradingService,
     ApprovalFlowService,
     KillSwitchService,
-    MarketWatchService,
     OpenModeService,
     OperatorBotService,
   ],

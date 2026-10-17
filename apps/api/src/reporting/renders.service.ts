@@ -11,8 +11,9 @@ export const RENDER_QUEUE = "RENDER_QUEUE";
 export const RENDER_QUEUE_NAME = "card-render";
 export const PUBLISH_SEND_QUEUE = "PUBLISH_SEND_QUEUE";
 export const PUBLISH_SEND_QUEUE_NAME = "telegram-send";
-export const RENDER_JOB_ID_PREFIX = "render:";
-export const SEND_JOB_ID_PREFIX = "send:";
+// BullMQ rejects custom job ids containing ":" — keep prefixes colon-free.
+export const RENDER_JOB_ID_PREFIX = "render-";
+export const SEND_JOB_ID_PREFIX = "send-";
 
 export interface RenderJobData {
   virtualPositionId: string;

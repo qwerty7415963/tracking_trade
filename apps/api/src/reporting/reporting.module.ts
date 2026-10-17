@@ -10,7 +10,6 @@ import {
 } from "./reporting.controller";
 import { RendersService } from "./renders.service";
 import { PublicationsService } from "./publications.service";
-import { PublishSendConsumer } from "./publish-send.consumer";
 
 @Module({
   imports: [AppConfigModule, MarketDataModule, QueueModule],
@@ -18,7 +17,6 @@ import { PublishSendConsumer } from "./publish-send.consumer";
   providers: [
     RendersService,
     PublicationsService,
-    PublishSendConsumer,
     {
       provide: TELEGRAM_SENDER,
       useFactory: () => new BotApiSender(process.env.TELEGRAM_BOT_TOKEN ?? ""),

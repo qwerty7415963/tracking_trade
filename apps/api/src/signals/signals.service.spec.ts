@@ -272,6 +272,88 @@ describe("SignalsService.ingestSourceMessage (idempotent re-ingest)", () => {
   });
 });
 
+describe("SignalsService.appendManualVersion", () => {
+  const ORIGIN_TEXT = "#BTW Entry: 2.0476 SL: 1.1967 Tp: 10.284";
+
+  function manualService() {
+    const tx = {
+      signalVersion: { create: jest.fn(async () => ({})) },
+      signal: {
+        update: jest.fn(async (args: { data: Record<string, unknown> }) => ({
+          id: "sig1",
+          ...args.data,
+        })),
+      },
+    };
+    const prisma = {
+      signal: {
+        findUnique: jest.fn(async () => ({
+          id: "sig1",
+          status: "NEEDS_REVIEW",
+          source: { platform: "TELEGRAM", parserProfileId: null },
+          versions: [
+            {
+              versionNumber: 1,
+              instrument: "BTW",
+              direction: "UNKNOWN",
+              orderType: null,
+              entry: 2.0476,
+              stopLoss: 1.1967,
+              takeProfits: [10.284],
+              normalizedPayloadJson: { sourceMessageId: "m1" },
+            },
+          ],
+        })),
+      },
+      sourceMessage: {
+        findUnique: jest.fn(async () => ({
+          id: "m1",
+          contentRaw: ORIGIN_TEXT,
+          sourceUrl: null,
+          sourceTimestamp: null,
+          threadId: null,
+          replyToMessageId: null,
+          quotedMessageId: null,
+        })),
+      },
+      $transaction: jest.fn(async (fn: (t: unknown) => unknown) => fn(tx)),
+    };
+    const coins = { enabledSymbols: jest.fn(async () => ["BTW"]) };
+    const profiles = { getProfile: jest.fn(async () => null) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      coins as never,
+      profiles as never,
+    );
+    return { svc, tx };
+  }
+
+  it("fills a missing direction from a one-word reply", async () => {
+    const { svc, tx } = manualService();
+    const out = await svc.appendManualVersion("sig1", "long", "tg:alice");
+    expect(out.status).toBe("PENDING_APPROVAL");
+    expect(tx.signalVersion.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          signalId: "sig1",
+          versionNumber: 2,
+          eventType: "MANUAL",
+          direction: "LONG",
+        }),
+      }),
+    );
+  });
+
+  it("refuses replies that add nothing new", async () => {
+    const { svc, tx } = manualService();
+    await expect(svc.appendManualVersion("sig1", "ok", "tg:alice")).rejects.toThrow(
+      /nothing new parsed/,
+    );
+    expect(tx.signalVersion.create).not.toHaveBeenCalled();
+  });
+});
+
 describe("SignalsService.approve (stale version)", () => {
   it("rejects approval bound to an old version", async () => {
     const tx = {
@@ -298,5 +380,72 @@ describe("SignalsService.approve (stale version)", () => {
       ConflictException,
     );
     expect(tx.approval.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses to approve versions missing open-required fields", async () => {
+    const tx = {
+      signal: {
+        findUnique: async () => ({
+          id: "s1",
+          status: "NEEDS_REVIEW",
+          versions: [
+            {
+              id: "v1",
+              instrument: "UNKNOWN",
+              direction: "UNKNOWN",
+              entry: null,
+              stopLoss: null,
+              takeProfits: [],
+            },
+          ],
+        }),
+      },
+      approval: { create: jest.fn() },
+    };
+    const prisma = { $transaction: async (fn: (t: unknown) => unknown) => fn(tx) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      { enabledSymbols: jest.fn(async () => [] as string[]) } as never,
+      { getProfile: jest.fn(async () => null) } as never,
+    );
+    await expect(svc.approve("s1", { signalVersionId: "v1" }, "alice")).rejects.toThrow(
+      /missing instrument, direction, entry, stop_loss, take_profits/,
+    );
+    expect(tx.approval.create).not.toHaveBeenCalled();
+  });
+
+  it("still allows approving complete versions with unlisted coins", async () => {
+    const tx = {
+      signal: {
+        findUnique: async () => ({
+          id: "s1",
+          status: "NEEDS_REVIEW",
+          versions: [
+            {
+              id: "v1",
+              instrument: "ZEC",
+              direction: "LONG",
+              entry: 1,
+              stopLoss: 0.9,
+              takeProfits: [1.1],
+            },
+          ],
+        }),
+        update: jest.fn(async (args: unknown) => args),
+      },
+      approval: { create: jest.fn(async () => ({ id: "ap1" })) },
+    };
+    const prisma = { $transaction: async (fn: (t: unknown) => unknown) => fn(tx) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      { enabledSymbols: jest.fn(async () => [] as string[]) } as never,
+      { getProfile: jest.fn(async () => null) } as never,
+    );
+    await expect(
+      svc.approve("s1", { signalVersionId: "v1" }, "alice"),
+    ).resolves.toBeTruthy();
+    expect(tx.approval.create).toHaveBeenCalled();
   });
 });

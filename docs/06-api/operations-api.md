@@ -106,7 +106,14 @@ Mỗi thông báo review gồm card trực quan, không bao giờ in id đầy �
 
 - Signal: hướng + coin + trạng thái + version, lý do review (ví dụ `thiếu entry`), Entry/SL/TP, tên nguồn + nền tảng + giờ bài gốc.
 - Update: action + trạng thái validation, tóm tắt signal đã khớp (hoặc “chưa khớp”), lý do review.
-- `/review` liệt kê tối đa 3 signal + 3 update dạng một dòng tương tự, mỗi dòng kèm **link tới bài viết gốc** (dựng từ handle + message id, ưu tiên URL đã lưu).
+- `/review` liệt kê tối đa 5 signal + 5 update, **mỗi item một tin nhắn riêng kèm nút**, thừa thì ghi `+N more`. Mỗi dòng kèm **link tới bài viết gốc** (dựng từ handle + message id, ưu tiên URL đã lưu).
+
+### Hành động ngay trên tin review
+
+- Signal: nút **Approve** / **Reject** / **✏️ Bổ sung** (id nằm trong nút, không hiện ra mắt).
+- Update đã khớp: **Approve** / **Reject**.
+- Update mơ hồ: nút chọn ứng viên 1️⃣2️⃣3️⃣ + **Reject** (callback 64 bytes nên dùng nonce server-side, hết hạn 15 phút).
+- **✏️ Bổ sung**: bấm → reply phần còn thiếu (số **hoặc hướng** `long`/`short`, vd `long entry 1224 sl 1068`) → hệ thống gộp với bài gốc, parse lại, nối version `MANUAL` vào đúng signal → card mới. Reply không thêm gì mới (vd `ok`) bị từ chối, không tạo version rác. Hết hạn sau 5 phút, `/cancel` để hủy; signal đã chốt thì từ chối.
 
 ### Forward bài gốc
 

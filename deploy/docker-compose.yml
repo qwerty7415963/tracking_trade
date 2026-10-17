@@ -34,5 +34,7 @@ services:
 volumes:
   pgdata:
   redisdata:
-  # Rendered P&L cards (local volume, 7-day retention enforced by the app).
-  artifacts:
+  # NOTE: rendered P&L cards use a bind mount (../artifacts, repo root) so
+  # local `npm run dev` API and the worker share files. 7-day retention
+  # enforced by the app. Old named volume `artifacts` is unused; prune it
+  # with `docker volume rm deploy_artifacts` once empty.

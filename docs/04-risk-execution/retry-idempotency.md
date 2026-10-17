@@ -12,6 +12,9 @@
 | Mở trùng | Cùng signal+version đang mở → trả vị thế hiện có, không tạo mới |
 | Market data lỗi | Bỏ qua chu kỳ poll, không tác động vị thế |
 | Telegram timeout | Publication UNKNOWN; xử lý thận trọng để tránh bài trùng |
+| Update đến trước bài gốc | Giữ chờ retryable 5 phút (`ORIGINAL_NOT_PUBLISHED_YET`), rồi đăng lẻ + audit `publication.orphaned` |
+| Send job | 10 attempts, fixed backoff 30s (~5 phút, khớp hold timeout) |
+| BullMQ jobId | Custom job id **không được chứa `:`** (BullMQ ném lỗi) — prefix `render-`/`send-` |
 | Lỗi tạm thời | Exponential backoff + jitter, max attempts, DLQ |
 | Lỗi vĩnh viễn | Không retry mù; báo operator |
 | Update đồng thời | Serialize theo signal/position |

@@ -8,6 +8,7 @@
 - Edit/revision được **lưu đúng**.
 - Message **edit nối version mới** vào signal gốc (`eventType: EDIT`), không tạo signal trùng; approval cũ mất hiệu lực.
 - Ingest lại **đúng row cũ** trả signal đã có (idempotent), không tạo mới, không đổi trạng thái.
+- Approve version thiếu coin/hướng/entry/SL/TP bị **từ chối kèm lý do**; nút Approve hiện luôn lý do open-failed.
 - Payload version lưu row id bài gốc ở key **camelCase `sourceMessageId`** (đọc cả snake_case cũ để tương thích); review/matching đều resolve qua key này.
 - Coin parse được phải có trong **coin list** (`tradable_coins`); coin lạ giữ tên thật + gắn `unmapped_symbol_<X>` → review, không đoán.
 - CRUD coin qua API/bot đều có audit; trùng symbol → `409`; xóa coin là xóa hẳn.
@@ -27,6 +28,7 @@
 - Update mơ hồ hoặc nguồn không xác thực **không mở/đóng vị thế** — đưa review + noti operator.
 - Noti review **không in id đầy đủ hay `UNKNOWN`**, luôn kèm bài gốc (forward thật nếu được, fallback text đã lưu) + nút Approve/Reject.
 - `/review` và card review kèm **link bài viết cụ thể** (`https://t.me/{channel}/{msgId}` hoặc URL đã lưu), không chỉ tên channel; nguồn X/id không số thì không có link.
+- `/review` tối đa 5+5 item, mỗi item kèm nút Approve/Reject (signal thêm Bổ sung); update mơ hồ có nút chọn ứng viên; nhập số bổ sung nối version `MANUAL`, hết hạn 5 phút.
 - Nút Reject từ chối ngay, ghi audit.
 - Update đồng thời **không gây mutation sai thứ tự**.
 
@@ -45,7 +47,7 @@
 - Card `filled` chỉ sau khi vị thế đã mở (không báo trước).
 - Worker chỉ render PNG; API gửi Telegram — render lỗi **không mở/đóng vị thế**.
 - Telegram retry **không làm thay đổi vị thế**.
-- Bài TP/SL/close **reply đúng bài gốc**.
+- Bài TP/SL/close **reply đúng bài gốc**; update đến trước thì giữ chờ tối đa 5 phút, quá hạn đăng lẻ + audit (không mất bài).
 - Template thay đổi **không làm đổi publication snapshot**.
 - Thiếu X URL bắt buộc gây **validation failure**.
 - Sender không có quyền đăng kênh tạo **lỗi rõ ràng**.

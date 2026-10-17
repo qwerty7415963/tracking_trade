@@ -8,7 +8,6 @@ import { APP_CONFIG, AppConfig } from "../../api/src/config/app.config";
 import { DatabaseModule } from "../../api/src/database/database.module";
 import { AuditModule } from "../../api/src/audit/audit.module";
 import { ReportingModule } from "../../api/src/reporting/reporting.module";
-import { TradingModule } from "../../api/src/trading/trading.module";
 import {
   PUBLISH_SEND_QUEUE_NAME,
   RENDER_QUEUE_NAME,
@@ -22,7 +21,7 @@ import { PrismaService } from "../../api/src/database/prisma.service";
 import { createDefaultRenderer } from "./renderer";
 
 @Module({
-  imports: [AppConfigModule, DatabaseModule, AuditModule, ReportingModule, TradingModule],
+  imports: [AppConfigModule, DatabaseModule, AuditModule, ReportingModule],
 })
 class WorkerModule {}
 
@@ -76,8 +75,10 @@ async function bootstrap(): Promise<void> {
             },
             {
               jobId: `${SEND_JOB_ID_PREFIX}${data.publicationId}`,
-              attempts: 5,
-              backoff: { type: "exponential", delay: 5000 },
+              // ~5 min total: covers ORIGINAL_HOLD_MS for late originals
+              // plus genuine send retries (429/5xx).
+              attempts: 10,
+              backoff: { type: "fixed", delay: 30000 },
               removeOnComplete: 100,
               removeOnFail: 200,
             },

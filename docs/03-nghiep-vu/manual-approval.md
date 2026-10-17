@@ -14,6 +14,10 @@ Mọi tín hiệu **mở lệnh mới** cần được **duyệt thủ công**. 
 - `NEEDS_REVIEW` không bao giờ tự mở ở mode nào.
 - Thứ tự ưu tiên: global `MANUAL` > mode từng ví.
 
+## 1.1 Điều kiện duyệt (chặn approve mù)
+
+`approve()` từ chối version thiếu field mà chắc chắn mở lỗi: coin/hướng `UNKNOWN`, thiếu entry/SL/TP — kèm lý do rõ để operator Bổ sung trước. Coin có tên thật nhưng chưa trong list vẫn được duyệt (thêm coin vào list là mở được). Nút Approve hiển thị luôn lý do open-failed thay vì cụt lủn.
+
 ## 2. Nội dung bắt buộc của approval
 
 Approval phải lưu:

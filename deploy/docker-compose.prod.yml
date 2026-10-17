@@ -34,7 +34,9 @@ services:
       # Keep OPERATOR_BOT_ENABLED=false on worker to avoid duplicate DMs (409).
       OPERATOR_BOT_ENABLED: "true"
     volumes:
-      - artifacts:/data/artifacts
+      # Bind mount (repo-root ./artifacts) so local `npm run dev` API
+      # sees the same PNGs the worker renders. Do NOT use a named volume.
+      - ../artifacts:/data/artifacts
     ports:
       - "3000:3000"
     depends_on:
@@ -63,7 +65,7 @@ services:
       # Bot poller is hosted by the api service; worker must stay off.
       OPERATOR_BOT_ENABLED: "false"
     volumes:
-      - artifacts:/data/artifacts
+      - ../artifacts:/data/artifacts
     depends_on:
       postgres:
         condition: service_healthy

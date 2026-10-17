@@ -1,4 +1,5 @@
 import { ConflictException, Inject, Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { randomBytes } from "crypto";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { SignalUpdatesService } from "../signals/signal-updates.service";
@@ -81,8 +82,16 @@ const HELP = [
   "/coin_add - add coins (1 per line after command)",
   "/coin_del - delete coins (1 per line)",
   "/coin_enable|/coin_disable <SYM> [...] - toggle coins",
+  "/cancel - abort a pending manual completion",
   "/help - this message",
 ].join("\n");
+
+/** Manual-completion input waits 5 minutes for the operator's reply. */
+const FILL_TIMEOUT_MS = 5 * 60 * 1000;
+/** Candidate-pick nonces live 15 minutes (callback_data 64-byte limit). */
+const PICK_TTL_MS = 15 * 60 * 1000;
+/** Max review items per /review side (5 signals + 5 updates). */
+const REVIEW_PAGE = 5;
 
 /** Lines after the /command line: one item per line, blanks ignored. */
 export function commandLines(rawText: string | undefined): string[] {
@@ -155,24 +164,20 @@ export function forwardTarget(
   return { chatId, messageId: Number(externalMessageId) };
 }
 
+import { buildPostLink } from "@tracking-auto/domain";
+
+/** Kept for existing callers/tests; canonical helper lives in domain. */
+export const postLink = buildPostLink;
+
 /**
- * Link to the exact post under review. Prefers a stored URL, otherwise
- * builds https://t.me/{channel}/{id} for Telegram numeric messages
- * (ingestion never stores it, so this also covers old rows).
- * Returns null when no link can be built (X sources, non-numeric ids).
+ * Channel posts carry no sender (the channel itself is the author), so
+ * author_name is NULL for most ingested posts. Fall back to the channel
+ * name instead of showing "unknown".
  */
-export function postLink(
-  platform: string,
-  sourceExternalId: string,
-  externalMessageId: string | null | undefined,
-  sourceUrl?: string | null,
-): string | null {
-  if (sourceUrl && sourceUrl.trim()) return sourceUrl;
-  if (platform !== "TELEGRAM" || !externalMessageId) return null;
-  if (!/^\d+$/.test(externalMessageId)) return null;
-  const handle = sourceExternalId.trim().replace(/^@+/, "");
-  if (!handle || /^-?\d+$/.test(handle)) return null;
-  return `https://t.me/${handle}/${externalMessageId}`;
+export function reviewAuthor(author: string | null | undefined, sourceName: string): string {
+  if (author && author.trim()) return author.trim();
+  if (sourceName && sourceName.trim()) return sourceName.trim();
+  return "không rõ tác giả";
 }
 
 export interface SignalReviewInput {
@@ -204,7 +209,7 @@ export function formatSignalReviewCard(input: SignalReviewInput): string {
     `Nguồn: ${input.sourceName} (${input.platform}) • ${formatReviewTime(input.timestamp)}`,
   ];
   if (input.messageText && input.messageText.trim()) {
-    lines.push(`Bài gốc (${input.author?.trim() || "không rõ tác giả"}):`, `"${truncateText(input.messageText)}"`);
+    lines.push(`Bài gốc (${reviewAuthor(input.author, input.sourceName)}):`, `"${truncateText(input.messageText)}"`);
   } else {
     lines.push("Bài gốc: không còn lưu trong DB.");
   }
@@ -234,7 +239,7 @@ export function formatUpdateReviewCard(input: UpdateReviewInput): string {
     `Nguồn: ${input.sourceName} (${input.platform}) • ${formatReviewTime(input.timestamp)}`,
   ];
   if (input.messageText && input.messageText.trim()) {
-    lines.push(`Bài gốc (${input.author?.trim() || "không rõ tác giả"}):`, `"${truncateText(input.messageText)}"`);
+    lines.push(`Bài gốc (${reviewAuthor(input.author, input.sourceName)}):`, `"${truncateText(input.messageText)}"`);
   } else {
     lines.push("Bài gốc: không còn lưu trong DB.");
   }
@@ -248,6 +253,11 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
   private offset = 0;
   private readonly seen = new Set<string>();
   private readonly lastCommandAt = new Map<string, number>();
+  private readonly pendingInput = new Map<string, { signalId: string; expiresAt: number }>();
+  private readonly pickNonces = new Map<
+    string,
+    { updateId: string; signalId: string; expiresAt: number }
+  >();
   private reviewTimer: ReturnType<typeof setInterval> | null = null;
   private bootedAt = new Date(0);
 
@@ -403,17 +413,25 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     if (msg.chat?.type !== "private") return;
     const username = msg.from?.username;
     if (!isOperator(username, this.config.operatorUsernames)) return;
-    const parsed = parseCommand(msg.text);
-    if (!parsed) return;
     const key = `${username}`.toLowerCase();
+    const actor = `tg:${username}`;
+    const reply = async (text: string, replyMarkup?: unknown) =>
+      this.send(msg.chat.id, text, replyMarkup);
+    const parsed = parseCommand(msg.text);
+    if (!parsed) {
+      // Plain-text reply: only meaningful as pending manual-completion input.
+      const pending = this.pendingInput.get(key);
+      if (pending) await this.handleFillInput(msg, pending, key, actor, reply);
+      return;
+    }
+    // A fresh command supersedes any pending manual input.
+    this.pendingInput.delete(key);
     const now = Date.now();
     if (now - (this.lastCommandAt.get(key) ?? 0) < 2000) {
       await this.send(msg.chat.id, "Too fast — wait a moment and retry.");
       return;
     }
     this.lastCommandAt.set(key, now);
-    const actor = `tg:${username}`;
-    const reply = async (text: string) => this.send(msg.chat.id, text);
     try {
       await this.dispatch(parsed, actor, reply, msg.text);
     } catch (err) {
@@ -424,7 +442,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
   async dispatch(
     parsed: ParsedCommand,
     actor: string,
-    reply: (text: string) => Promise<void>,
+    reply: (text: string, replyMarkup?: unknown) => Promise<void>,
     rawText?: string,
   ): Promise<void> {
     const [a, b] = parsed.args;
@@ -432,6 +450,9 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
       case "start":
       case "help":
         await reply(HELP);
+        return;
+      case "cancel":
+        await reply("Đã hủy nhập liệu bổ sung (nếu có).");
         return;
       case "approve": {
         if (!a) {
@@ -575,8 +596,12 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           this.signals.reviewQueueDetailed(),
           this.updates.reviewQueue(),
         ]);
-        const lines = [`signals: ${sigs.length}`];
-        for (const s of sigs.slice(0, 3)) {
+        if (sigs.length === 0 && upds.length === 0) {
+          await reply("Hết hàng đợi review. 🎉");
+          return;
+        }
+        await reply(`signals: ${sigs.length}\nupdates: ${upds.length} (mỗi item 1 tin riêng kèm nút)`);
+        for (const s of sigs.slice(0, REVIEW_PAGE)) {
           const version = s.versions[0];
           const payload = (version?.normalizedPayloadJson ?? null) as {
             missingFields?: string[];
@@ -586,12 +611,14 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           const link = message
             ? postLink(message.source.platform, message.source.externalSourceId, message.externalMessageId, message.sourceUrl)
             : null;
-          lines.push(
-            `- ${displayOrDash(version?.direction ?? s.direction)} ${displayOrDash(version?.instrument ?? s.instrument)} [${s.status}] ${s.source.displayName} — ${formatReviewReason(payload?.missingFields ?? [], payload?.ambiguities ?? [])}${link ? `\n  ${link}` : ""}`,
-          );
+          const line =
+            `- ${displayOrDash(version?.direction ?? s.direction)} ${displayOrDash(version?.instrument ?? s.instrument)} [${s.status}] ${s.source.displayName} — ${formatReviewReason(payload?.missingFields ?? [], payload?.ambiguities ?? [])}${link ? `\n  ${link}` : ""}`;
+          await reply(line, this.signalCardKeyboard(s.id));
         }
-        lines.push(`updates: ${upds.length}`);
-        for (const u of upds.slice(0, 3)) {
+        if (sigs.length > REVIEW_PAGE) {
+          await reply(`… +${sigs.length - REVIEW_PAGE} signals nữa (xử lý bớt rồi /review lại)`);
+        }
+        for (const u of upds.slice(0, REVIEW_PAGE)) {
           const matched = u.matchedSignal?.versions[0];
           const link = postLink(
             u.sourceMessage.source.platform,
@@ -599,11 +626,21 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             u.sourceMessage.externalMessageId,
             u.sourceMessage.sourceUrl,
           );
-          lines.push(
-            `- ${displayOrDash(u.actionType)} [${u.validationStatus}] ${matched ? `${displayOrDash(matched.direction)} ${displayOrDash(matched.instrument)}` : "chưa khớp"} — ${u.reviewReason ?? "—"}${link ? `\n  ${link}` : ""}`,
-          );
+          const line =
+            `- ${displayOrDash(u.actionType)} [${u.validationStatus}] ${matched ? `${displayOrDash(matched.direction)} ${displayOrDash(matched.instrument)}` : "chưa khớp"} — ${u.reviewReason ?? "—"}${link ? `\n  ${link}` : ""}`;
+          if (u.validationStatus === "AMBIGUOUS") {
+            const picker = await this.candidatePicker(u.id, u.reviewReason);
+            await reply(
+              `${line}${picker ? `\nỨng viên:\n${picker.legend}` : ""}`,
+              picker ? picker.keyboard : this.updateCardKeyboard(u.id, []),
+            );
+          } else {
+            await reply(line, this.updateCardKeyboard(u.id, []));
+          }
         }
-        await reply(lines.join("\n"));
+        if (upds.length > REVIEW_PAGE) {
+          await reply(`… +${upds.length - REVIEW_PAGE} updates nữa (xử lý bớt rồi /review lại)`);
+        }
         return;
       }
       case "sources": {
@@ -831,6 +868,48 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Plain-text reply to a pending "Bổ sung" prompt: merge the original post
+   * with the operator's numbers and append a MANUAL version to the same signal.
+   */
+  private async handleFillInput(
+    msg: TgMessage,
+    pending: { signalId: string; expiresAt: number },
+    key: string,
+    actor: string,
+    reply: (text: string, replyMarkup?: unknown) => Promise<void>,
+  ): Promise<void> {
+    if (Date.now() > pending.expiresAt) {
+      this.pendingInput.delete(key);
+      await reply("Hết hạn nhập liệu (5 phút). Bấm ✏️ Bổ sung lại nếu cần.");
+      return;
+    }
+    const text = (msg.text ?? "").trim();
+    if (!text) return;
+    try {
+      const out = await this.signals.appendManualVersion(pending.signalId, text, actor);
+      this.pendingInput.delete(key);
+      const card = this.signalCardText(
+        {
+          id: out.signalId,
+          status: out.status,
+          instrument: out.version.instrument,
+          direction: out.version.direction,
+          source: { displayName: out.source.displayName, platform: out.source.platform },
+          versions: [out.version],
+        },
+        out.message,
+      );
+      await reply(`${card}\n(Đã bổ sung từ nhập tay)`, this.signalCardKeyboard(pending.signalId));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "unknown error";
+      if (message.includes("cannot complete") || message.includes("not found")) {
+        this.pendingInput.delete(key);
+      }
+      await reply(`Bổ sung thất bại: ${message.split(":")[0]}. Nhập lại hoặc /cancel.`);
+    }
+  }
+
   // ------------------------------------------------------------ callbacks
 
   async handleCallback(cb: TgCallback): Promise<void> {
@@ -855,7 +934,9 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             return;
           }
           const out = await this.flow.approveSignal(id, { signalVersionId: latest.id }, actor);
-          await answer(out.position ? "Approved + opened." : `Approved. Open failed.`);
+          await answer(
+            out.position ? "Approved + opened." : `Approved. Open failed: ${out.openError ?? "unknown"}`,
+          );
         }
         if (cb.message) {
           await this.api("editMessageText", {
@@ -869,6 +950,71 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
       if (action === "rej" && kind === "update" && id) {
         await this.updates.reject(id, {}, actor);
         await answer("Rejected.");
+        return;
+      }
+      if (action === "appr" && kind === "update" && id) {
+        try {
+          await this.updates.approve(id, {}, actor);
+          await answer("Approved.");
+        } catch (err) {
+          await answer(`Failed: ${err instanceof Error ? err.message.split(":")[0] : "error"}`);
+          return;
+        }
+        if (cb.message) {
+          await this.api("editMessageText", {
+            chat_id: cb.message.chat.id,
+            message_id: cb.message.message_id,
+            text: `${cb.message.text ?? ""}\n\n[APPROVED by @${cb.from.username}]`,
+          }).catch(() => undefined);
+        }
+        return;
+      }
+      if (action === "fill" && kind === "signal" && id) {
+        const full = await this.signals.get(id).catch(() => null);
+        if (!full || !["NEEDS_REVIEW", "PENDING_APPROVAL"].includes(full.status)) {
+          await answer("Signal đã chốt, không bổ sung.");
+          return;
+        }
+        const latest = full.versions[0];
+        const payload = (latest?.normalizedPayloadJson ?? null) as {
+          missingFields?: string[];
+        } | null;
+        const missing = payload?.missingFields ?? [];
+        this.pendingInput.set(`${cb.from.username}`.toLowerCase(), {
+          signalId: id,
+          expiresAt: Date.now() + FILL_TIMEOUT_MS,
+        });
+        await answer("Đã ghi nhận, reply số còn thiếu.");
+        if (cb.message) {
+          await this.api("sendMessage", {
+            chat_id: cb.message.chat.id,
+            text: `✏️ Bổ sung cho signal (còn thiếu: ${missing.length > 0 ? missing.join(", ") : "xem card"}).\nReply tin này với phần còn thiếu, vd: long entry 1224 sl 1068 tp 1300,1350\nGõ /cancel để hủy (5 phút).`,
+          }).catch(() => undefined);
+        }
+        return;
+      }
+      if (action === "pick" && kind) {
+        const entry = this.pickNonces.get(kind);
+        if (!entry || Date.now() > entry.expiresAt) {
+          this.pickNonces.delete(kind);
+          await answer("Hết hạn, bấm lại /review.");
+          return;
+        }
+        this.pickNonces.delete(kind);
+        try {
+          await this.updates.approve(entry.updateId, { signalId: entry.signalId }, actor);
+          await answer("Approved.");
+        } catch (err) {
+          await answer(`Failed: ${err instanceof Error ? err.message.split(":")[0] : "error"}`);
+          return;
+        }
+        if (cb.message) {
+          await this.api("editMessageText", {
+            chat_id: cb.message.chat.id,
+            message_id: cb.message.message_id,
+            text: `${cb.message.text ?? ""}\n\n[APPROVED by @${cb.from.username}]`,
+          }).catch(() => undefined);
+        }
         return;
       }
       await answer("Unknown action.");
@@ -888,6 +1034,147 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         ],
       ],
     };
+  }
+
+  /** Signal card actions: approve/reject plus manual completion. */
+  private signalCardKeyboard(id: string) {
+    return {
+      inline_keyboard: [
+        [
+          { text: "Approve", callback_data: `appr:signal:${id}` },
+          { text: "Reject", callback_data: `rej:signal:${id}` },
+        ],
+        [{ text: "✏️ Bổ sung", callback_data: `fill:signal:${id}` }],
+      ],
+    };
+  }
+
+  /** Update card actions: matched updates get Approve; ambiguous get picks. */
+  private updateCardKeyboard(updateId: string, candidates: Array<{ nonce: string; label: string }>) {
+    if (candidates.length === 0) {
+      return {
+        inline_keyboard: [
+          [
+            { text: "Approve", callback_data: `appr:update:${updateId}` },
+            { text: "Reject", callback_data: `rej:update:${updateId}` },
+          ],
+        ],
+      };
+    }
+    return {
+      inline_keyboard: [
+        candidates.map((c) => ({ text: c.label, callback_data: `pick:${c.nonce}` })),
+        [{ text: "Reject", callback_data: `rej:update:${updateId}` }],
+      ],
+    };
+  }
+
+  /** Shared full-card builder for push notifications and manual-completion refresh. */
+  private signalCardText(
+    s: {
+      id: string;
+      status: string;
+      instrument: string;
+      direction: string;
+      source: { displayName: string; platform: string };
+      versions: Array<{
+        versionNumber: number;
+        eventType: string | null;
+        instrument: string;
+        direction: string;
+        orderType: string | null;
+        entry: unknown;
+        stopLoss: unknown;
+        takeProfits: unknown;
+        normalizedPayloadJson: unknown;
+      }>;
+    },
+    message: {
+      contentRaw: string;
+      authorName: string | null;
+      sourceTimestamp: Date | null;
+      sourceUrl: string | null;
+      externalMessageId: string;
+      source: { displayName: string; platform: string; externalSourceId: string };
+    } | null,
+  ): string {
+    const version = s.versions[0];
+    const payload = (version?.normalizedPayloadJson ?? null) as {
+      missingFields?: string[];
+      ambiguities?: string[];
+      leverage?: number | null;
+    } | null;
+    const tps = Array.isArray(version?.takeProfits)
+      ? (version?.takeProfits as number[]).map((n) => Number(n)).filter((n) => Number.isFinite(n))
+      : [];
+    return formatSignalReviewCard({
+      status: s.status,
+      versionNumber: version?.versionNumber ?? null,
+      eventType: version?.eventType ?? null,
+      instrument: version?.instrument ?? s.instrument,
+      direction: version?.direction ?? s.direction,
+      orderType: version?.orderType ?? null,
+      entry: version?.entry == null ? null : String(version.entry),
+      stopLoss: version?.stopLoss == null ? null : String(version.stopLoss),
+      takeProfits: tps,
+      leverage: typeof payload?.leverage === "number" ? String(payload.leverage) : null,
+      missing: payload?.missingFields ?? [],
+      ambiguities: payload?.ambiguities ?? [],
+      sourceName: s.source.displayName,
+      platform: s.source.platform,
+      messageText: message?.contentRaw ?? null,
+      author: message?.authorName ?? null,
+      timestamp: message?.sourceTimestamp ? message.sourceTimestamp.toISOString() : null,
+      url: message
+        ? postLink(message.source.platform, message.source.externalSourceId, message.externalMessageId, message.sourceUrl)
+        : null,
+    });
+  }
+
+  /**
+   * Candidate picker for AMBIGUOUS updates: legend lines + one-tap buttons.
+   * Returns null when no resolvable candidates (caller falls back to Approve/Reject).
+   */
+  private async candidatePicker(
+    updateId: string,
+    reviewReason: string | null,
+  ): Promise<{ legend: string; keyboard: ReturnType<OperatorBotService["updateCardKeyboard"]> } | null> {
+    const ids = [
+      ...new Set(
+        [...(reviewReason ?? "").matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)].map((m) =>
+          m[0].toLowerCase(),
+        ),
+      ),
+    ].slice(0, 4);
+    if (ids.length === 0) return null;
+    const summaries = await this.signals.summarizeSignals(ids).catch(() => []);
+    const shown = summaries.slice(0, 4);
+    if (shown.length === 0) return null;
+    const buttons = shown.map((cand, i) => ({
+      label: `${i + 1}️⃣ ${cand.direction} ${cand.instrument}`,
+      nonce: this.mintPickNonce(updateId, cand.id),
+    }));
+    const legend = shown
+      .map(
+        (cand, i) =>
+          `${i + 1}️⃣ ${displayOrDash(cand.direction)} ${displayOrDash(cand.instrument)}${cand.entry ? ` @ ${cand.entry}` : ""}`,
+      )
+      .join("\n");
+    return { legend, keyboard: this.updateCardKeyboard(updateId, buttons) };
+  }
+
+  /** Short-lived nonce map (callback_data caps at 64 bytes). */
+  private mintPickNonce(updateId: string, signalId: string): string {
+    if (this.pickNonces.size > 500) {
+      const now = Date.now();
+      for (const [nonce, entry] of this.pickNonces) {
+        if (entry.expiresAt <= now) this.pickNonces.delete(nonce);
+      }
+    }
+    let nonce = randomBytes(4).toString("hex");
+    while (this.pickNonces.has(nonce)) nonce = randomBytes(4).toString("hex");
+    this.pickNonces.set(nonce, { updateId, signalId, expiresAt: Date.now() + PICK_TTL_MS });
+    return nonce;
   }
 
   private async sendBootDigest(): Promise<void> {
@@ -913,41 +1200,12 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
       if (this.seen.has(key)) continue;
       this.seen.add(key);
       const version = s.versions[0];
-      const payload = (version?.normalizedPayloadJson ?? null) as {
-        missingFields?: string[];
-        ambiguities?: string[];
-        leverage?: number | null;
-      } | null;
       const message = await this.signals.getReviewMessage(payloadRowId(version?.normalizedPayloadJson)).catch(() => null);
-      const tps = Array.isArray(version?.takeProfits)
-        ? (version?.takeProfits as number[]).map((n) => Number(n)).filter((n) => Number.isFinite(n))
-        : [];
-      const text = formatSignalReviewCard({
-        status: s.status,
-        versionNumber: version?.versionNumber ?? null,
-        eventType: version?.eventType ?? null,
-        instrument: version?.instrument ?? s.instrument,
-        direction: version?.direction ?? s.direction,
-        orderType: version?.orderType ?? null,
-        entry: version?.entry == null ? null : String(version.entry),
-        stopLoss: version?.stopLoss == null ? null : String(version.stopLoss),
-        takeProfits: tps,
-        leverage: typeof payload?.leverage === "number" ? String(payload.leverage) : null,
-        missing: payload?.missingFields ?? [],
-        ambiguities: payload?.ambiguities ?? [],
-        sourceName: s.source.displayName,
-        platform: s.source.platform,
-        messageText: message?.contentRaw ?? null,
-        author: message?.authorName ?? null,
-        timestamp: message?.sourceTimestamp ? message.sourceTimestamp.toISOString() : null,
-        url: message
-          ? postLink(message.source.platform, message.source.externalSourceId, message.externalMessageId, message.sourceUrl)
-          : null,
-      });
+      const text = this.signalCardText(s, message);
       const forward = message
         ? forwardTarget(message.source.platform, message.source.externalSourceId, message.externalMessageId)
         : null;
-      await this.notifyReviewCard(forward, text, this.reviewKeyboard("signal", s.id));
+      await this.notifyReviewCard(forward, text, this.signalCardKeyboard(s.id));
     }
     for (const u of upds) {
       const key = `u:${u.id}`;
@@ -981,7 +1239,16 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         u.sourceMessage.source.externalSourceId,
         u.sourceMessage.externalMessageId,
       );
-      await this.notifyReviewCard(forward, text, this.reviewKeyboard("update", u.id));
+      if (u.validationStatus === "AMBIGUOUS") {
+        const picker = await this.candidatePicker(u.id, u.reviewReason);
+        await this.notifyReviewCard(
+          forward,
+          `${text}${picker ? `\nỨng viên:\n${picker.legend}` : ""}`,
+          picker ? picker.keyboard : this.updateCardKeyboard(u.id, []),
+        );
+      } else {
+        await this.notifyReviewCard(forward, text, this.updateCardKeyboard(u.id, []));
+      }
     }
   }
 }

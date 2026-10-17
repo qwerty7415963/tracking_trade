@@ -2,7 +2,12 @@ import { ConflictException, Inject, Injectable, NotFoundException } from "@nestj
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../database/prisma.service";
+import { payloadRowId } from "../signals/signals.service";
 import { PositionSnapshot } from "@tracking-auto/card-renderer";
+import { buildPostLink } from "@tracking-auto/domain";
+
+/** Max wait for the original card before an update posts standalone. */
+export const ORIGINAL_HOLD_MS = 5 * 60 * 1000;
 import {
   RENDER_JOB_ID_PREFIX,
   RendersService,
@@ -196,14 +201,11 @@ export class PublicationsService {
     if (!position) throw new NotFoundException(`position ${positionId} not found`);
     if (!Number.isFinite(markPrice)) throw new ConflictException("INVALID markPrice: refusing to guess");
     const version = position.signal?.versions[0];
-    const sourceMessage = version
-      ? await this.prisma.sourceMessage.findFirst({
-          where: {
-            sourceId: position.signal?.sourceId,
-            externalMessageId: (
-              version.normalizedPayloadJson as { source_message_id?: string } | null
-            )?.source_message_id,
-          },
+    const rowId = payloadRowId(version?.normalizedPayloadJson);
+    const sourceMessage = rowId
+      ? await this.prisma.sourceMessage.findUnique({
+          where: { id: rowId },
+          include: { source: true },
         })
       : null;
     const volume = volumeOverride ?? asNumber(position.remainingSize);
@@ -242,11 +244,42 @@ export class PublicationsService {
     if (!request.destinationChatId.trim()) {
       throw new Error("PUBLICATION_VALIDATION_FAILED: no destination chat configured");
     }
+    // Update cards (tp/sl/close) must thread under the original filled card.
+    // Re-resolve at send time: the original may have published after request.
+    // Hold (retryable) while fresh; post orphaned + audit past the timeout.
+    let replyTo = request.replyToMessageId;
+    if (!replyTo && request.status !== "filled") {
+      const original = await this.prisma.telegramPublication.findFirst({
+        where: { virtualPositionId: request.positionId, publicationStatus: "PUBLISHED" },
+        orderBy: { publishedAt: "asc" },
+      });
+      if (original?.telegramMessageId) {
+        replyTo = original.telegramMessageId;
+      } else if (Date.now() - publication.createdAt.getTime() < ORIGINAL_HOLD_MS) {
+        throw new Error("ORIGINAL_NOT_PUBLISHED_YET: retryable");
+      } else {
+        await this.audit.record(request.actor, "publication.orphaned", {
+          publicationId,
+          positionId: request.positionId,
+        });
+      }
+    }
     const { position, signal, version, sourceMessage, snapshot } = await this.buildSnapshot(
       request.positionId,
       request.markPrice,
     );
     const photo = await this.renders.readArtifact(publicationId);
+    // Telegram ingestion never stores a URL: fall back to the canonical
+    // t.me post link. X sources without URL still fail validation (review).
+    const sourceUrl =
+      sourceMessage?.sourceUrl ??
+      (sourceMessage
+        ? buildPostLink(
+            sourceMessage.source.platform,
+            sourceMessage.source.externalSourceId,
+            sourceMessage.externalMessageId,
+          )
+        : null);
     const tps: number[] = Array.isArray(version?.takeProfits)
       ? (version.takeProfits as number[])
       : [];
@@ -258,14 +291,14 @@ export class PublicationsService {
       stopLoss: position.stopLoss === null ? "" : String(asNumber(position.stopLoss)),
       takeProfit: tps.length > 0 ? String(tps[tps.length - 1]) : "",
       sourceDisplayName: signal?.source.displayName ?? "unknown source",
-      sourceUrl: sourceMessage?.sourceUrl ?? null,
+      sourceUrl,
     });
 
     const sent = await this.sender.sendPhoto({
       chatId: request.destinationChatId,
       photo,
       caption,
-      replyToMessageId: request.replyToMessageId,
+      replyToMessageId: replyTo,
     });
     if (!sent.ok && sent.unknown) {
       await this.prisma.telegramPublication.update({

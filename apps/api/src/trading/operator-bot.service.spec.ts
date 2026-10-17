@@ -10,6 +10,7 @@ import {
   isOperator,
   parseCommand,
   postLink,
+  reviewAuthor,
   truncateText,
   OperatorBotService,
 } from "./operator-bot.service";
@@ -122,6 +123,35 @@ describe("review card helpers", () => {
     });
     expect(text).toContain("REVIEW update — CLOSE_ALL [AMBIGUOUS]");
     expect(text).toContain("chưa khớp signal nào");
+  });
+
+  it("falls back to the channel name when the post has no author", () => {
+    expect(reviewAuthor(null, "MegaLodon Futures")).toBe("MegaLodon Futures");
+    expect(reviewAuthor("  ", "MegaLodon Futures")).toBe("MegaLodon Futures");
+    expect(reviewAuthor("Osho", "MegaLodon Futures")).toBe("Osho");
+    expect(reviewAuthor(null, "")).toBe("không rõ tác giả");
+    const text = formatSignalReviewCard({
+      status: "NEEDS_REVIEW",
+      versionNumber: 1,
+      eventType: "NEW",
+      instrument: "BTW",
+      direction: null,
+      orderType: null,
+      entry: "2.0476",
+      stopLoss: "1.1967",
+      takeProfits: [10.284],
+      leverage: null,
+      missing: ["direction"],
+      ambiguities: [],
+      sourceName: "MegaLodon Futures",
+      platform: "TELEGRAM",
+      messageText: "#BTW Entry: 2.0476",
+      author: null,
+      timestamp: null,
+      url: null,
+    });
+    expect(text).toContain("Bài gốc (MegaLodon Futures):");
+    expect(text).not.toContain("không rõ tác giả");
   });
 });
 
@@ -566,16 +596,61 @@ describe("OperatorBotService review fan-out", () => {
 
   it("/review lists human-readable summaries", async () => {
     const { svc } = reviewBot(["100"]);
+    const replies: Array<{ text: string; markup?: unknown }> = [];
+    await svc.dispatch(
+      { name: "review", args: [] },
+      "tg:alice",
+      async (text, markup) => {
+        replies.push({ text, markup });
+      },
+      "/review",
+    );
+    expect(replies[0].text).toContain("signals: 1");
+    expect(replies[0].text).toContain("updates: 1");
+    const signalMsg = replies.find((r) => r.text.includes("LONG ETH [NEEDS_REVIEW] Osho"));
+    expect(signalMsg).toBeTruthy();
+    expect(signalMsg!.text).toContain("https://t.me/traderosho/4375");
+    expect(JSON.stringify(signalMsg!.markup)).toContain("appr:signal:s1");
+    expect(JSON.stringify(signalMsg!.markup)).toContain("fill:signal:s1");
+    const updateMsg = replies.find((r) => r.text.includes("CLOSE_ALL [AMBIGUOUS]"));
+    expect(updateMsg).toBeTruthy();
+    expect(updateMsg!.text).toContain("https://t.me/traderosho/4376");
+  });
+
+  it("/review caps items and notes the remainder", async () => {
+    const { svc } = reviewBot(["100"]);
+    (svc as unknown as { signals: { reviewQueueDetailed: jest.Mock } }).signals.reviewQueueDetailed.mockResolvedValueOnce(
+      Array.from({ length: 7 }, (_, i) => ({
+        id: `s${i}`,
+        status: "NEEDS_REVIEW",
+        instrument: "ETH",
+        direction: "LONG",
+        source: { displayName: "Osho", platform: "TELEGRAM", externalSourceId: "traderosho" },
+        versions: [],
+      })),
+    );
+    const replies: string[] = [];
+    await svc.dispatch(
+      { name: "review", args: [] },
+      "tg:alice",
+      async (text) => {
+        replies.push(text);
+      },
+      "/review",
+    );
+    expect(replies.join("\n")).toContain("+2 signals nữa");
+  });
+
+  it("/review reports an empty queue", async () => {
+    const { svc } = bot({
+      signals: { reviewQueueDetailed: jest.fn(async () => []) },
+      updates: { reviewQueue: jest.fn(async () => []) },
+    });
     const replies: string[] = [];
     await svc.dispatch({ name: "review", args: [] }, "tg:alice", async (text) => {
       replies.push(text);
-    }, "/review");
-    expect(replies[0]).toContain("signals: 1");
-    expect(replies[0]).toContain("LONG ETH [NEEDS_REVIEW] Osho");
-    expect(replies[0]).toContain("https://t.me/traderosho/4375");
-    expect(replies[0]).toContain("updates: 1");
-    expect(replies[0]).toContain("CLOSE_ALL [AMBIGUOUS]");
-    expect(replies[0]).toContain("https://t.me/traderosho/4376");
+    });
+    expect(replies).toEqual(["Hết hàng đợi review. 🎉"]);
   });
 });
 
@@ -600,6 +675,32 @@ describe("OperatorBotService.handleCallback", () => {
     expect(answered).toHaveLength(1);
   });
 
+  it("shows the open reason when inline approve fails to open", async () => {
+    const signals = {
+      get: jest.fn(async () => ({ id: "s1", versions: [{ id: "v1" }] })),
+    };
+    const flow = {
+      approveSignal: jest.fn(async () => ({
+        position: null,
+        openError: "NO_SYMBOL_MAP: UNKNOWN not on Hyperliquid",
+        published: false,
+      })),
+    };
+    const { svc } = cbSvc({ signals, flow });
+    const answered: string[] = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "answerCallbackQuery") answered.push(String((params as { text?: string }).text));
+      return {};
+    };
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      message: { message_id: 7, chat: { id: 100, type: "private" }, text: "card" },
+      data: "appr:signal:s1",
+    });
+    expect(answered).toContain("Approved. Open failed: NO_SYMBOL_MAP: UNKNOWN not on Hyperliquid");
+  });
+
   it("rejects signals and edits the message", async () => {
     const signals = { reject: jest.fn(async () => ({})) };
     const { svc } = cbSvc({ signals });
@@ -617,5 +718,152 @@ describe("OperatorBotService.handleCallback", () => {
     expect(signals.reject).toHaveBeenCalledWith("s1", {}, "tg:alice");
     expect(edited).toHaveLength(1);
     expect(String(edited[0].text)).toContain("REJECTED");
+  });
+
+  it("approves matched updates, guides on ambiguous ones", async () => {
+    const approve = jest.fn(async () => ({}));
+    const { svc, answered } = (() => {
+      const r = cbSvc({ updates: { approve } });
+      return r;
+    })();
+    const edited: Array<Record<string, unknown>> = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "editMessageText") edited.push(params);
+      else answered.push("ok");
+      return {};
+    };
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      message: { message_id: 7, chat: { id: 100, type: "private" }, text: "card" },
+      data: "appr:update:u1",
+    });
+    expect(approve).toHaveBeenCalledWith("u1", {}, "tg:alice");
+    expect(edited).toHaveLength(1);
+    expect(String(edited[0].text)).toContain("APPROVED");
+  });
+
+  it("picks a candidate signal for ambiguous updates", async () => {
+    const approve = jest.fn(async () => ({}));
+    const { svc } = cbSvc({ updates: { approve } });
+    (svc as unknown as { pickNonces: Map<string, unknown> }).pickNonces.set("abc123", {
+      updateId: "u1",
+      signalId: "s9",
+      expiresAt: Date.now() + 60000,
+    });
+    const answered: string[] = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "answerCallbackQuery") answered.push(String((params as { text?: string }).text));
+      return {};
+    };
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      data: "pick:abc123",
+    });
+    expect(approve).toHaveBeenCalledWith("u1", { signalId: "s9" }, "tg:alice");
+    expect(answered).toContain("Approved.");
+  });
+
+  it("rejects expired pick nonces", async () => {
+    const approve = jest.fn();
+    const { svc } = cbSvc({ updates: { approve } });
+    const answered: string[] = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "answerCallbackQuery") answered.push(String((params as { text?: string }).text));
+      return {};
+    };
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      data: "pick:deadbeef",
+    });
+    expect(approve).not.toHaveBeenCalled();
+    expect(answered).toContain("Hết hạn, bấm lại /review.");
+  });
+
+  it("starts manual completion on fill and consumes the reply", async () => {
+    const appendManualVersion = jest.fn(async () => ({
+      signalId: "s1",
+      status: "PENDING_APPROVAL",
+      version: {
+        versionNumber: 2,
+        eventType: "MANUAL",
+        instrument: "ETH",
+        direction: "LONG",
+        orderType: null,
+        entry: 2583.79,
+        stopLoss: 2597.17,
+        takeProfits: [2499],
+        normalizedPayloadJson: { missingFields: [], ambiguities: [] },
+      },
+      message: null,
+      source: { displayName: "Osho", platform: "TELEGRAM" },
+    }));
+    const signals = {
+      get: jest.fn(async () => ({
+        id: "s1",
+        status: "NEEDS_REVIEW",
+        versions: [{ normalizedPayloadJson: { missingFields: ["entry"] } }],
+      })),
+      appendManualVersion,
+    };
+    const { svc, sent } = bot({ signals });
+    const answered: string[] = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "answerCallbackQuery") answered.push(String((params as { text?: string }).text));
+      return {};
+    };
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      message: { message_id: 7, chat: { id: 100, type: "private" }, text: "card" },
+      data: "fill:signal:s1",
+    });
+    expect(answered).toContain("Đã ghi nhận, reply số còn thiếu.");
+    await svc.handleMessage({
+      message_id: 8,
+      chat: { id: 100, type: "private" },
+      from: { id: 1, username: "alice" },
+      text: "entry 2583.79 sl 2597.17 tp 2499",
+    });
+    expect(appendManualVersion).toHaveBeenCalledWith(
+      "s1",
+      "entry 2583.79 sl 2597.17 tp 2499",
+      "tg:alice",
+    );
+    expect(sent.some((s) => s.text.includes("Đã bổ sung từ nhập tay"))).toBe(true);
+  });
+
+  it("refuses fill on final signals and honors /cancel", async () => {
+    const signals = {
+      get: jest.fn(async () => ({ id: "s1", status: "REJECTED", versions: [] })),
+      appendManualVersion: jest.fn(),
+    };
+    const { svc } = bot({ signals });
+    const answered: string[] = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "answerCallbackQuery") answered.push(String((params as { text?: string }).text));
+      return {};
+    };
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      data: "fill:signal:s1",
+    });
+    expect(answered).toContain("Signal đã chốt, không bổ sung.");
+
+    const { svc: svc2, sent } = bot({ signals });
+    (svc2 as unknown as { pendingInput: Map<string, unknown> }).pendingInput.set("alice", {
+      signalId: "s1",
+      expiresAt: Date.now() + 60000,
+    });
+    await svc2.handleMessage({
+      message_id: 9,
+      chat: { id: 100, type: "private" },
+      from: { id: 1, username: "alice" },
+      text: "/cancel",
+    });
+    expect(sent.map((s) => s.text)).toContain("Đã hủy nhập liệu bổ sung (nếu có).");
   });
 });

@@ -46,7 +46,7 @@ sudo RESTIC_PASSWORD_FILE=/root/.restic-pass restic -r /var/backups/restic-repo 
 ## 3. Script `deploy/backup.sh` (chạy trên VPS)
 
 - `pg_dump` từ container postgres ra `/var/backups/dbdump.sql`.
-- `restic backup`: dbdump + artifacts volume + `.env` + compose files, tag `daily`.
+- `restic backup`: dbdump + thư mục artifacts (`./artifacts` repo root, bind-mount vào cả api/worker để dev local đọc chung) + `.env` + compose files, tag `daily`.
 - `restic forget --keep-daily 7 --prune` (đúng retention 7 ngày).
 - `restic check` nhanh; fail → bắn cảnh báo Telegram cho operator (dùng `TELEGRAM_BOT_TOKEN` + `ALERT_CHAT_ID`).
 - Mọi bước ghi log `/var/log/tracking-backup.log`.

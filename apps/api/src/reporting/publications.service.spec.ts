@@ -34,18 +34,22 @@ function service(overrides: Record<string, unknown> = {}) {
   const prisma = {
     virtualPosition: { findUnique: jest.fn() },
     signal: { findUnique: jest.fn() },
-    sourceMessage: { findFirst: jest.fn() },
+    sourceMessage: { findUnique: jest.fn(async () => null) },
     telegramPublication: {
       update: jest.fn(async (args: unknown) => args),
       create: jest.fn(async (args: unknown) => ({ id: "pub1" })),
       findFirst: jest.fn(async () => null),
-      findUnique: jest.fn(async () => ({ id: "pub1", publicationStatus: "PENDING" })),
+      findUnique: jest.fn(async () => ({
+        id: "pub1",
+        publicationStatus: "PENDING",
+        createdAt: new Date(),
+      })),
     },
     ...(overrides.prisma as Record<string, unknown> | undefined),
   };
   return new PublicationsService(
     prisma as never,
-    { record: jest.fn() } as never,
+    ((overrides.audit ?? { record: jest.fn(async () => ({})) }) as never),
     (overrides.sender ?? {}) as never,
     (overrides.config ?? {}) as never,
     (overrides.renders ??
@@ -70,13 +74,13 @@ const POSITION = {
   realizedPnl: 0,
   signal: {
     sourceId: "src1",
-    versions: [{ direction: "LONG", normalizedPayloadJson: { source_message_id: "m1" } }],
+    versions: [{ direction: "LONG", normalizedPayloadJson: { sourceMessageId: "m1" } }],
     source: { displayName: "Chan" },
   },
 };
 const SIGNAL = {
   sourceId: "src1",
-  versions: [{ direction: "LONG", normalizedPayloadJson: { source_message_id: "m1" } }],
+  versions: [{ direction: "LONG", normalizedPayloadJson: { sourceMessageId: "m1" } }],
   source: { displayName: "Chan" },
 };
 
@@ -85,12 +89,16 @@ describe("PublicationsService.sendPublication", () => {
     const prisma = {
       virtualPosition: { findUnique: jest.fn(async () => POSITION) },
       signal: { findUnique: jest.fn(async () => SIGNAL) },
-      sourceMessage: { findFirst: jest.fn(async () => ({ sourceUrl: "https://t.me/c/1" })) },
+      sourceMessage: { findUnique: jest.fn(async () => ({ sourceUrl: "https://t.me/c/1" })) },
       telegramPublication: {
         update: jest.fn(async (args: { data: Record<string, unknown> }) => ({ id: "pub1", ...args.data })),
         create: jest.fn(async () => ({ id: "pub1" })),
         findFirst: jest.fn(async () => null),
-        findUnique: jest.fn(async () => ({ id: "pub1", publicationStatus: "PENDING" })),
+        findUnique: jest.fn(async () => ({
+          id: "pub1",
+          publicationStatus: "PENDING",
+          createdAt: new Date(),
+        })),
       },
     };
     const sender = {
@@ -151,7 +159,7 @@ describe("PublicationsService.sendPublication", () => {
     const svc = service(setup);
     const result = (await svc.sendPublication(
       "pub1",
-      sendInput({ status: "tp", markPrice: 2600, replyToMessageId: undefined }),
+      sendInput({ status: "tp", markPrice: 2600, replyToMessageId: "111" }),
     )) as {
       status: string;
     };
@@ -180,9 +188,81 @@ describe("PublicationsService.sendPublication", () => {
     ).rejects.toThrow(/no destination chat/);
   });
 
+  it("holds an update while the original is fresh", async () => {
+    const setup = okSetup();
+    const svc = service(setup);
+    await expect(
+      svc.sendPublication("pub1", sendInput({ status: "tp", replyToMessageId: undefined })),
+    ).rejects.toThrow(/ORIGINAL_NOT_PUBLISHED_YET/);
+    expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
+  });
+
+  it("self-heals the reply target when the original published late", async () => {
+    const setup = okSetup();
+    (setup.prisma.telegramPublication.findFirst as jest.Mock).mockResolvedValueOnce({
+      telegramMessageId: "555",
+    });
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput({ status: "tp", replyToMessageId: undefined }));
+    const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(sendArgs.replyToMessageId).toBe("555");
+  });
+
+  it("posts orphaned past the hold timeout with audit", async () => {
+    const audit = { record: jest.fn(async () => ({})) };
+    const setup = okSetup();
+    (setup.prisma.telegramPublication.findUnique as jest.Mock).mockResolvedValueOnce({
+      id: "pub1",
+      publicationStatus: "PENDING",
+      createdAt: new Date(Date.now() - 10 * 60 * 1000),
+    });
+    const svc = service({ ...setup, audit });
+    await svc.sendPublication("pub1", sendInput({ status: "sl", replyToMessageId: undefined }));
+    const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(sendArgs.replyToMessageId).toBeUndefined();
+    expect(audit.record).toHaveBeenCalledWith(
+      "alice",
+      "publication.orphaned",
+      expect.objectContaining({ publicationId: "pub1" }),
+    );
+  });
+
+  it("uses BullMQ-safe job ids without colons", async () => {
+    const { RENDER_JOB_ID_PREFIX, SEND_JOB_ID_PREFIX } = await import("./renders.service");
+    for (const prefix of [RENDER_JOB_ID_PREFIX, SEND_JOB_ID_PREFIX]) {
+      expect(prefix).not.toContain(":");
+      expect(`${prefix}pub1`).not.toContain(":");
+    }
+  });
+
+  it("falls back to the t.me link when Telegram stores no URL", async () => {
+    const setup = okSetup();
+    (setup.prisma.sourceMessage.findUnique as jest.Mock).mockResolvedValueOnce({
+      sourceUrl: null,
+      externalMessageId: "4375",
+      source: { platform: "TELEGRAM", externalSourceId: "traderosho" },
+    });
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput());
+    const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(String(sendArgs.caption)).toContain("https://t.me/traderosho/4375");
+  });
+
+  it("still rejects X posts without any URL", async () => {
+    const setup = okSetup();
+    (setup.prisma.sourceMessage.findUnique as jest.Mock).mockResolvedValueOnce({
+      sourceUrl: null,
+      externalMessageId: "abc",
+      source: { platform: "X", externalSourceId: "watcher" },
+    });
+    const svc = service(setup);
+    await expect(svc.sendPublication("pub1", sendInput())).rejects.toThrow(/missing required source_url/);
+    expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
+  });
+
   it("enqueues a render job instead of publishing inline", async () => {
     const setup = okSetup();
-    const requestRender = jest.fn(async () => ({ id: "render:pub1" }));
+    const requestRender = jest.fn(async () => ({ id: "render-pub1" }));
     const svc = service({
       ...setup,
       config: { reportDestinationChatId: "@chan" },
@@ -200,7 +280,7 @@ describe("PublicationsService.sendPublication", () => {
         actor: "alice",
       }),
       "alice",
-      "render:pub1",
+      "render-pub1",
     );
     expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
   });

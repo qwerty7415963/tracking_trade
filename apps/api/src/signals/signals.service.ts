@@ -213,6 +213,135 @@ export class SignalsService {
     });
   }
 
+  /**
+   * Operator manual completion ("Bổ sung"): merge the original post with
+   * operator-typed numbers, re-parse, and append a MANUAL version to the same
+   * signal. Returns the version + origin message so callers can rebuild cards.
+   */
+  async appendManualVersion(signalId: string, operatorText: string, actor: string) {
+    const signal = await this.prisma.signal.findUnique({
+      where: { id: signalId },
+      include: {
+        source: true,
+        versions: { orderBy: { versionNumber: "desc" }, take: 1 },
+      },
+    });
+    if (!signal) throw new NotFoundException(`signal ${signalId} not found`);
+    if (FINAL.includes(signal.status)) {
+      throw new ConflictException(`signal ${signalId} is ${signal.status}, cannot complete`);
+    }
+    const originRowId = payloadRowId(signal.versions[0]?.normalizedPayloadJson);
+    const origin = originRowId
+      ? await this.prisma.sourceMessage.findUnique({
+          where: { id: originRowId },
+          include: { source: true },
+        })
+      : null;
+    const coinUniverse = await this.coins.enabledSymbols().catch(() => [] as string[]);
+    const profile = await this.profiles
+      .getProfile(signal.source.parserProfileId)
+      .catch(() => null);
+    const parsed = parseSignal(
+      {
+        text: `${origin?.contentRaw ?? ""}\n${operatorText}`,
+        sourceMessageId: origin?.id ?? signal.id,
+        sourcePlatform: signal.source.platform,
+        sourceUrl: origin?.sourceUrl ?? null,
+        sourceTimestamp: origin?.sourceTimestamp ? origin.sourceTimestamp.toISOString() : null,
+        threadId: origin?.threadId ?? null,
+        replyToMessageId: origin?.replyToMessageId ?? null,
+        quotedMessageId: origin?.quotedMessageId ?? null,
+      },
+      { coinUniverse, profile },
+    );
+    if (parsed.eventType !== "NEW") {
+      throw new BadRequestException("input still reads as an update, cannot complete");
+    }
+    if (parsed.instrument && !coinUniverse.includes(parsed.instrument)) {
+      parsed.ambiguities.push(`unmapped_symbol_${parsed.instrument}`);
+    }
+    const usable =
+      parsed.instrument ||
+      parsed.direction ||
+      parsed.entry !== null ||
+      parsed.stopLoss !== null ||
+      parsed.takeProfits.length > 0;
+    if (!usable) {
+      throw new BadRequestException("nothing usable parsed, try again or /cancel");
+    }
+    // Refuse no-op replies (e.g. "ok"): at least one of the 5 required
+    // fields must be newly filled or changed versus the latest version.
+    const base = signal.versions[0];
+    const same =
+      (base?.instrument ?? "UNKNOWN") === (parsed.instrument ?? "UNKNOWN") &&
+      (base?.direction ?? "UNKNOWN") === (parsed.direction ?? "UNKNOWN") &&
+      String(base?.entry ?? "") === String(parsed.entry ?? "") &&
+      String(base?.stopLoss ?? "") === String(parsed.stopLoss ?? "") &&
+      JSON.stringify(base?.takeProfits ?? []) === JSON.stringify(parsed.takeProfits ?? []);
+    if (same) {
+      throw new BadRequestException("nothing new parsed, try again or /cancel");
+    }
+    const next = (signal.versions[0]?.versionNumber ?? 0) + 1;
+    const missing = missingRequiredFields(parsed);
+    const status =
+      missing.length > 0 || parsed.ambiguities.length > 0 ? "NEEDS_REVIEW" : "PENDING_APPROVAL";
+    return this.prisma.$transaction(async (tx) => {
+      const created = await tx.signalVersion.create({
+        data: {
+          signalId: signal.id,
+          versionNumber: next,
+          eventType: "MANUAL",
+          instrument: parsed.instrument ?? "UNKNOWN",
+          direction: parsed.direction ?? "UNKNOWN",
+          orderType: parsed.orderType,
+          entry: parsed.entry,
+          stopLoss: parsed.stopLoss,
+          takeProfits: (parsed.takeProfits ?? []) as Prisma.InputJsonValue,
+          normalizedPayloadJson: { ...parsed } as unknown as Prisma.InputJsonValue,
+          parserVersion: parsed.parserVersion,
+        },
+      });
+      const updated = await tx.signal.update({ where: { id: signal.id }, data: { status } });
+      await this.audit.record(
+        actor,
+        "signal.manual",
+        { signalId: signal.id, versionNumber: next, status, missing },
+        tx,
+      );
+      return {
+        signalId: signal.id,
+        status: updated.status,
+        version: created,
+        message: origin,
+        source: signal.source,
+      };
+    });
+  }
+
+  /** Short summaries for candidate-pick buttons, in input order. */
+  async summarizeSignals(ids: string[]) {
+    if (ids.length === 0) return [];
+    const rows = await this.prisma.signal.findMany({
+      where: { id: { in: ids } },
+      include: { versions: { orderBy: { versionNumber: "desc" }, take: 1 } },
+    });
+    const byId = new Map(rows.map((s) => [s.id, s]));
+    return ids.flatMap((id) => {
+      const s = byId.get(id);
+      if (!s) return [];
+      const v = s.versions[0];
+      return [
+        {
+          id: s.id,
+          status: s.status,
+          direction: v?.direction ?? s.direction,
+          instrument: v?.instrument ?? s.instrument,
+          entry: v?.entry == null ? null : String(v.entry),
+        },
+      ];
+    });
+  }
+
   private async handleNewSignal(
     sourceId: string,
     parsed: NormalizedSignal,
@@ -390,6 +519,20 @@ export class SignalsService {
       const latest = signal.versions[0];
       if (!latest || latest.id !== dto.signalVersionId) {
         throw new ConflictException("approval stale: signal version changed, re-approve required");
+      }
+      // Approving an unopenable version can never lead to a position:
+      // refuse early with a clear reason instead of failing at open.
+      const unopenable: string[] = [];
+      if (!latest.instrument || latest.instrument === "UNKNOWN") unopenable.push("instrument");
+      if (!latest.direction || latest.direction === "UNKNOWN") unopenable.push("direction");
+      if (latest.entry === null) unopenable.push("entry");
+      if (latest.stopLoss === null) unopenable.push("stop_loss");
+      const latestTps = Array.isArray(latest.takeProfits) ? latest.takeProfits : [];
+      if (latestTps.length === 0) unopenable.push("take_profits");
+      if (unopenable.length > 0) {
+        throw new ConflictException(
+          `signal ${id} missing ${unopenable.join(", ")} — complete it first (Bổ sung)`,
+        );
       }
       const approval = await tx.approval.create({
         data: {
