@@ -30,6 +30,7 @@ Khi **chính operator** là người ra tín hiệu (không phải channel bên 
 - **Tự duyệt + mở + đăng**: `flow.approveSignal` chạy liền sau khi tạo — không qua card review (operator ra lệnh = tự duyệt). Vẫn giữ toàn bộ guard: kill switch, symbol map + mid price, risk gate, approval ≤ 24h.
 - **Caption**: không có link nguồn → hiện `Operator (manual)` không kèm URL (không bịa link). Truyền `url=` nếu muốn hiển thị link bài gốc.
 - **Không phụ thuộc `open_mode`**: lệnh chủ động đi thẳng `approveSignal`, như `/approve` tay.
+- **Entry lấy mid price, không lấy `@entry` trong lệnh**: vị thế mở tại mid tại thời điểm approve (giống mọi luồng open). `SL`/`TP` trong `/pos` là mức tuyệt đối operator đặt — nếu đặt sai phía so với mid (ví dụ LONG `SL > mid`), position chạm SL ngay lần poll đầu. Operator tự chịu entry/SL hợp lý; hệ thống không sửa hay suy đoán.
 - REST parity: `POST /v1/signals/manual` — cùng one-shot flow.
 
 ## 2. Nội dung bắt buộc của approval
