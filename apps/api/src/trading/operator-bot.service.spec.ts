@@ -173,6 +173,7 @@ function bot(overrides: Record<string, unknown> = {}) {
     (overrides.sources ?? {}) as never,
     (overrides.coins ?? {}) as never,
     (overrides.openMode ?? { getMode: jest.fn(async () => "MANUAL") }) as never,
+    (overrides.publications ?? {}) as never,
   );
   (svc as unknown as { send: unknown }).send = async (chat: number | string, text: string) => {
     sent.push({ chat, text });
@@ -410,12 +411,12 @@ describe("OperatorBotService openmode command", () => {
 });
 
 describe("extractPosFlags", () => {
-  it("pulls url/chat/acc flags and keeps the signal text", () => {
+  it("pulls src/chat/acc flags and keeps the signal text", () => {
     expect(
-      extractPosFlags("/pos LONG BTC @100000 SL 98000 TP 105000 url=https://t.me/x/1 chat=-1001 acc=a1"),
+      extractPosFlags("/pos LONG BTC @100000 SL 98000 TP 105000 chat=-1001 acc=a1"),
     ).toEqual({
       text: "LONG BTC @100000 SL 98000 TP 105000",
-      url: "https://t.me/x/1",
+      src: null,
       chat: "-1001",
       acc: "a1",
     });
@@ -424,11 +425,50 @@ describe("extractPosFlags", () => {
   it("handles no flags and strips the /pos token", () => {
     expect(extractPosFlags("/pos SHORT ETH @2600 SL 2700 TP 2400")).toEqual({
       text: "SHORT ETH @2600 SL 2700 TP 2400",
-      url: null,
+      src: null,
       chat: null,
       acc: null,
     });
     expect(extractPosFlags(undefined).text).toBe("");
+  });
+
+  it("leaves post links in the text for auto-detection", () => {
+    expect(
+      extractPosFlags(
+        "/pos LONG ETH @3500 SL 3400 TP 3700 https://t.me/c/3763643270/431 chat=-1001",
+      ),
+    ).toEqual({
+      text: "LONG ETH @3500 SL 3400 TP 3700 https://t.me/c/3763643270/431",
+      src: null,
+      chat: "-1001",
+      acc: null,
+    });
+    // Legacy url= prefix survives flags too — extractSourceUrl strips it.
+    expect(extractPosFlags("/pos LONG ETH @1 SL 2 TP 3 url=https://t.me/x/1").text).toContain(
+      "url=https://t.me/x/1",
+    );
+  });
+
+  it("keeps a quoted src channel name with spaces", () => {
+    expect(
+      extractPosFlags(
+        '/pos LONG ETH @3500 SL 3400 TP 3700 src="Kaka trades" https://t.me/x/1',
+      ),
+    ).toEqual({
+      text: "LONG ETH @3500 SL 3400 TP 3700 https://t.me/x/1",
+      src: "Kaka trades",
+      chat: null,
+      acc: null,
+    });
+  });
+
+  it("supports unquoted and single-quoted flag values", () => {
+    expect(extractPosFlags("/pos LONG ETH @1 SL 2 TP 3 src=Osho").src).toBe("Osho");
+    expect(extractPosFlags("/pos LONG ETH @1 SL 2 TP 3 src='Kaka trades'").src).toBe(
+      "Kaka trades",
+    );
+    // A lone quote character is not a quoted value — keep it verbatim.
+    expect(extractPosFlags('/pos LONG ETH @1 SL 2 TP 3 src="').src).toBe('"');
   });
 });
 
@@ -442,7 +482,7 @@ describe("OperatorBotService /pos command", () => {
     return replies;
   }
 
-  it("creates, approves, and reports a published card", async () => {
+  it("creates, approves, and asks for the card style", async () => {
     const createOperatorSignal = jest.fn(async () => ({
       signalId: "sig1",
       versionId: "v1",
@@ -456,15 +496,21 @@ describe("OperatorBotService /pos command", () => {
       openError: null,
       published: true,
     }));
-    const replies = await dispatchPos(
+    const { svc } = bot({ signals: { createOperatorSignal }, flow: { approveSignal } });
+    const replies: Array<{ text: string; replyMarkup?: unknown }> = [];
+    await svc.dispatch(
+      { name: "pos", args: [] },
+      "tg:alice",
+      async (text: string, replyMarkup?: unknown) => {
+        replies.push({ text, replyMarkup });
+      },
       "/pos LONG BTC @100000 SL 98000 TP 105000 url=https://t.me/x/1 chat=-1001 acc=a1",
-      { createOperatorSignal },
-      { approveSignal },
     );
     expect(createOperatorSignal).toHaveBeenCalledWith(
-      "LONG BTC @100000 SL 98000 TP 105000",
+      // Link (legacy url= form) stays in the text — service auto-detects it.
+      "LONG BTC @100000 SL 98000 TP 105000 url=https://t.me/x/1",
       "tg:alice",
-      { sourceUrl: "https://t.me/x/1" },
+      { sourceName: null },
     );
     expect(approveSignal).toHaveBeenCalledWith(
       "sig1",
@@ -472,9 +518,50 @@ describe("OperatorBotService /pos command", () => {
       "tg:alice",
       "a1",
       "-1001",
+      { renderDelayMs: 300_000 },
     );
-    expect(replies[0]).toContain("✅ LONG BTC");
-    expect(replies[0]).toContain("Card đang đăng");
+    expect(replies[0].text).toContain("✅ LONG BTC");
+    expect(replies[0].text).toContain("Chọn loại card");
+    expect(replies[0].replyMarkup).toEqual({
+      inline_keyboard: [
+        [
+          { text: "① Card PnL", callback_data: "style:pnl-strip:pos-1" },
+          { text: "② Card Thống kê", callback_data: "style:position-stats:pos-1" },
+        ],
+      ],
+    });
+  });
+
+  it("skips the style dialog when publication is skipped", async () => {
+    const createOperatorSignal = jest.fn(async () => ({
+      signalId: "sig1",
+      versionId: "v1",
+      status: "PENDING_APPROVAL",
+      instrument: "BTC",
+      direction: "LONG",
+    }));
+    const { svc } = bot({
+      signals: { createOperatorSignal },
+      flow: {
+        approveSignal: jest.fn(async () => ({
+          approval: {},
+          position: { id: "pos-1" },
+          openError: null,
+          published: false,
+        })),
+      },
+    });
+    const replies: Array<{ text: string; replyMarkup?: unknown }> = [];
+    await svc.dispatch(
+      { name: "pos", args: [] },
+      "tg:alice",
+      async (text: string, replyMarkup?: unknown) => {
+        replies.push({ text, replyMarkup });
+      },
+      "/pos LONG BTC @100000 SL 98000 TP 105000",
+    );
+    expect(replies[0].text).toContain("card skipped");
+    expect(replies[0].replyMarkup).toBeUndefined();
   });
 
   it("reports open failures and validation errors", async () => {
@@ -503,6 +590,32 @@ describe("OperatorBotService /pos command", () => {
   it("shows usage when no signal text", async () => {
     const replies = await dispatchPos("/pos url=https://t.me/x/1", {}, {});
     expect(replies[0]).toContain("Usage: /pos");
+  });
+
+  it("passes the quoted src channel name through to createOperatorSignal", async () => {
+    const createOperatorSignal = jest.fn(async () => ({
+      signalId: "sig1",
+      versionId: "v1",
+      status: "PENDING_APPROVAL",
+      instrument: "ETH",
+      direction: "LONG",
+    }));
+    const approveSignal = jest.fn(async () => ({
+      approval: {},
+      position: { id: "pos-1" },
+      openError: null,
+      published: true,
+    }));
+    await dispatchPos(
+      '/pos LONG ETH @3500 SL 3400 TP 3700 src="Kaka trades" https://t.me/c/1/431',
+      { createOperatorSignal },
+      { approveSignal },
+    );
+    expect(createOperatorSignal).toHaveBeenCalledWith(
+      "LONG ETH @3500 SL 3400 TP 3700 https://t.me/c/1/431",
+      "tg:alice",
+      { sourceName: "Kaka trades" },
+    );
   });
 });
 
@@ -963,5 +1076,57 @@ describe("OperatorBotService.handleCallback", () => {
       text: "/cancel",
     });
     expect(sent.map((s) => s.text)).toContain("Đã hủy nhập liệu bổ sung (nếu có).");
+  });
+
+  it("promotes the delayed render with the chosen card style", async () => {
+    const chooseCardStyle = jest.fn(async () => "promoted");
+    const { svc } = cbSvc({ publications: { chooseCardStyle } });
+    const answered: string[] = [];
+    const edited: Array<Record<string, unknown>> = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "answerCallbackQuery") answered.push(String((params as { text?: string }).text));
+      if (method === "editMessageText") edited.push(params);
+      return {};
+    };
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      message: { message_id: 7, chat: { id: 100, type: "private" }, text: "Chọn card" },
+      data: "style:position-stats:pos-9",
+    });
+    expect(chooseCardStyle).toHaveBeenCalledWith("pos-9", "position-stats", "tg:alice");
+    expect(answered).toContain("Đã chọn card Thống kê.");
+    expect(String(edited[0].text)).toContain("Card Thống kê by @alice");
+    expect(edited[0].reply_markup).toEqual({ inline_keyboard: [] });
+  });
+
+  it("answers expired when the style window already passed", async () => {
+    const chooseCardStyle = jest.fn(async () => "expired");
+    const { svc } = cbSvc({ publications: { chooseCardStyle } });
+    const answered: string[] = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "answerCallbackQuery") answered.push(String((params as { text?: string }).text));
+      return {};
+    };
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      message: { message_id: 7, chat: { id: 100, type: "private" }, text: "Chọn card" },
+      data: "style:pnl-strip:pos-9",
+    });
+    expect(chooseCardStyle).toHaveBeenCalledWith("pos-9", "pnl-strip", "tg:alice");
+    expect(answered).toContain("Hết thời gian chọn — card PnL đã được đăng.");
+  });
+
+  it("rejects style callbacks from non-operators", async () => {
+    const chooseCardStyle = jest.fn(async () => "promoted");
+    const { svc, answered } = cbSvc({ publications: { chooseCardStyle } });
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 9, username: "mallory" },
+      data: "style:pnl-strip:pos-9",
+    });
+    expect(chooseCardStyle).not.toHaveBeenCalled();
+    expect(answered).toHaveLength(1);
   });
 });

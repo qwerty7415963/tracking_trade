@@ -39,3 +39,29 @@ export const DEFAULT_CARD_THEME: CardTheme = {
   pnlPrecision: 2,
   maxFieldChars: 24,
 };
+
+/**
+ * Position-stats card (kind `position-stats`): dark Binance-style panel,
+ * green/red P&L palette, Vietnamese labels. `lineFontSize` sizes the small
+ * grid labels, `pnlFontSize` the headline PNL/ROI numbers.
+ */
+export const STATS_CARD_THEME: CardTheme = {
+  width: 1280,
+  height: 540,
+  background: "#13171C",
+  primaryText: "#EAECEF",
+  secondaryText: "#8F96A3",
+  positivePnl: "#2EBD85",
+  negativePnl: "#F6465D",
+  zeroPnl: "#8F96A3",
+  buyColor: "#2EBD85",
+  sellColor: "#F6465D",
+  leftPadding: 48,
+  rightPadding: 48,
+  fontFamily: "Arial, Helvetica, sans-serif",
+  lineFontSize: 24,
+  pnlFontSize: 64,
+  maxSnapshotAgeMs: 5000,
+  pnlPrecision: 2,
+  maxFieldChars: 24,
+};

@@ -3,7 +3,9 @@ import { randomBytes } from "crypto";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { SignalUpdatesService } from "../signals/signal-updates.service";
-import { SignalsService, payloadRowId } from "../signals/signals.service";
+import { isCardKind } from "@tracking-auto/card-renderer";
+import { PublicationsService } from "../reporting/publications.service";
+import { SignalsService, extractSourceUrl, payloadRowId } from "../signals/signals.service";
 import { ApprovalFlowService } from "./approval-flow.service";
 import { VirtualAccountsService } from "./virtual-accounts.service";
 import { VirtualTradingService } from "./virtual-trading.service";
@@ -60,7 +62,7 @@ export function isOperator(username: string | undefined, allowlist: string[]): b
 }
 
 const HELP = [
-  "/pos <signal text> [url=..] [chat=..] [acc=..] - create + approve + publish now",
+  "/pos <signal text + post link> [src=\"..\"] [chat=..] [acc=..] - create + approve + pick card, publish",
   "/approve <signalId> - approve + open paper position",
   "/reject <signalId> [reason] - reject a signal",
   "/open <signalId> [accountId] - retry open for approved signal",
@@ -89,6 +91,8 @@ const HELP = [
 
 /** Manual-completion input waits 5 minutes for the operator's reply. */
 const FILL_TIMEOUT_MS = 5 * 60 * 1000;
+/** The /pos card-style dialog holds the render job for 5 minutes. */
+const CARD_STYLE_TIMEOUT_MS = 5 * 60 * 1000;
 /** Candidate-pick nonces live 15 minutes (callback_data 64-byte limit). */
 const PICK_TTL_MS = 15 * 60 * 1000;
 /** Max review items per /review side (5 signals + 5 updates). */
@@ -126,29 +130,37 @@ export function commandLineTokens(rawText: string | undefined): string[] {
 }
 
 /**
- * Flags pulled out of /pos free text: url=<post link>, chat=<destination>,
- * acc=<accountId>. Returns the remaining signal text with flags stripped.
+ * Flags pulled out of /pos free text: src="<channel name>",
+ * chat=<destination>, acc=<accountId>. Quoted values keep spaces
+ * (`src="Kaka trades"`). Post links are NOT flags — they stay in the text
+ * and are auto-detected by extractSourceUrl inside createOperatorSignal.
+ * Returns the remaining signal text with flags stripped.
  */
 export function extractPosFlags(raw: string | undefined): {
   text: string;
-  url: string | null;
+  src: string | null;
   chat: string | null;
   acc: string | null;
 } {
   let text = raw ?? "";
   const pick = (key: string): string | null => {
-    const re = new RegExp(`(^|\\s)${key}=(\\S+)`);
+    const re = new RegExp(`(^|\\s)${key}=("[^"]*"|'[^']*'|\\S+)`);
     const m = text.match(re);
     if (!m) return null;
     text = text.replace(re, " ");
-    return m[2];
+    const value = m[2];
+    const quote = value[0];
+    if (value.length >= 2 && (quote === '"' || quote === "'") && value.endsWith(quote)) {
+      return value.slice(1, -1);
+    }
+    return value;
   };
-  const url = pick("url");
+  const src = pick("src");
   const chat = pick("chat");
   const acc = pick("acc");
   // Strip the /pos command token itself (first token of the first line).
   text = text.replace(/(^|\s)\/[a-z_]+(@\w+)?/i, " ");
-  return { text: text.replace(/\s+/g, " ").trim(), url, chat, acc };
+  return { text: text.replace(/\s+/g, " ").trim(), src, chat, acc };
 }
 
 /** Shorten long original posts for review cards (Telegram 4096-char limit). */
@@ -299,6 +311,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     private readonly sources: SourcesService,
     private readonly coins: CoinsService,
     private readonly openMode: OpenModeService,
+    private readonly publications: PublicationsService,
   ) {}
 
   private get token(): string {
@@ -483,19 +496,21 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         return;
       case "pos": {
         const flags = extractPosFlags(rawText);
-        if (!flags.text) {
+        // Link-only input is not a signal: strip it before the usage check.
+        if (!extractSourceUrl(flags.text).text) {
           await reply(
             [
-              "Usage: /pos <signal text> [url=..] [chat=..] [acc=..]",
-              "Example: /pos LONG BTC @100000 SL 98000 TP 105000 lev 5",
-              "url = source post link (optional), chat = destination, acc = account id",
+              "Usage: /pos <signal text + post link> [src=\"..\"] [chat=..] [acc=..]",
+              "Example: /pos LONG BTC @100000 SL 98000 TP 105000 lev 5 https://t.me/channel/123",
+              "Paste the post link anywhere in the text — no url= needed (auto-detected).",
+              "src = channel name (fallback e.g. src=\"Kaka trades\"), chat = destination, acc = account id",
             ].join("\n"),
           );
           return;
         }
         try {
           const created = await this.signals.createOperatorSignal(flags.text, actor, {
-            sourceUrl: flags.url,
+            sourceName: flags.src,
           });
           const out = await this.flow.approveSignal(
             created.signalId,
@@ -503,15 +518,22 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             actor,
             flags.acc ?? undefined,
             flags.chat ?? undefined,
+            { renderDelayMs: CARD_STYLE_TIMEOUT_MS },
           );
           if (out.position) {
             const pos = out.position as { id: string };
-            await reply(
-              `✅ ${created.direction} ${created.instrument} → position ${pos.id}\n` +
-                (out.published
-                  ? "Card đang đăng lên channel."
-                  : "Open OK, card skipped: no destination chat (set chat= or REPORT_DESTINATION_CHAT_ID)."),
-            );
+            if (out.published) {
+              await reply(
+                `✅ ${created.direction} ${created.instrument} → position ${pos.id}\n` +
+                  `Chọn loại card đăng lên channel (5 phút, hết giờ dùng card PnL):`,
+                this.cardStyleKeyboard(pos.id),
+              );
+            } else {
+              await reply(
+                `✅ ${created.direction} ${created.instrument} → position ${pos.id}\n` +
+                  "Open OK, card skipped: no destination chat (set chat= or REPORT_DESTINATION_CHAT_ID).",
+              );
+            }
           } else {
             await reply(`⚠️ Approved but open failed: ${out.openError ?? "unknown"}`);
           }
@@ -1088,6 +1110,28 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         }
         return;
       }
+      if (action === "style" && id && isCardKind(kind)) {
+        const outcome = await this.publications.chooseCardStyle(id, kind, actor);
+        const label = kind === "position-stats" ? "Thống kê" : "PnL";
+        const suffix =
+          outcome === "promoted"
+            ? `\n\n[Card ${label} by @${cb.from.username}]`
+            : "\n\n[Hết thời gian chọn — card PnL]";
+        await answer(
+          outcome === "promoted"
+            ? `Đã chọn card ${label}.`
+            : "Hết thời gian chọn — card PnL đã được đăng.",
+        );
+        if (cb.message) {
+          await this.api("editMessageText", {
+            chat_id: cb.message.chat.id,
+            message_id: cb.message.message_id,
+            text: `${cb.message.text ?? ""}${suffix}`,
+            reply_markup: { inline_keyboard: [] },
+          }).catch(() => undefined);
+        }
+        return;
+      }
       await answer("Unknown action.");
     } catch (err) {
       await answer(`Failed: ${err instanceof Error ? err.message.split(":")[0] : "error"}`);
@@ -1116,6 +1160,18 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           { text: "Reject", callback_data: `rej:signal:${id}` },
         ],
         [{ text: "✏️ Bổ sung", callback_data: `fill:signal:${id}` }],
+      ],
+    };
+  }
+
+  /** /pos style dialog: pick the card image before the delayed render runs. */
+  private cardStyleKeyboard(positionId: string) {
+    return {
+      inline_keyboard: [
+        [
+          { text: "① Card PnL", callback_data: `style:pnl-strip:${positionId}` },
+          { text: "② Card Thống kê", callback_data: `style:position-stats:${positionId}` },
+        ],
       ],
     };
   }

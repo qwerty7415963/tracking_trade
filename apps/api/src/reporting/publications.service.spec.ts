@@ -282,6 +282,31 @@ describe("PublicationsService.sendPublication", () => {
     expect(String(sendArgs.caption)).toContain("Operator (manual)");
   });
 
+  it("shows a custom channel name and the post link for /pos signals", async () => {
+    const setup = okSetup();
+    (setup.prisma.virtualPosition.findUnique as jest.Mock).mockResolvedValueOnce({
+      ...POSITION,
+      signal: {
+        sourceId: "src-kaka",
+        versions: [{ direction: "LONG", normalizedPayloadJson: { sourceMessageId: "m-op" } }],
+        source: { displayName: "Kaka trades" },
+      },
+    });
+    (setup.prisma.sourceMessage.findUnique as jest.Mock).mockResolvedValueOnce({
+      sourceUrl: "https://t.me/c/3763643270/431",
+      externalMessageId: "op-1",
+      source: { platform: "MANUAL", externalSourceId: "kaka trades", sourceKind: "MANUAL", displayName: "Kaka trades" },
+    });
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput());
+    const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    const caption = String(sendArgs.caption);
+    expect(caption).toContain("Kaka trades");
+    expect(caption).toContain("https://t.me/c/3763643270/431");
+    // Name line comes before the link line, like the reference format.
+    expect(caption.indexOf("Kaka trades")).toBeLessThan(caption.indexOf("https://"));
+  });
+
   it("enqueues a render job instead of publishing inline", async () => {
     const setup = okSetup();
     const requestRender = jest.fn(async () => ({ id: "render-pub1" }));
@@ -291,7 +316,7 @@ describe("PublicationsService.sendPublication", () => {
       renders: { ...setup.renders, requestRender },
     });
     const result = await svc.requestPositionPublish("pos1", "filled", { markPrice: 2550 }, "alice");
-    expect(result).toEqual({ publicationId: "pub1", status: "PENDING" });
+    expect(result).toEqual({ publicationId: "pub1", status: "PENDING", cardKind: "pnl-strip" });
     expect(requestRender).toHaveBeenCalledWith(
       expect.objectContaining({
         virtualPositionId: "pos1",
@@ -300,10 +325,164 @@ describe("PublicationsService.sendPublication", () => {
         status: "filled",
         destinationChatId: "@chan",
         actor: "alice",
+        cardKind: "pnl-strip",
       }),
       "alice",
       "render-pub1",
     );
     expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
+  });
+});
+
+describe("PublicationsService card styles", () => {
+  function styleSetup(position: Record<string, unknown> = {}) {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({ cardKind: "pnl-strip", ...position })),
+        update: jest.fn(async (args: unknown) => args),
+      },
+      telegramPublication: {
+        create: jest.fn(async () => ({ id: "pub1" })),
+        findFirst: jest.fn(async () => null),
+      },
+    };
+    const requestRender = jest.fn(async () => ({ id: "render-pub1" }));
+    const promoteRender = jest.fn(async () => "promoted");
+    const audit = { record: jest.fn(async () => ({})) };
+    const svc = service({
+      prisma,
+      audit,
+      config: { reportDestinationChatId: "@chan" },
+      renders: { requestRender, promoteRender, readArtifact: jest.fn() },
+    });
+    return { svc, prisma, requestRender, promoteRender, audit };
+  }
+
+  it("persists the chosen card kind on the position and renders it", async () => {
+    const { svc, prisma, requestRender } = styleSetup();
+    const result = await svc.requestPositionPublish(
+      "pos1",
+      "filled",
+      { markPrice: 2550, cardKind: "position-stats" },
+      "alice",
+    );
+    expect(result.cardKind).toBe("position-stats");
+    expect(prisma.virtualPosition.update).toHaveBeenCalledWith({
+      where: { id: "pos1" },
+      data: { cardKind: "position-stats" },
+    });
+    expect(requestRender).toHaveBeenCalledWith(
+      expect.objectContaining({ cardKind: "position-stats" }),
+      "alice",
+      "render-pub1",
+    );
+  });
+
+  it("inherits the position's stored kind for update cards (TP/SL)", async () => {
+    const { svc, prisma, requestRender } = styleSetup({ cardKind: "position-stats" });
+    await svc.requestPositionPublish("pos1", "tp", { markPrice: 2600 }, "alice");
+    expect(prisma.virtualPosition.update).not.toHaveBeenCalled();
+    expect(requestRender).toHaveBeenCalledWith(
+      expect.objectContaining({ cardKind: "position-stats", status: "tp" }),
+      "alice",
+      "render-pub1",
+    );
+  });
+
+  it("falls back to the pnl-strip default for legacy rows", async () => {
+    const { svc, requestRender } = styleSetup({ cardKind: undefined });
+    await svc.requestPositionPublish("pos1", "filled", { markPrice: 2550 }, "alice");
+    expect(requestRender).toHaveBeenCalledWith(
+      expect.objectContaining({ cardKind: "pnl-strip" }),
+      "alice",
+      "render-pub1",
+    );
+  });
+
+  it("delays the render job for the /pos style dialog", async () => {
+    const { svc, requestRender } = styleSetup();
+    await svc.requestPositionPublish(
+      "pos1",
+      "filled",
+      { markPrice: 2550, renderDelayMs: 300_000 },
+      "alice",
+    );
+    expect(requestRender).toHaveBeenCalledWith(
+      expect.objectContaining({ delayMs: 300_000 }),
+      "alice",
+      "render-pub1",
+    );
+  });
+});
+
+describe("PublicationsService.buildSnapshot stats extras", () => {
+  it("computes leverage, margin type, account name and liquidation price", async () => {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({
+          ...POSITION,
+          account: { name: "Vinh cưu", marginType: "CROSS" },
+        })),
+      },
+      sourceMessage: { findUnique: jest.fn(async () => null) },
+    };
+    const svc = service({ prisma });
+    const { snapshot } = await svc.buildSnapshot("pos1", 2550);
+    expect(snapshot.leverage).toBe(10);
+    expect(snapshot.marginType).toBe("CROSS");
+    expect(snapshot.accountName).toBe("Vinh cưu");
+    // LONG entry 2500 lev 10 mmr 0.01 → 2500 × (1 − (0.1 − 0.01)).
+    expect(snapshot.liquidationPrice).toBeCloseTo(2275, 6);
+  });
+
+  it("leaves stats extras null without an account", async () => {
+    const prisma = {
+      virtualPosition: { findUnique: jest.fn(async () => ({ ...POSITION, account: undefined })) },
+      sourceMessage: { findUnique: jest.fn(async () => null) },
+    };
+    const svc = service({ prisma });
+    const { snapshot } = await svc.buildSnapshot("pos1", 2550);
+    expect(snapshot.marginType).toBeNull();
+    expect(snapshot.accountName).toBeNull();
+    expect(snapshot.liquidationPrice).toBeCloseTo(2275, 6);
+  });
+});
+
+describe("PublicationsService.chooseCardStyle", () => {
+  function dialogSetup(promoteResult: string, publication: unknown) {
+    const prisma = {
+      virtualPosition: { update: jest.fn(async (args: unknown) => args) },
+      telegramPublication: { findFirst: jest.fn(async () => publication) },
+    };
+    const promoteRender = jest.fn(async () => promoteResult);
+    const svc = service({
+      prisma,
+      config: { reportDestinationChatId: "@chan" },
+      renders: { promoteRender, readArtifact: jest.fn() },
+    });
+    return { svc, prisma, promoteRender };
+  }
+
+  it("promotes the delayed render and persists the choice", async () => {
+    const { svc, prisma, promoteRender } = dialogSetup("promoted", { id: "pub9" });
+    await expect(svc.chooseCardStyle("pos1", "position-stats", "alice")).resolves.toBe("promoted");
+    expect(promoteRender).toHaveBeenCalledWith("pub9", "position-stats", "alice");
+    expect(prisma.virtualPosition.update).toHaveBeenCalledWith({
+      where: { id: "pos1" },
+      data: { cardKind: "position-stats" },
+    });
+  });
+
+  it("reports expired when no pending publication is waiting", async () => {
+    const { svc, prisma, promoteRender } = dialogSetup("promoted", null);
+    await expect(svc.chooseCardStyle("pos1", "position-stats", "alice")).resolves.toBe("expired");
+    expect(promoteRender).not.toHaveBeenCalled();
+    expect(prisma.virtualPosition.update).not.toHaveBeenCalled();
+  });
+
+  it("does not persist the kind when promotion is refused", async () => {
+    const { svc, prisma } = dialogSetup("expired", { id: "pub9" });
+    await expect(svc.chooseCardStyle("pos1", "position-stats", "alice")).resolves.toBe("expired");
+    expect(prisma.virtualPosition.update).not.toHaveBeenCalled();
   });
 });

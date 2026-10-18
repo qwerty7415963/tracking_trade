@@ -1,5 +1,76 @@
 import { ConflictException } from "@nestjs/common";
-import { SignalsService, payloadRowId } from "./signals.service";
+import {
+  SignalsService,
+  extractSourceUrl,
+  payloadRowId,
+  telegramChatTarget,
+} from "./signals.service";
+
+describe("extractSourceUrl", () => {
+  it("strips a full https link out of the text", () => {
+    expect(
+      extractSourceUrl("LONG ETH @3500 SL 3400 TP 3700 https://t.me/traderosho/4375"),
+    ).toEqual({
+      text: "LONG ETH @3500 SL 3400 TP 3700",
+      url: "https://t.me/traderosho/4375",
+    });
+  });
+
+  it("normalizes bare t.me links with https://", () => {
+    expect(extractSourceUrl("LONG ETH @1 SL 2 TP 3 t.me/x/1")).toEqual({
+      text: "LONG ETH @1 SL 2 TP 3",
+      url: "https://t.me/x/1",
+    });
+  });
+
+  it("strips the legacy url= prefix", () => {
+    expect(extractSourceUrl("LONG ETH @1 SL 2 TP 3 url=https://t.me/x/1")).toEqual({
+      text: "LONG ETH @1 SL 2 TP 3",
+      url: "https://t.me/x/1",
+    });
+  });
+
+  it("returns the first link when several are pasted", () => {
+    expect(
+      extractSourceUrl("LONG ETH @1 SL 2 TP 3 https://t.me/a/1 https://t.me/b/2"),
+    ).toEqual({ text: "LONG ETH @1 SL 2 TP 3", url: "https://t.me/a/1" });
+  });
+
+  it("trims trailing punctuation from the link", () => {
+    expect(extractSourceUrl("LONG ETH @1 SL 2 TP 3 https://t.me/x/1).")).toEqual({
+      text: "LONG ETH @1 SL 2 TP 3",
+      url: "https://t.me/x/1",
+    });
+  });
+
+  it("leaves link-free text untouched", () => {
+    expect(extractSourceUrl("LONG BTC @100000 SL 98000 TP 105000")).toEqual({
+      text: "LONG BTC @100000 SL 98000 TP 105000",
+      url: null,
+    });
+    expect(extractSourceUrl("").url).toBeNull();
+  });
+});
+
+describe("telegramChatTarget", () => {
+  it("maps public post links to @username", () => {
+    expect(telegramChatTarget("https://t.me/traderosho/4375")).toBe("@traderosho");
+    expect(telegramChatTarget("https://t.me/s/traderosho/4375")).toBe("@traderosho");
+    expect(telegramChatTarget("https://t.me/traderosho")).toBe("@traderosho");
+  });
+
+  it("maps private /c/ links to -100<id>", () => {
+    expect(telegramChatTarget("https://t.me/c/3763643270/431")).toBe("-1003763643270");
+    expect(telegramChatTarget("https://t.me/c/3763643270")).toBe("-1003763643270");
+  });
+
+  it("rejects invite links and non-Telegram urls", () => {
+    expect(telegramChatTarget("https://t.me/+AbCdEf")).toBeNull();
+    expect(telegramChatTarget("https://t.me/joinchat/AAAA")).toBeNull();
+    expect(telegramChatTarget("https://x.com/user/status/1")).toBeNull();
+    expect(telegramChatTarget("not a url")).toBeNull();
+  });
+});
 
 describe("payloadRowId", () => {
   it("reads the camelCase key stored by ingest", () => {
@@ -355,6 +426,19 @@ describe("SignalsService.appendManualVersion", () => {
 });
 
 describe("SignalsService.createOperatorSignal", () => {
+  // Resolution must never depend on the developer's shell env.
+  let savedToken: string | undefined;
+  const realFetch = global.fetch;
+  beforeAll(() => {
+    savedToken = process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.TELEGRAM_BOT_TOKEN;
+  });
+  afterAll(() => {
+    if (savedToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+    else process.env.TELEGRAM_BOT_TOKEN = savedToken;
+    global.fetch = realFetch;
+  });
+
   function opService(overrides: Record<string, unknown> = {}) {
     const tx = {
       signal: {
@@ -374,6 +458,7 @@ describe("SignalsService.createOperatorSignal", () => {
       },
       sourceMessage: {
         create: jest.fn(async () => ({ id: "m-op" })),
+        findFirst: jest.fn(async () => null),
       },
       $transaction: jest.fn(async (fn: (t: unknown) => unknown) => fn(tx)),
       ...(overrides as Record<string, unknown>),
@@ -445,6 +530,171 @@ describe("SignalsService.createOperatorSignal", () => {
     await expect(svc.createOperatorSignal("   ", "tg:alice")).rejects.toThrow(/empty signal text/);
     expect(prisma.sourceMessage.create).not.toHaveBeenCalled();
     expect(prisma.source.upsert).not.toHaveBeenCalled();
+  });
+
+  it("auto-detects a pasted link in the text", async () => {
+    const { svc, prisma } = opService();
+    await svc.createOperatorSignal(
+      "LONG BTC @100000 SL 98000 TP 105000 https://t.me/traderosho/4375",
+      "tg:alice",
+    );
+    expect(prisma.sourceMessage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          // The link is stripped from the stored signal text…
+          contentRaw: "LONG BTC @100000 SL 98000 TP 105000",
+          // …and kept as the source post link.
+          sourceUrl: "https://t.me/traderosho/4375",
+        }),
+      }),
+    );
+    expect(prisma.sourceMessage.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { sourceUrl: "https://t.me/traderosho/4375" } }),
+    );
+  });
+
+  it("treats link-only input as empty", async () => {
+    const { svc, prisma } = opService();
+    await expect(
+      svc.createOperatorSignal("https://t.me/x/1", "tg:alice"),
+    ).rejects.toThrow(/empty signal text/);
+    expect(prisma.sourceMessage.create).not.toHaveBeenCalled();
+  });
+
+  it("explicit sourceUrl (REST) wins over a link pasted in the text", async () => {
+    const { svc, prisma } = opService();
+    await svc.createOperatorSignal("LONG BTC @100000 SL 98000 TP 105000 https://t.me/a/1", "tg:alice", {
+      sourceUrl: "https://override.example/x",
+    });
+    expect(prisma.sourceMessage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ sourceUrl: "https://override.example/x" }),
+      }),
+    );
+  });
+
+  it("creates a per-channel MANUAL source from an explicit src name", async () => {
+    const { svc, prisma } = opService();
+    await svc.createOperatorSignal("LONG BTC @100000 SL 98000 TP 105000", "tg:alice", {
+      sourceName: "Kaka trades",
+      sourceUrl: "https://t.me/c/1/431",
+    });
+    expect(prisma.source.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          platform_externalSourceId: { platform: "MANUAL", externalSourceId: "kaka trades" },
+        },
+        create: expect.objectContaining({
+          displayName: "Kaka trades",
+          sourceKind: "MANUAL",
+        }),
+      }),
+    );
+    expect(process.env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+  });
+
+  it("reuses the tracked channel name when the url is already ingested", async () => {
+    const { svc, prisma } = opService({
+      sourceMessage: {
+        create: jest.fn(async () => ({ id: "m-op" })),
+        findFirst: jest.fn(async () => ({ source: { displayName: "Osho" } })),
+      },
+    });
+    await svc.createOperatorSignal("LONG BTC @100000 SL 98000 TP 105000", "tg:alice", {
+      sourceUrl: "https://t.me/traderosho/4375",
+    });
+    expect(prisma.sourceMessage.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { sourceUrl: "https://t.me/traderosho/4375" } }),
+    );
+    expect(prisma.source.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { platform_externalSourceId: { platform: "MANUAL", externalSourceId: "osho" } },
+        create: expect.objectContaining({ displayName: "Osho" }),
+      }),
+    );
+  });
+
+  it("resolves the channel title via getChat for a pasted private link", async () => {
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, result: { title: "Kaka trades" } }),
+    }));
+    global.fetch = fetchMock as never;
+    process.env.TELEGRAM_BOT_TOKEN = "tok-123";
+    try {
+      const { svc, prisma } = opService();
+      await svc.createOperatorSignal(
+        "LONG BTC @100000 SL 98000 TP 105000 https://t.me/c/3763643270/431",
+        "tg:alice",
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.telegram.org/bottok-123/getChat",
+        expect.objectContaining({ body: '{"chat_id":"-1003763643270"}' }),
+      );
+      expect(prisma.source.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            platform_externalSourceId: { platform: "MANUAL", externalSourceId: "kaka trades" },
+          },
+          create: expect.objectContaining({ displayName: "Kaka trades" }),
+        }),
+      );
+      expect(prisma.sourceMessage.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            contentRaw: "LONG BTC @100000 SL 98000 TP 105000",
+            sourceUrl: "https://t.me/c/3763643270/431",
+          }),
+        }),
+      );
+    } finally {
+      delete process.env.TELEGRAM_BOT_TOKEN;
+      global.fetch = realFetch;
+    }
+  });
+
+  it("falls back to the operator name when getChat fails", async () => {
+    global.fetch = jest.fn(async () => {
+      throw new Error("network down");
+    }) as never;
+    process.env.TELEGRAM_BOT_TOKEN = "tok-123";
+    try {
+      const { svc, prisma } = opService();
+      await svc.createOperatorSignal("LONG BTC @100000 SL 98000 TP 105000", "tg:alice", {
+        sourceUrl: "https://t.me/privateonly/9",
+      });
+      expect(prisma.source.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            platform_externalSourceId: { platform: "MANUAL", externalSourceId: "operator" },
+          },
+        }),
+      );
+    } finally {
+      delete process.env.TELEGRAM_BOT_TOKEN;
+      global.fetch = realFetch;
+    }
+  });
+
+  it("skips getChat entirely without a token", async () => {
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as never;
+    try {
+      const { svc, prisma } = opService();
+      await svc.createOperatorSignal("LONG BTC @100000 SL 98000 TP 105000", "tg:alice", {
+        sourceUrl: "https://t.me/anyone/1",
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(prisma.source.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            platform_externalSourceId: { platform: "MANUAL", externalSourceId: "operator" },
+          },
+        }),
+      );
+    } finally {
+      global.fetch = realFetch;
+    }
   });
 });
 

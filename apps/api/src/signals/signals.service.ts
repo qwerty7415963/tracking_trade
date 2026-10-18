@@ -30,8 +30,10 @@ export interface IngestOutcome {
 }
 
 export interface OperatorSignalOptions {
-  /** Optional canonical post link shown in the published card caption. */
+  /** Explicit post link (REST override — bot/REST text auto-detects links). */
   sourceUrl?: string | null;
+  /** Explicit channel name (`src="Kaka trades"`); wins when set — the hidden fallback for links auto-resolve cannot name. */
+  sourceName?: string | null;
 }
 
 export interface OperatorSignalResult {
@@ -40,6 +42,75 @@ export interface OperatorSignalResult {
   status: string;
   instrument: string;
   direction: string;
+}
+
+/** Caption/source name when nothing else resolves. */
+export const DEFAULT_OPERATOR_SOURCE_NAME = "Operator (manual)";
+
+/**
+ * Pull post links out of free operator text. The FIRST link becomes the
+ * source url (full `https://…`, bare `t.me/…`, or the legacy `url=` prefix);
+ * every link is stripped from the returned text so parseSignal never sees
+ * one. Link-free text comes back untouched.
+ */
+const SOURCE_URL_RE = /(^|\s)(?:url=)?((?:https?:\/\/)?t\.me\/[^\s]+|https?:\/\/[^\s]+)/i;
+
+export function extractSourceUrl(raw: string): { text: string; url: string | null } {
+  if (!SOURCE_URL_RE.test(raw)) return { text: raw, url: null };
+  let first: string | null = null;
+  const text = raw
+    .replace(new RegExp(SOURCE_URL_RE.source, "gi"), (_m, _lead: string, link: string) => {
+      if (first === null) {
+        let url = link.replace(/[.,;:!?'")\]]+$/, "");
+        if (url) {
+          if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+          first = url;
+        }
+      }
+      return "";
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+  return { text, url: first };
+}
+
+/**
+ * getChat target for a Telegram post link: `t.me/name/1` → `@name`,
+ * `t.me/c/<id>/1` → `-100<id>` (private channels, only when the bot is a
+ * member). `t.me/+…` invite links and non-Telegram URLs → null.
+ */
+export function telegramChatTarget(url: string): string | null {
+  const privateChannel = url.match(/^https?:\/\/t\.me\/c\/(\d+)(?:\/\d+)?\/?$/i);
+  if (privateChannel) return `-100${privateChannel[1]}`;
+  const publicPost = url.match(/^https?:\/\/t\.me\/(?:s\/)?([A-Za-z0-9_]+)(?:\/\d+)?\/?$/i);
+  if (!publicPost) return null;
+  const slug = publicPost[1];
+  // Service paths that are not channel usernames.
+  if (["joinchat", "addstickers", "addemoji", "share", "proxy", "socks"].includes(slug.toLowerCase())) {
+    return null;
+  }
+  return `@${slug}`;
+}
+
+/**
+ * Channel title via Bot API getChat — best-effort: network errors, timeouts
+ * and "chat not found" all collapse to null so /pos never fails on lookup.
+ */
+async function fetchChatTitle(target: string, token: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: target }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { ok?: boolean; result?: { title?: unknown } };
+    const title = typeof body.result?.title === "string" ? body.result.title.trim() : "";
+    return title || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -333,6 +404,36 @@ export class SignalsService {
   }
 
   /**
+   * Display name for the synthetic MANUAL source behind a /pos signal.
+   * Order: explicit `src="…"` (hidden fallback for private links the bot
+   * cannot resolve) → name of an already-ingested post with the same url →
+   * Telegram getChat on the link → "Operator (manual)".
+   */
+  private async resolveOperatorSourceName(
+    opts: OperatorSignalOptions,
+    sourceUrl: string | null,
+  ): Promise<string> {
+    const explicit = opts.sourceName?.trim();
+    if (explicit) return explicit;
+    if (!sourceUrl) return DEFAULT_OPERATOR_SOURCE_NAME;
+    try {
+      const known = await this.prisma.sourceMessage.findFirst({
+        where: { sourceUrl },
+        include: { source: { select: { displayName: true } } },
+      });
+      const tracked = known?.source?.displayName?.trim();
+      if (tracked) return tracked;
+    } catch {
+      // Lookup is best-effort: fall through to getChat.
+    }
+    const token = process.env.TELEGRAM_BOT_TOKEN ?? "";
+    const target = telegramChatTarget(sourceUrl);
+    if (!token || !target) return DEFAULT_OPERATOR_SOURCE_NAME;
+    const title = await fetchChatTitle(target, token);
+    return title ?? DEFAULT_OPERATOR_SOURCE_NAME;
+  }
+
+  /**
    * Operator-initiated signal ("/pos"): parse operator-typed text like an
    * ingest, persist a synthetic MANUAL source post, and return the fresh
    * version ready for immediate approval. No review card — the operator
@@ -343,7 +444,13 @@ export class SignalsService {
     actor: string,
     opts: OperatorSignalOptions = {},
   ): Promise<OperatorSignalResult> {
-    const text = operatorText.trim();
+    const raw = operatorText.trim();
+    if (!raw) throw new BadRequestException("empty signal text");
+    // Auto-detect the post link anywhere in the text (legacy url= prefix
+    // included); the parser must never see it. opts.sourceUrl (REST) wins.
+    const detected = extractSourceUrl(raw);
+    const text = detected.text;
+    const sourceUrl = opts.sourceUrl ?? detected.url;
     if (!text) throw new BadRequestException("empty signal text");
     const coinUniverse = await this.coins.enabledSymbols().catch(() => [] as string[]);
     const parsed = parseSignal(
@@ -351,7 +458,7 @@ export class SignalsService {
         text,
         sourceMessageId: "",
         sourcePlatform: "MANUAL",
-        sourceUrl: opts.sourceUrl ?? null,
+        sourceUrl,
         sourceTimestamp: new Date().toISOString(),
         threadId: null,
         replyToMessageId: null,
@@ -377,12 +484,15 @@ export class SignalsService {
     }
     // Validate first, then persist the synthetic source post the parsed
     // payload will reference (caption needs a real SourceMessage row).
+    const sourceName = await this.resolveOperatorSourceName(opts, sourceUrl);
+    const externalSourceId =
+      sourceName === DEFAULT_OPERATOR_SOURCE_NAME ? "operator" : sourceName.toLowerCase();
     const source = await this.prisma.source.upsert({
-      where: { platform_externalSourceId: { platform: "MANUAL", externalSourceId: "operator" } },
+      where: { platform_externalSourceId: { platform: "MANUAL", externalSourceId } },
       create: {
         platform: "MANUAL",
-        externalSourceId: "operator",
-        displayName: "Operator (manual)",
+        externalSourceId,
+        displayName: sourceName,
         sourceKind: "MANUAL",
         createdBy: actor,
       },
@@ -394,7 +504,7 @@ export class SignalsService {
         externalMessageId: `op-${randomUUID()}`,
         contentRaw: text,
         authorName: actor,
-        sourceUrl: opts.sourceUrl ?? null,
+        sourceUrl,
         sourceTimestamp: new Date(),
         contentHash: createHash("sha256").update(text, "utf8").digest("hex"),
       },

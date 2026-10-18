@@ -24,7 +24,7 @@
 | POST | `/api/v1/signals/:id/approve` | Duyệt + mở vị thế ảo (approve = open) |
 | POST | `/api/v1/signals/:id/reject` | Từ chối tín hiệu |
 | POST | `/api/v1/signals/:id/expire` | Hết hạn tín hiệu |
-| POST | `/api/v1/signals/manual` | Tạo + duyệt + mở + đăng ngay từ text (`text`, `sourceUrl?`, `accountId?`, `destinationChatId?`) |
+| POST | `/api/v1/signals/manual` | Tạo + duyệt + mở + đăng ngay từ text — link trong text tự nhận diện (`text`, `sourceUrl?` override, `sourceName?`, `cardKind?` = `pnl-strip`\|`position-stats`, `accountId?`, `destinationChatId?`) |
 | GET | `/api/v1/updates/review-queue` | Hàng đợi review update |
 | POST | `/api/v1/updates/:id/approve` | Duyệt update |
 | POST | `/api/v1/updates/:id/reject` | Từ chối update |
@@ -76,7 +76,7 @@
 | Lệnh | Tác dụng |
 |---|---|
 | `/approve <id>` | Duyệt + mở vị thế ảo (đúng version) |
-| `/pos <signal text> [url=..] [chat=..] [acc=..]` | Tạo signal + duyệt + mở + đăng card ngay (không qua review) |
+| `/pos <signal text + post link> [src=".."] [chat=..] [acc=..]` | Tạo signal + duyệt + mở + hỏi chọn card (2 nút, 5 phút — không bấm dùng card PnL); link dán vào text là tự nhận diện |
 | `/reject <id> [lý do]` | Từ chối tín hiệu |
 | `/open <signalId> [accountId]` | Mở lại cho signal đã approve |
 | `/close <positionId>` | Đóng vị thế theo giá thị trường |

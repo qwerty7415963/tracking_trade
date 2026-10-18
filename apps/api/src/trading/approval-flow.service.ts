@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { CardKind } from "@tracking-auto/card-renderer";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../database/prisma.service";
 import { PublicationsService } from "../reporting/publications.service";
@@ -13,6 +14,14 @@ export interface ApproveOutcome {
   position: unknown | null;
   openError: string | null;
   published: boolean;
+}
+
+/** Publish knobs for approve — /pos defers the render behind the style dialog. */
+export interface ApprovePublishOptions {
+  /** Card image style persisted on the position (inheritance source). */
+  cardKind?: CardKind;
+  /** Hold the render job this long (style dialog, 5 minutes). */
+  renderDelayMs?: number;
 }
 
 @Injectable()
@@ -51,6 +60,7 @@ export class ApprovalFlowService {
     actor: string,
     accountId?: string,
     destinationChatId?: string,
+    publishOpts: ApprovePublishOptions = {},
   ): Promise<ApproveOutcome> {
     const approval = await this.signals.approve(signalId, dto, actor);
     const account = await this.resolveAccount(accountId);
@@ -63,6 +73,7 @@ export class ApprovalFlowService {
           Number((position as { entryPrice: unknown }).entryPrice),
           actor,
           destinationChatId,
+          publishOpts,
         );
       }
       return { approval, position, openError: null, published };
@@ -98,6 +109,7 @@ export class ApprovalFlowService {
     markPrice: number,
     actor: string,
     destinationChatId?: string,
+    publishOpts: ApprovePublishOptions = {},
   ): Promise<boolean> {
     const destination = this.destinationOrNull(destinationChatId);
     if (!destination) {
@@ -111,7 +123,12 @@ export class ApprovalFlowService {
       await this.publications.requestPositionPublish(
         positionId,
         "filled",
-        { markPrice, destinationChatId: destination },
+        {
+          markPrice,
+          destinationChatId: destination,
+          ...(publishOpts.cardKind ? { cardKind: publishOpts.cardKind } : {}),
+          ...(publishOpts.renderDelayMs ? { renderDelayMs: publishOpts.renderDelayMs } : {}),
+        },
         actor,
       );
       return true;

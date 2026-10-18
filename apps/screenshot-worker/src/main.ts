@@ -18,6 +18,7 @@ import {
 import { PublicationsService } from "../../api/src/reporting/publications.service";
 import { MarketDataService } from "../../api/src/market-data/market-data.service";
 import { PrismaService } from "../../api/src/database/prisma.service";
+import { DEFAULT_CARD_KIND } from "@tracking-auto/card-renderer";
 import { createDefaultRenderer } from "./renderer";
 
 @Module({
@@ -57,7 +58,7 @@ async function bootstrap(): Promise<void> {
           markPrice = mid;
         }
         const card = await publications.buildSnapshot(data.virtualPositionId, markPrice);
-        const rendered = await renderer.render(card.snapshot);
+        const rendered = await renderer.render(card.snapshot, new Date(), data.cardKind ?? DEFAULT_CARD_KIND);
         if (!rendered.ok) throw new Error(`RENDER_FAILED: ${rendered.code}`);
         const artifactPath = await renders.writeArtifact(renderId, rendered.artifact.png);
         if (data.publicationId) {

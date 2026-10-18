@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
-import { IsOptional, IsString } from "class-validator";
+import { IsIn, IsOptional, IsString } from "class-validator";
+import { CardKind } from "@tracking-auto/card-renderer";
 import { OperatorGuard } from "../auth/operator.guard";
 import { ApproveSignalDto, RejectSignalDto } from "../signals/dto/signal.dto";
 import { SignalsService } from "../signals/signals.service";
@@ -19,6 +20,8 @@ class ApproveBodyDto extends ApproveSignalDto {
   destinationChatId?: string;
 }
 
+export const CARD_KIND_VALUES = ["pnl-strip", "position-stats"] as const;
+
 class ManualSignalBodyDto {
   @IsString()
   text!: string;
@@ -26,6 +29,14 @@ class ManualSignalBodyDto {
   @IsOptional()
   @IsString()
   sourceUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  sourceName?: string;
+
+  @IsOptional()
+  @IsIn(CARD_KIND_VALUES)
+  cardKind?: CardKind;
 
   @IsOptional()
   @IsString()
@@ -102,6 +113,7 @@ export class SignalApprovalsController {
     const actor = this.actor(req);
     const created = await this.signals.createOperatorSignal(dto.text, actor, {
       sourceUrl: dto.sourceUrl ?? null,
+      sourceName: dto.sourceName ?? null,
     });
     const outcome = await this.flow.approveSignal(
       created.signalId,
@@ -109,6 +121,7 @@ export class SignalApprovalsController {
       actor,
       dto.accountId,
       dto.destinationChatId,
+      dto.cardKind ? { cardKind: dto.cardKind } : {},
     );
     return { ...created, ...outcome };
   }

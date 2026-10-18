@@ -66,6 +66,51 @@ describe("ApprovalFlowService.approveSignal", () => {
       expect.objectContaining({ positionId: "pos1" }),
     );
   });
+
+  it("passes the style-dialog delay and card kind through to publish", async () => {
+    const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
+    const trading = { openApproved: jest.fn(async () => ({ position: { id: "pos1" }, created: true })) };
+    const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
+    const publications = { requestPositionPublish: jest.fn(async () => ({})) };
+    const svc = flow({ signals, trading, accounts, publications });
+    const out = await svc.approveSignal(
+      "s1",
+      { signalVersionId: "v1" },
+      "alice",
+      "acc1",
+      "@chan",
+      { renderDelayMs: 300_000, cardKind: "position-stats" },
+    );
+    expect(out.published).toBe(true);
+    expect(publications.requestPositionPublish).toHaveBeenCalledWith(
+      "pos1",
+      "filled",
+      expect.objectContaining({
+        destinationChatId: "@chan",
+        renderDelayMs: 300_000,
+        cardKind: "position-stats",
+      }),
+      "alice",
+    );
+  });
+
+  it("publishes immediately with no dialog opts by default", async () => {
+    const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
+    const trading = { openApproved: jest.fn(async () => ({ position: { id: "pos1" }, created: true })) };
+    const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
+    const publications = { requestPositionPublish: jest.fn(async () => ({})) };
+    const svc = flow({ signals, trading, accounts, publications });
+    await svc.approveSignal("s1", { signalVersionId: "v1" }, "alice", "acc1", "@chan");
+    expect(publications.requestPositionPublish).toHaveBeenCalledWith(
+      "pos1",
+      "filled",
+      expect.objectContaining({ destinationChatId: "@chan" }),
+      "alice",
+    );
+    const opts = (publications.requestPositionPublish as jest.Mock).mock.calls[0][2] as Record<string, unknown>;
+    expect(opts.renderDelayMs).toBeUndefined();
+    expect(opts.cardKind).toBeUndefined();
+  });
 });
 
 describe("ApprovalFlowService.processNewSignal", () => {

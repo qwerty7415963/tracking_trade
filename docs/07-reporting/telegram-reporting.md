@@ -51,7 +51,7 @@ Khi tạo publication intent, **snapshot** các giá trị sau:
 
 1. Chỉ báo **filled** khi vị thế ảo đã được mở và ghi DB.
 2. Khi nguồn là **X và có URL**, phải hiển thị link nguồn X.
-3. Nếu **thiếu URL bắt buộc**, báo validation error/review; **không tự bịa link**. Ngoại lệ duy nhất: nguồn Telegram không lưu URL thì dùng link chuẩn `https://t.me/{channel}/{msgId}` (dựng xác định, không bịa). Nguồn operator (`sourceKind=MANUAL`) **không bắt buộc link**: caption hiện tên nguồn (`Operator (manual)`) không kèm URL.
+3. Nếu **thiếu URL bắt buộc**, báo validation error/review; **không tự bịa link**. Ngoại lệ duy nhất: nguồn Telegram không lưu URL thì dùng link chuẩn `https://t.me/{channel}/{msgId}` (dựng xác định, không bịa). Nguồn operator (`sourceKind=MANUAL`) **không bắt buộc link**: caption hiện tên nguồn (tự nhận diện từ link dán trong text / `src=`, mặc định `Operator (manual)`) không kèm URL.
 4. Hiển thị nguồn Telegram **nếu có**; nếu không có, ghi rõ "không có nguồn Telegram".
 5. Luôn có **tên destination channel** từ snapshot.
 6. **Ảnh card là bằng chứng hiển thị**, không phải nguồn sự thật về vị thế (DB + ledger mới là chuẩn).
@@ -93,7 +93,10 @@ https://t.me/traderosho/4375
 
 - Lệnh **limit / filled / tp / sl / close đều dùng chung khung trên**, chỉ đổi token `{{status}}`.
 - `{{direction}}` hiển thị **Long/Short**.
-- Bài đầu tiên **đính kèm ảnh card P&L gen bằng code** (1280×180, từ dữ liệu vị thế đã xác minh — không chụp MT5; gửi dạng photo + caption là nội dung trên; caption Telegram giới hạn 1024 ký tự).
+- Bài đầu tiên **đính kèm ảnh card gen bằng code** (từ dữ liệu vị thế đã xác minh — không chụp MT5; gửi dạng photo + caption là nội dung trên; caption Telegram giới hạn 1024 ký tự). Có **2 kind ảnh card** (`virtual_positions.card_kind`):
+  - **`pnl-strip`** (mặc định) — 1280×180: symbol/direction/size + `entry → mark` + PnL lớn.
+  - **`position-stats`** — 1280×540, label tiếng Việt: badge L/S + symbol + tên account + `Cross {lev}X`; PNL (USDT) + ROI; *Kích thước / Margin / Tỉ lệ ký quỹ*; *Giá vào lệnh / Giá đánh dấu / Giá thanh lý* (margin = notional/leverage, ROI = PnL/margin, thanh lý tính bằng `liquidationPrice()`).
+  - `/pos` mở dialog 2 nút hỏi kind (render job delayed 5 phút — hết giờ tự render `pnl-strip`); card TP/SL **kế thừa** kind từ card mở; ingest/REST mặc định `pnl-strip` (REST truyền được `cardKind`).
 - Mọi bài cập nhật sau bài đầu tiên **reply vào bài đầu tiên** (xem rule #7).
 - Thiếu `source_url` bắt buộc → validation error/review, **không bịa link**.
 - Ngoại lệ rule "luôn có tên destination channel": mẫu này không in tên kênh vì bài đăng nằm ngay trong channel đích (tên kênh là implicit).

@@ -2,6 +2,7 @@ import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Queue, Job } from "bullmq";
 import { promises as fs } from "fs";
 import { join } from "path";
+import { CardKind } from "@tracking-auto/card-renderer";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { REDIS_CLIENT } from "../queue/redis.provider";
@@ -23,6 +24,8 @@ export interface RenderJobData {
   destinationChatId?: string;
   replyToMessageId?: string;
   actor?: string;
+  /** Card image style; undefined renders the pnl-strip default. */
+  cardKind?: CardKind;
 }
 
 export interface SendJobData {
@@ -51,6 +54,10 @@ export interface RenderRequest {
   destinationChatId?: string;
   replyToMessageId?: string;
   actor?: string;
+  /** Card image style; undefined renders the pnl-strip default. */
+  cardKind?: CardKind;
+  /** Hold the job this many ms (used by the /pos style dialog, 5 min). */
+  delayMs?: number;
 }
 
 function mapJobStatus(state: string): RenderJobStatus {
@@ -86,6 +93,7 @@ export class RendersService {
         backoff: { type: "exponential", delay: 2000 },
         removeOnComplete: 100,
         removeOnFail: 200,
+        ...(request.delayMs && request.delayMs > 0 ? { delay: request.delayMs } : {}),
         ...(jobId ? { jobId } : {}),
       });
       await this.audit.record(actor, "render.requested", {
@@ -93,6 +101,40 @@ export class RendersService {
         positionId: request.virtualPositionId,
       });
       return { renderId: job.id, status: "PENDING" as RenderJobStatus };
+    } finally {
+      await queue.close();
+    }
+  }
+
+  /**
+   * /pos style dialog promotion: if the publication's render job is still
+   * waiting (delayed by the 5-minute dialog), rewrite it with the chosen
+   * kind and run it now. "expired" = job gone or already running/done
+   * (the default pnl-strip card was rendered on timeout).
+   */
+  async promoteRender(
+    publicationId: string,
+    cardKind: CardKind,
+    actor: string,
+  ): Promise<"promoted" | "expired"> {
+    const queue = this.queue(RENDER_QUEUE_NAME);
+    try {
+      const jobId = `${RENDER_JOB_ID_PREFIX}${publicationId}`;
+      const job = await queue.getJob(jobId);
+      if (!job) return "expired";
+      const state = await job.getState();
+      if (state !== "delayed" && state !== "waiting" && state !== "prioritized") return "expired";
+      const data = job.data as RenderJobData;
+      await job.remove();
+      await queue.add("render-card", { ...data, cardKind }, {
+        attempts: 3,
+        backoff: { type: "exponential", delay: 2000 },
+        removeOnComplete: 100,
+        removeOnFail: 200,
+        jobId,
+      });
+      await this.audit.record(actor, "render.promoted", { publicationId, cardKind });
+      return "promoted";
     } finally {
       await queue.close();
     }

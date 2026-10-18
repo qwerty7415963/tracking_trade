@@ -3,8 +3,13 @@ import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../database/prisma.service";
 import { payloadRowId } from "../signals/signals.service";
-import { PositionSnapshot } from "@tracking-auto/card-renderer";
-import { buildPostLink } from "@tracking-auto/domain";
+import {
+  CardKind,
+  DEFAULT_CARD_KIND,
+  isCardKind,
+  PositionSnapshot,
+} from "@tracking-auto/card-renderer";
+import { buildPostLink, liquidationPrice } from "@tracking-auto/domain";
 
 /** Max wait for the original card before an update posts standalone. */
 export const ORIGINAL_HOLD_MS = 5 * 60 * 1000;
@@ -147,7 +152,15 @@ export class PublicationsService {
   async requestPositionPublish(
     positionId: string,
     status: CardStatus,
-    opts: { markPrice: number; destinationChatId?: string; replyToMessageId?: string },
+    opts: {
+      markPrice: number;
+      destinationChatId?: string;
+      replyToMessageId?: string;
+      /** Persist + render this card style; omit to inherit the position's. */
+      cardKind?: CardKind;
+      /** Hold the render job (the /pos style dialog waits 5 minutes). */
+      renderDelayMs?: number;
+    },
     actor: string,
   ) {
     const destination = (opts.destinationChatId ?? this.config.reportDestinationChatId ?? "").trim();
@@ -162,6 +175,20 @@ export class PublicationsService {
       });
       replyTo = original?.telegramMessageId ?? undefined;
     }
+    let cardKind: CardKind;
+    if (opts.cardKind) {
+      cardKind = opts.cardKind;
+      await this.prisma.virtualPosition.update({
+        where: { id: positionId },
+        data: { cardKind },
+      });
+    } else {
+      const position = await this.prisma.virtualPosition.findUnique({
+        where: { id: positionId },
+        select: { cardKind: true },
+      });
+      cardKind = isCardKind(position?.cardKind) ? position.cardKind : DEFAULT_CARD_KIND;
+    }
     const publication = await this.prisma.telegramPublication.create({
       data: { virtualPositionId: positionId, publicationStatus: "PENDING" },
     });
@@ -174,14 +201,43 @@ export class PublicationsService {
         destinationChatId: destination,
         replyToMessageId: replyTo,
         actor,
+        cardKind,
+        ...(opts.renderDelayMs && opts.renderDelayMs > 0 ? { delayMs: opts.renderDelayMs } : {}),
       },
       actor,
       `${RENDER_JOB_ID_PREFIX}${publication.id}`,
     );
     await this.audit.record(actor, "publication.requested", {
       publicationId: publication.id,
+      cardKind,
+      ...(opts.renderDelayMs ? { renderDelayMs: opts.renderDelayMs } : {}),
     });
-    return { publicationId: publication.id, status: "PENDING" };
+    return { publicationId: publication.id, status: "PENDING", cardKind };
+  }
+
+  /**
+   * /pos style dialog: persist the operator's card choice on the position
+   * (source for TP/SL inheritance) and promote the still-delayed render
+   * job. "expired" = the 5-minute window passed (default card rendered).
+   */
+  async chooseCardStyle(
+    positionId: string,
+    cardKind: CardKind,
+    actor: string,
+  ): Promise<"promoted" | "expired"> {
+    const publication = await this.prisma.telegramPublication.findFirst({
+      where: { virtualPositionId: positionId, publicationStatus: "PENDING" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!publication) return "expired";
+    const outcome = await this.renders.promoteRender(publication.id, cardKind, actor);
+    if (outcome === "promoted") {
+      await this.prisma.virtualPosition.update({
+        where: { id: positionId },
+        data: { cardKind },
+      });
+    }
+    return outcome;
   }
 
   async getPublication(id: string) {
@@ -195,6 +251,7 @@ export class PublicationsService {
     const position = await this.prisma.virtualPosition.findUnique({
       where: { id: positionId },
       include: {
+        account: { select: { name: true, marginType: true } },
         signal: { include: { versions: { orderBy: { versionNumber: "desc" }, take: 1 }, source: true } },
       },
     });
@@ -229,6 +286,18 @@ export class PublicationsService {
       status: volume > 0 ? "OPEN" : "CLOSED",
       priceDigits: decimals(entry),
       volumeDigits: decimals(volume),
+      // Position-stats card extras (pnl-strip ignores them).
+      leverage: position.leverage,
+      marginType: position.account?.marginType ?? null,
+      accountName: position.account?.name ?? null,
+      liquidationPrice:
+        entry > 0 && position.leverage > 0
+          ? liquidationPrice(
+              position.direction === "SHORT" ? "SHORT" : "LONG",
+              entry,
+              position.leverage,
+            )
+          : null,
     };
     return { snapshot, position, signal: position.signal, version, sourceMessage };
   }

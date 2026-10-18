@@ -11,6 +11,20 @@ export type RenderErrorCode =
   | "ARTIFACT_STORAGE_FAILED"
   | "TELEGRAM_PUBLISH_FAILED";
 
+/**
+ * Published card image style. `pnl-strip` = the original 1280×180 floating
+ * P&L strip; `position-stats` = the Vietnamese position-statistics card
+ * (PNL/ROI, size, margin, entry/mark/liquidation). Stored per position
+ * (`virtual_positions.card_kind`) so update cards inherit the opening card.
+ */
+export type CardKind = "pnl-strip" | "position-stats";
+
+export const DEFAULT_CARD_KIND: CardKind = "pnl-strip";
+
+export function isCardKind(value: unknown): value is CardKind {
+  return value === "pnl-strip" || value === "position-stats";
+}
+
 export interface PositionSnapshot {
   accountId: string;
   positionId: string;
@@ -28,6 +42,11 @@ export interface PositionSnapshot {
   status: "OPEN" | "CLOSED";
   priceDigits: number;
   volumeDigits: number;
+  /** Position-stats card extras (optional — pnl-strip never reads them). */
+  leverage?: number | null;
+  marginType?: string | null;
+  accountName?: string | null;
+  liquidationPrice?: number | null;
 }
 
 export interface CardViewModel {
