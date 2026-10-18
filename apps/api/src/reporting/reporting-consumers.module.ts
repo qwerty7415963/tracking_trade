@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { QueueModule } from "../queue/queue.module";
 import { ReportingModule } from "./reporting.module";
 import { PublishSendConsumer } from "./publish-send.consumer";
 
@@ -8,7 +9,7 @@ import { PublishSendConsumer } from "./publish-send.consumer";
  * API process sends photos (single poller/sender principle).
  */
 @Module({
-  imports: [ReportingModule],
+  imports: [ReportingModule, QueueModule],
   providers: [PublishSendConsumer],
 })
 export class ReportingConsumersModule {}

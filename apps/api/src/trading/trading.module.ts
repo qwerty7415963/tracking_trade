@@ -26,6 +26,7 @@ import { VirtualTradingService } from "./virtual-trading.service";
     KillSwitchService,
     OpenModeService,
     OperatorBotService,
+    MarketWatchService,
   ],
   exports: [VirtualAccountsService, VirtualTradingService, ApprovalFlowService, KillSwitchService, OpenModeService],
 })

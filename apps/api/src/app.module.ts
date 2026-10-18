@@ -32,6 +32,7 @@ import { TradingModule } from "./trading/trading.module";
     IngestionModule,
     TradingModule,
     ReportingModule,
+    ReportingConsumersModule,
   ],
   controllers: [HealthController],
 })
