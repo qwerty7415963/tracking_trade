@@ -101,11 +101,8 @@ export function buildOpenCaption(input: {
   sourceDisplayName: string;
   sourceUrl: string | null;
 }): string {
-  if (!input.sourceUrl) {
-    throw new Error("PUBLICATION_VALIDATION_FAILED: missing required source_url");
-  }
   const direction = input.direction === "LONG" ? "Long" : "Short";
-  return [
+  const lines = [
     `${escapeHtml(direction)} ${escapeHtml(input.instrument)} - ${escapeHtml(input.status)}`,
     "",
     `- Entry: ${escapeHtml(input.entry)}`,
@@ -113,9 +110,12 @@ export function buildOpenCaption(input: {
     `- TP: ${escapeHtml(input.takeProfit)}`,
     "",
     escapeHtml(input.sourceDisplayName),
-    "",
-    escapeHtml(input.sourceUrl),
-  ].join("\n");
+  ];
+  // No URL (operator-created signals): name the source, never invent a link.
+  if (input.sourceUrl) {
+    lines.push("", escapeHtml(input.sourceUrl));
+  }
+  return lines.join("\n");
 }
 
 function decimals(value: number): number {
@@ -270,7 +270,8 @@ export class PublicationsService {
     );
     const photo = await this.renders.readArtifact(publicationId);
     // Telegram ingestion never stores a URL: fall back to the canonical
-    // t.me post link. X sources without URL still fail validation (review).
+    // t.me post link. X sources without URL still fail validation (review);
+    // operator-created (MANUAL) signals may publish without any link.
     const sourceUrl =
       sourceMessage?.sourceUrl ??
       (sourceMessage
@@ -280,6 +281,10 @@ export class PublicationsService {
             sourceMessage.externalMessageId,
           )
         : null);
+    const isOperatorSource = sourceMessage?.source?.sourceKind === "MANUAL";
+    if (!sourceUrl && !isOperatorSource) {
+      throw new Error("PUBLICATION_VALIDATION_FAILED: missing required source_url");
+    }
     const tps: number[] = Array.isArray(version?.takeProfits)
       ? (version.takeProfits as number[])
       : [];

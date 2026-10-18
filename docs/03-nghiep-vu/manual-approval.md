@@ -18,6 +18,20 @@ Mọi tín hiệu **mở lệnh mới** cần được **duyệt thủ công**. 
 
 `approve()` từ chối version thiếu field mà chắc chắn mở lỗi: coin/hướng `UNKNOWN`, thiếu entry/SL/TP — kèm lý do rõ để operator Bổ sung trước. Coin có tên thật nhưng chưa trong list vẫn được duyệt (thêm coin vào list là mở được). Nút Approve hiển thị luôn lý do open-failed thay vì cụt lủn.
 
+## 1.2 Vị thế chủ động `/pos` (operator tự ra lệnh)
+
+Khi **chính operator** là người ra tín hiệu (không phải channel bên ngoài), không cần bước review:
+
+```
+/pos LONG BTC @100000 SL 98000 TP 105000 lev 5 url=https://t.me/x/1 chat=<id> acc=<accountId>
+```
+
+- **Tạo signal** (`createOperatorSignal`): nguồn ảo `MANUAL/operator`, version `eventType=MANUAL`, status `PENDING_APPROVAL` (hoặc `NEEDS_REVIEW` nếu có ambiguity). Thiếu field bắt buộc hoặc coin lạ → báo đúng lỗi, không tạo gì.
+- **Tự duyệt + mở + đăng**: `flow.approveSignal` chạy liền sau khi tạo — không qua card review (operator ra lệnh = tự duyệt). Vẫn giữ toàn bộ guard: kill switch, symbol map + mid price, risk gate, approval ≤ 24h.
+- **Caption**: không có link nguồn → hiện `Operator (manual)` không kèm URL (không bịa link). Truyền `url=` nếu muốn hiển thị link bài gốc.
+- **Không phụ thuộc `open_mode`**: lệnh chủ động đi thẳng `approveSignal`, như `/approve` tay.
+- REST parity: `POST /v1/signals/manual` — cùng one-shot flow.
+
 ## 2. Nội dung bắt buộc của approval
 
 Approval phải lưu:

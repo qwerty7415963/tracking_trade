@@ -354,6 +354,100 @@ describe("SignalsService.appendManualVersion", () => {
   });
 });
 
+describe("SignalsService.createOperatorSignal", () => {
+  function opService(overrides: Record<string, unknown> = {}) {
+    const tx = {
+      signal: {
+        create: jest.fn(async () => ({ id: "sig-op" })),
+        update: jest.fn(async (args: { data: Record<string, unknown> }) => ({
+          id: "sig-op",
+          ...args.data,
+        })),
+      },
+      signalVersion: {
+        create: jest.fn(async () => ({ id: "v-op", instrument: "BTC", direction: "LONG" })),
+      },
+    };
+    const prisma = {
+      source: {
+        upsert: jest.fn(async () => ({ id: "src-op" })),
+      },
+      sourceMessage: {
+        create: jest.fn(async () => ({ id: "m-op" })),
+      },
+      $transaction: jest.fn(async (fn: (t: unknown) => unknown) => fn(tx)),
+      ...(overrides as Record<string, unknown>),
+    };
+    const coins = { enabledSymbols: jest.fn(async () => ["BTC", "ETH"]) };
+    const profiles = { getProfile: jest.fn(async () => null) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      coins as never,
+      profiles as never,
+    );
+    return { svc, prisma, tx };
+  }
+
+  it("creates a MANUAL signal with a synthetic source post", async () => {
+    const { svc, prisma, tx } = opService();
+    const out = await svc.createOperatorSignal(
+      "LONG BTC @100000 SL 98000 TP 105000",
+      "tg:alice",
+      { sourceUrl: "https://t.me/x/1" },
+    );
+    expect(out).toEqual({
+      signalId: "sig-op",
+      versionId: "v-op",
+      status: "PENDING_APPROVAL",
+      instrument: "BTC",
+      direction: "LONG",
+    });
+    expect(prisma.source.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          platform_externalSourceId: { platform: "MANUAL", externalSourceId: "operator" },
+        },
+      }),
+    );
+    expect(prisma.sourceMessage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sourceId: "src-op",
+          authorName: "tg:alice",
+          sourceUrl: "https://t.me/x/1",
+        }),
+      }),
+    );
+    expect(tx.signalVersion.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          signalId: "sig-op",
+          versionNumber: 1,
+          eventType: "MANUAL",
+          normalizedPayloadJson: expect.objectContaining({ sourceMessageId: "m-op" }),
+        }),
+      }),
+    );
+  });
+
+  it("refuses incomplete or unknown-coin input before persisting", async () => {
+    const { svc, prisma } = opService();
+    await expect(svc.createOperatorSignal("LONG BTC @100000", "tg:alice")).rejects.toThrow(
+      /missing stop_loss, take_profits/,
+    );
+    await expect(
+      svc.createOperatorSignal("LONG $XYZ @1 SL 0.9 TP 1.1", "tg:alice"),
+    ).rejects.toThrow(/unknown coin XYZ/);
+    await expect(svc.createOperatorSignal("close everything", "tg:alice")).rejects.toThrow(
+      /reads as an update/,
+    );
+    await expect(svc.createOperatorSignal("   ", "tg:alice")).rejects.toThrow(/empty signal text/);
+    expect(prisma.sourceMessage.create).not.toHaveBeenCalled();
+    expect(prisma.source.upsert).not.toHaveBeenCalled();
+  });
+});
+
 describe("SignalsService.approve (stale version)", () => {
   it("rejects approval bound to an old version", async () => {
     const tx = {

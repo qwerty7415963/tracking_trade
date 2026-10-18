@@ -22,11 +22,11 @@ describe("buildOpenCaption (template #11)", () => {
     expect(buildOpenCaption({ ...base, direction: "LONG" }).split("\n")[0]).toBe("Long ETH - limit");
   });
 
-  it("escapes html and refuses missing source url", () => {
+  it("escapes html and omits the link line when no url", () => {
     expect(buildOpenCaption({ ...base, sourceDisplayName: "A<B" }).split("\n")[6]).toBe("A&lt;B");
-    expect(() => buildOpenCaption({ ...base, sourceUrl: null })).toThrow(
-      /missing required source_url/,
-    );
+    const noUrl = buildOpenCaption({ ...base, sourceUrl: null }).split("\n");
+    expect(noUrl).toHaveLength(7);
+    expect(noUrl[noUrl.length - 1]).toBe("Osho");
   });
 });
 
@@ -258,6 +258,28 @@ describe("PublicationsService.sendPublication", () => {
     const svc = service(setup);
     await expect(svc.sendPublication("pub1", sendInput())).rejects.toThrow(/missing required source_url/);
     expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
+  });
+
+  it("allows operator MANUAL signals without any URL", async () => {
+    const setup = okSetup();
+    (setup.prisma.virtualPosition.findUnique as jest.Mock).mockResolvedValueOnce({
+      ...POSITION,
+      signal: {
+        sourceId: "src-op",
+        versions: [{ direction: "LONG", normalizedPayloadJson: { sourceMessageId: "m-op" } }],
+        source: { displayName: "Operator (manual)" },
+      },
+    });
+    (setup.prisma.sourceMessage.findUnique as jest.Mock).mockResolvedValueOnce({
+      sourceUrl: null,
+      externalMessageId: "op-1",
+      source: { platform: "MANUAL", externalSourceId: "operator", sourceKind: "MANUAL", displayName: "Operator (manual)" },
+    });
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput());
+    const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(String(sendArgs.caption)).not.toContain("http");
+    expect(String(sendArgs.caption)).toContain("Operator (manual)");
   });
 
   it("enqueues a render job instead of publishing inline", async () => {

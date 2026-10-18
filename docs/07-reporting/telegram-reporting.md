@@ -51,7 +51,7 @@ Khi tạo publication intent, **snapshot** các giá trị sau:
 
 1. Chỉ báo **filled** khi vị thế ảo đã được mở và ghi DB.
 2. Khi nguồn là **X và có URL**, phải hiển thị link nguồn X.
-3. Nếu **thiếu URL bắt buộc**, báo validation error/review; **không tự bịa link**. Ngoại lệ duy nhất: nguồn Telegram không lưu URL thì dùng link chuẩn `https://t.me/{channel}/{msgId}` (dựng xác định, không bịa).
+3. Nếu **thiếu URL bắt buộc**, báo validation error/review; **không tự bịa link**. Ngoại lệ duy nhất: nguồn Telegram không lưu URL thì dùng link chuẩn `https://t.me/{channel}/{msgId}` (dựng xác định, không bịa). Nguồn operator (`sourceKind=MANUAL`) **không bắt buộc link**: caption hiện tên nguồn (`Operator (manual)`) không kèm URL.
 4. Hiển thị nguồn Telegram **nếu có**; nếu không có, ghi rõ "không có nguồn Telegram".
 5. Luôn có **tên destination channel** từ snapshot.
 6. **Ảnh card là bằng chứng hiển thị**, không phải nguồn sự thật về vị thế (DB + ledger mới là chuẩn).

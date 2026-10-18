@@ -3,6 +3,7 @@ import {
   commandLines,
   commandLineTokens,
   displayOrDash,
+  extractPosFlags,
   formatReviewReason,
   formatSignalReviewCard,
   formatUpdateReviewCard,
@@ -405,6 +406,103 @@ describe("OperatorBotService openmode command", () => {
     const bad = await dispatchOpenMode(["sometimes"], { setMode });
     expect(bad[0]).toContain("Usage: /openmode [manual|auto]");
     expect(setMode).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("extractPosFlags", () => {
+  it("pulls url/chat/acc flags and keeps the signal text", () => {
+    expect(
+      extractPosFlags("/pos LONG BTC @100000 SL 98000 TP 105000 url=https://t.me/x/1 chat=-1001 acc=a1"),
+    ).toEqual({
+      text: "LONG BTC @100000 SL 98000 TP 105000",
+      url: "https://t.me/x/1",
+      chat: "-1001",
+      acc: "a1",
+    });
+  });
+
+  it("handles no flags and strips the /pos token", () => {
+    expect(extractPosFlags("/pos SHORT ETH @2600 SL 2700 TP 2400")).toEqual({
+      text: "SHORT ETH @2600 SL 2700 TP 2400",
+      url: null,
+      chat: null,
+      acc: null,
+    });
+    expect(extractPosFlags(undefined).text).toBe("");
+  });
+});
+
+describe("OperatorBotService /pos command", () => {
+  async function dispatchPos(rawText: string, signals: Record<string, unknown>, flow: Record<string, unknown>) {
+    const { svc } = bot({ signals, flow });
+    const replies: string[] = [];
+    await svc.dispatch({ name: "pos", args: [] }, "tg:alice", async (text) => {
+      replies.push(text);
+    }, rawText);
+    return replies;
+  }
+
+  it("creates, approves, and reports a published card", async () => {
+    const createOperatorSignal = jest.fn(async () => ({
+      signalId: "sig1",
+      versionId: "v1",
+      status: "PENDING_APPROVAL",
+      instrument: "BTC",
+      direction: "LONG",
+    }));
+    const approveSignal = jest.fn(async () => ({
+      approval: {},
+      position: { id: "pos-1" },
+      openError: null,
+      published: true,
+    }));
+    const replies = await dispatchPos(
+      "/pos LONG BTC @100000 SL 98000 TP 105000 url=https://t.me/x/1 chat=-1001 acc=a1",
+      { createOperatorSignal },
+      { approveSignal },
+    );
+    expect(createOperatorSignal).toHaveBeenCalledWith(
+      "LONG BTC @100000 SL 98000 TP 105000",
+      "tg:alice",
+      { sourceUrl: "https://t.me/x/1" },
+    );
+    expect(approveSignal).toHaveBeenCalledWith(
+      "sig1",
+      { signalVersionId: "v1" },
+      "tg:alice",
+      "a1",
+      "-1001",
+    );
+    expect(replies[0]).toContain("✅ LONG BTC");
+    expect(replies[0]).toContain("Card đang đăng");
+  });
+
+  it("reports open failures and validation errors", async () => {
+    const createOperatorSignal = jest.fn(async () => ({
+      signalId: "sig1",
+      versionId: "v1",
+      status: "PENDING_APPROVAL",
+      instrument: "BTC",
+      direction: "LONG",
+    }));
+    const failed = await dispatchPos(
+      "/pos LONG BTC @100000 SL 98000 TP 105000",
+      { createOperatorSignal },
+      { approveSignal: jest.fn(async () => ({ approval: {}, position: null, openError: "KILL_SWITCH_ON", published: false })) },
+    );
+    expect(failed[0]).toContain("open failed: KILL_SWITCH_ON");
+
+    const replies = await dispatchPos("/pos LONG BTC @100000", {
+      createOperatorSignal: jest.fn(async () => {
+        throw new ConflictException("missing stop_loss, take_profits — resend with all required fields");
+      }),
+    }, {});
+    expect(replies[0]).toContain("❌ missing stop_loss, take_profits");
+  });
+
+  it("shows usage when no signal text", async () => {
+    const replies = await dispatchPos("/pos url=https://t.me/x/1", {}, {});
+    expect(replies[0]).toContain("Usage: /pos");
   });
 });
 

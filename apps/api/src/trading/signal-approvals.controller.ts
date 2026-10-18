@@ -19,6 +19,23 @@ class ApproveBodyDto extends ApproveSignalDto {
   destinationChatId?: string;
 }
 
+class ManualSignalBodyDto {
+  @IsString()
+  text!: string;
+
+  @IsOptional()
+  @IsString()
+  sourceUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  accountId?: string;
+
+  @IsOptional()
+  @IsString()
+  destinationChatId?: string;
+}
+
 @Controller("v1/signals")
 export class SignalApprovalsController {
   constructor(
@@ -73,5 +90,26 @@ export class SignalApprovalsController {
       return { ...outcome, autoOpen: auto };
     }
     return outcome;
+  }
+
+  /**
+   * Operator-initiated signal: parse operator text, approve, open, publish
+   * — same one-shot flow as the bot /pos command.
+   */
+  @Post("manual")
+  @UseGuards(OperatorGuard)
+  async manual(@Body() dto: ManualSignalBodyDto, @Req() req: OperatorRequest) {
+    const actor = this.actor(req);
+    const created = await this.signals.createOperatorSignal(dto.text, actor, {
+      sourceUrl: dto.sourceUrl ?? null,
+    });
+    const outcome = await this.flow.approveSignal(
+      created.signalId,
+      { signalVersionId: created.versionId },
+      actor,
+      dto.accountId,
+      dto.destinationChatId,
+    );
+    return { ...created, ...outcome };
   }
 }

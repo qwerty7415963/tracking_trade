@@ -60,6 +60,7 @@ export function isOperator(username: string | undefined, allowlist: string[]): b
 }
 
 const HELP = [
+  "/pos <signal text> [url=..] [chat=..] [acc=..] - create + approve + publish now",
   "/approve <signalId> - approve + open paper position",
   "/reject <signalId> [reason] - reject a signal",
   "/open <signalId> [accountId] - retry open for approved signal",
@@ -122,6 +123,32 @@ export function commandLineTokens(rawText: string | undefined): string[] {
     }
     return token;
   });
+}
+
+/**
+ * Flags pulled out of /pos free text: url=<post link>, chat=<destination>,
+ * acc=<accountId>. Returns the remaining signal text with flags stripped.
+ */
+export function extractPosFlags(raw: string | undefined): {
+  text: string;
+  url: string | null;
+  chat: string | null;
+  acc: string | null;
+} {
+  let text = raw ?? "";
+  const pick = (key: string): string | null => {
+    const re = new RegExp(`(^|\\s)${key}=(\\S+)`);
+    const m = text.match(re);
+    if (!m) return null;
+    text = text.replace(re, " ");
+    return m[2];
+  };
+  const url = pick("url");
+  const chat = pick("chat");
+  const acc = pick("acc");
+  // Strip the /pos command token itself (first token of the first line).
+  text = text.replace(/(^|\s)\/[a-z_]+(@\w+)?/i, " ");
+  return { text: text.replace(/\s+/g, " ").trim(), url, chat, acc };
 }
 
 /** Shorten long original posts for review cards (Telegram 4096-char limit). */
@@ -454,6 +481,50 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
       case "cancel":
         await reply("Đã hủy nhập liệu bổ sung (nếu có).");
         return;
+      case "pos": {
+        const flags = extractPosFlags(rawText);
+        if (!flags.text) {
+          await reply(
+            [
+              "Usage: /pos <signal text> [url=..] [chat=..] [acc=..]",
+              "Example: /pos LONG BTC @100000 SL 98000 TP 105000 lev 5",
+              "url = source post link (optional), chat = destination, acc = account id",
+            ].join("\n"),
+          );
+          return;
+        }
+        try {
+          const created = await this.signals.createOperatorSignal(flags.text, actor, {
+            sourceUrl: flags.url,
+          });
+          const out = await this.flow.approveSignal(
+            created.signalId,
+            { signalVersionId: created.versionId },
+            actor,
+            flags.acc ?? undefined,
+            flags.chat ?? undefined,
+          );
+          if (out.position) {
+            const pos = out.position as { id: string };
+            await reply(
+              `✅ ${created.direction} ${created.instrument} → position ${pos.id}\n` +
+                (out.published
+                  ? "Card đang đăng lên channel."
+                  : "Open OK, card skipped: no destination chat (set chat= or REPORT_DESTINATION_CHAT_ID)."),
+            );
+          } else {
+            await reply(`⚠️ Approved but open failed: ${out.openError ?? "unknown"}`);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "failed";
+          await reply(
+            msg.includes("missing") || msg.includes("unknown coin")
+              ? `❌ ${msg}`
+              : `❌ /pos failed: ${msg}`,
+          );
+        }
+        return;
+      }
       case "approve": {
         if (!a) {
           await reply("Usage: /approve <signalId>");

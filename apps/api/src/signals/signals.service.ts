@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
+import { createHash, randomUUID } from "crypto";
 import { Prisma, Signal } from "@prisma/client";
 import {
   NormalizedSignal,
@@ -26,6 +27,19 @@ export interface IngestOutcome {
   signalId?: string;
   updateId?: string;
   status: string;
+}
+
+export interface OperatorSignalOptions {
+  /** Optional canonical post link shown in the published card caption. */
+  sourceUrl?: string | null;
+}
+
+export interface OperatorSignalResult {
+  signalId: string;
+  versionId: string;
+  status: string;
+  instrument: string;
+  direction: string;
 }
 
 /**
@@ -316,6 +330,117 @@ export class SignalsService {
         source: signal.source,
       };
     });
+  }
+
+  /**
+   * Operator-initiated signal ("/pos"): parse operator-typed text like an
+   * ingest, persist a synthetic MANUAL source post, and return the fresh
+   * version ready for immediate approval. No review card — the operator
+   * issuing the command is the reviewer.
+   */
+  async createOperatorSignal(
+    operatorText: string,
+    actor: string,
+    opts: OperatorSignalOptions = {},
+  ): Promise<OperatorSignalResult> {
+    const text = operatorText.trim();
+    if (!text) throw new BadRequestException("empty signal text");
+    const coinUniverse = await this.coins.enabledSymbols().catch(() => [] as string[]);
+    const parsed = parseSignal(
+      {
+        text,
+        sourceMessageId: "",
+        sourcePlatform: "MANUAL",
+        sourceUrl: opts.sourceUrl ?? null,
+        sourceTimestamp: new Date().toISOString(),
+        threadId: null,
+        replyToMessageId: null,
+        quotedMessageId: null,
+      },
+      { coinUniverse, profile: null },
+    );
+    if (parsed.eventType !== "NEW") {
+      throw new BadRequestException(
+        "input reads as an update — /pos expects a fresh setup (instrument, direction, entry, SL, TP)",
+      );
+    }
+    const missing = missingRequiredFields(parsed);
+    if (missing.length > 0) {
+      throw new ConflictException(
+        `missing ${missing.join(", ")} — resend with all required fields`,
+      );
+    }
+    if (!parsed.instrument || !coinUniverse.includes(parsed.instrument)) {
+      throw new ConflictException(
+        `unknown coin ${parsed.instrument ?? "?"} — add it first (/coin_add)`,
+      );
+    }
+    // Validate first, then persist the synthetic source post the parsed
+    // payload will reference (caption needs a real SourceMessage row).
+    const source = await this.prisma.source.upsert({
+      where: { platform_externalSourceId: { platform: "MANUAL", externalSourceId: "operator" } },
+      create: {
+        platform: "MANUAL",
+        externalSourceId: "operator",
+        displayName: "Operator (manual)",
+        sourceKind: "MANUAL",
+        createdBy: actor,
+      },
+      update: {},
+    });
+    const message = await this.prisma.sourceMessage.create({
+      data: {
+        sourceId: source.id,
+        externalMessageId: `op-${randomUUID()}`,
+        contentRaw: text,
+        authorName: actor,
+        sourceUrl: opts.sourceUrl ?? null,
+        sourceTimestamp: new Date(),
+        contentHash: createHash("sha256").update(text, "utf8").digest("hex"),
+      },
+    });
+    parsed.sourceMessageId = message.id;
+    const status = parsed.ambiguities.length > 0 ? "NEEDS_REVIEW" : "PENDING_APPROVAL";
+    const { signal, version } = await this.prisma.$transaction(async (tx) => {
+      const sig = await tx.signal.create({
+        data: {
+          sourceId: source.id,
+          instrument: parsed.instrument ?? "UNKNOWN",
+          direction: parsed.direction ?? "UNKNOWN",
+          status: "DETECTED",
+        },
+      });
+      const ver = await tx.signalVersion.create({
+        data: {
+          signalId: sig.id,
+          versionNumber: 1,
+          eventType: "MANUAL",
+          instrument: parsed.instrument ?? "UNKNOWN",
+          direction: parsed.direction ?? "UNKNOWN",
+          orderType: parsed.orderType,
+          entry: parsed.entry,
+          stopLoss: parsed.stopLoss,
+          takeProfits: (parsed.takeProfits ?? []) as Prisma.InputJsonValue,
+          normalizedPayloadJson: { ...parsed } as unknown as Prisma.InputJsonValue,
+          parserVersion: parsed.parserVersion,
+        },
+      });
+      const updated = await tx.signal.update({ where: { id: sig.id }, data: { status } });
+      await this.audit.record(
+        actor,
+        "signal.operator_create",
+        { signalId: sig.id, sourceMessageId: message.id, status, missing },
+        tx,
+      );
+      return { signal: updated, version: ver };
+    });
+    return {
+      signalId: signal.id,
+      versionId: version.id,
+      status: signal.status,
+      instrument: version.instrument,
+      direction: version.direction,
+    };
   }
 
   /** Short summaries for candidate-pick buttons, in input order. */
