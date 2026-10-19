@@ -95,7 +95,7 @@ export class SourcesService {
     const handleHits = candidates.filter((s) => matchesExternalId(s, wantedPlatform, normalized));
     if (handleHits.length === 1) return handleHits[0];
     if (handleHits.length > 1) {
-      const names = handleHits.map((s) => `${s.displayName} (${s.id.slice(0, 8)})`).join(", ");
+      const names = handleHits.map((s) => `${s.displayName} (${s.id})`).join(", ");
       throw new ConflictException(`ambiguous "${trimmed}", matches: ${names} — use id`);
     }
 
@@ -106,7 +106,7 @@ export class SourcesService {
       throw new NotFoundException(`no source matches "${trimmed}"`);
     }
     if (nameHits.length > 1) {
-      const names = nameHits.map((s) => `${s.displayName} (${s.id.slice(0, 8)})`).join(", ");
+      const names = nameHits.map((s) => `${s.displayName} (${s.id})`).join(", ");
       throw new ConflictException(`ambiguous "${trimmed}", matches: ${names} — use id`);
     }
     return nameHits[0];

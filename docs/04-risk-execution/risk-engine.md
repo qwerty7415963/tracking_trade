@@ -12,7 +12,7 @@ Trước khi mở vị thế ảo (`evaluateVirtualRisk`), hệ thống kiểm t
 - **Size** ≥ min size và đúng step (`sizeIncrement`).
 - **Leverage** hợp lệ (1..50).
 - **Margin đủ**: `notional / leverage ≤ equity`.
-- **Max positions** chưa vượt ngưỡng.
+- **Max positions**: không giới hạn số vị thế đồng thời (unlimited).
 - **Daily loss** (lỗ đã chốt hôm nay) chưa vượt ngưỡng.
 - **Risk per trade** (size × stop distance) trong giới hạn.
 

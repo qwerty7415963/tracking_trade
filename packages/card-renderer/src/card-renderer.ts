@@ -16,7 +16,7 @@ export type RenderOutcome = RenderSuccess | RenderFailure;
 /** Bump a kind's number when its template changes markup. */
 export const TEMPLATE_VERSIONS: Record<CardKind, number> = {
   "pnl-strip": 1,
-  "position-stats": 1,
+  "position-stats": 6,
 };
 /** Original strip version — kept for existing imports/tests. */
 export const TEMPLATE_VERSION = TEMPLATE_VERSIONS["pnl-strip"];

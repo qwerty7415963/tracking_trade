@@ -96,7 +96,7 @@ https://t.me/traderosho/4375
 - Bài đầu tiên **đính kèm ảnh card gen bằng code** (từ dữ liệu vị thế đã xác minh — không chụp MT5; gửi dạng photo + caption là nội dung trên; caption Telegram giới hạn 1024 ký tự). Có **2 kind ảnh card** (`virtual_positions.card_kind`):
   - **`pnl-strip`** (mặc định) — 1280×180: symbol/direction/size + `entry → mark` + PnL lớn.
   - **`position-stats`** — 1280×540, label tiếng Việt: badge L/S + symbol + tên account + `Cross {lev}X`; PNL (USDT) + ROI; *Kích thước / Margin / Tỉ lệ ký quỹ*; *Giá vào lệnh / Giá đánh dấu / Giá thanh lý* (margin = notional/leverage, ROI = PnL/margin, thanh lý tính bằng `liquidationPrice()`).
-  - `/pos` mở dialog 2 nút hỏi kind (render job delayed 5 phút — hết giờ tự render `pnl-strip`); card TP/SL **kế thừa** kind từ card mở; ingest/REST mặc định `pnl-strip` (REST truyền được `cardKind`).
+  - `/pos` mở dialog 2 nút hỏi kind (render job delayed 5 phút — hết giờ tự render `pnl-strip`); card TP/SL **kế thừa** kind từ card mở; ingest/REST mặc định `pnl-strip` (REST truyền được `cardKind`). Card mở render từ snapshot **đông cứng lúc yêu cầu** (volume = `size` + `status=OPEN`) nên không hỏng khi position đóng trong 5 phút chờ; card TP/SL/close render `status=CLOSED`.
 - Mọi bài cập nhật sau bài đầu tiên **reply vào bài đầu tiên** (xem rule #7).
 - Thiếu `source_url` bắt buộc → validation error/review, **không bịa link**.
 - Ngoại lệ rule "luôn có tên destination channel": mẫu này không in tên kênh vì bài đăng nằm ngay trong channel đích (tên kênh là implicit).

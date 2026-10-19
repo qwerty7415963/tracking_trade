@@ -238,6 +238,26 @@ describe("OperatorBotService.handleMessage", () => {
   });
 });
 
+describe("OperatorBotService /accounts command", () => {
+  it("lists every virtual account", async () => {
+    const list = jest.fn(async () => [
+      { id: "aaaaaaaa-1111", name: "Vĩnh cửu", mode: "AUTO", leverage: 10, balance: 1000 },
+      { id: "bbbbbbbb-2222", name: "it-pub", mode: "APPROVE", leverage: 20, balance: 250 },
+    ]);
+    const { svc, sent } = bot({ accounts: { list } });
+    await svc.handleMessage({ ...PRIVATE_ALICE, text: "/accounts" });
+    expect(list).toHaveBeenCalled();
+    expect(sent[0].text).toContain("aaaaaaaa-1111 Vĩnh cửu [AUTO 10x] bal=1000");
+    expect(sent[0].text).toContain("bbbbbbbb-2222 it-pub [APPROVE 20x] bal=250");
+  });
+
+  it("reports an empty account list", async () => {
+    const { svc, sent } = bot({ accounts: { list: jest.fn(async () => []) } });
+    await svc.handleMessage({ ...PRIVATE_ALICE, text: "/accounts" });
+    expect(sent[0].text).toBe("Chưa có tài khoản ảo nào.");
+  });
+});
+
 describe("OperatorBotService source commands", () => {
   async function dispatchSource(
     name: string,
@@ -272,8 +292,8 @@ describe("OperatorBotService source commands", () => {
         ]),
       },
     );
-    expect(replies[0]).toContain("✅ Alpha (TELEGRAM) p1 abcdefgh");
-    expect(replies[0]).toContain("⏸️ Beta (X) p0 ijklmnop");
+    expect(replies[0]).toContain("✅ Alpha (TELEGRAM) p1 abcdefgh12345678");
+    expect(replies[0]).toContain("⏸️ Beta (X) p0 ijklmnop12345678");
   });
 
   it("adds one source per message line and reports mixed results", async () => {
@@ -1095,7 +1115,7 @@ describe("OperatorBotService.handleCallback", () => {
       data: "style:position-stats:pos-9",
     });
     expect(chooseCardStyle).toHaveBeenCalledWith("pos-9", "position-stats", "tg:alice");
-    expect(answered).toContain("Đã chọn card Thống kê.");
+    expect(answered).toContain("Đã chọn card Thống kê — đang đăng…");
     expect(String(edited[0].text)).toContain("Card Thống kê by @alice");
     expect(edited[0].reply_markup).toEqual({ inline_keyboard: [] });
   });
@@ -1128,5 +1148,40 @@ describe("OperatorBotService.handleCallback", () => {
     });
     expect(chooseCardStyle).not.toHaveBeenCalled();
     expect(answered).toHaveLength(1);
+  });
+});
+
+describe("OperatorBotService.pollPublicationFailures", () => {
+  it("DMs the operator chat that requested the card", async () => {
+    const listRecentFailures = jest.fn(async () => [
+      { publicationId: "p1", positionId: "pos-9", coin: "ETH", reason: "POSITION_NOT_OPEN" },
+    ]);
+    const { svc, sent } = bot({
+      publications: { chooseCardStyle: jest.fn(async () => "promoted"), listRecentFailures },
+    });
+    (svc as unknown as { api: unknown }).api = async () => ({});
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      message: { message_id: 7, chat: { id: 555, type: "private" }, text: "Chọn card" },
+      data: "style:position-stats:pos-9",
+    });
+    await svc.pollPublicationFailures();
+    expect(sent).toContainEqual({
+      chat: 555,
+      text: "❌ Không đăng được card ETH: POSITION_NOT_OPEN",
+    });
+  });
+
+  it("falls back to the operator fan-out and does not repeat a notice", async () => {
+    const listRecentFailures = jest.fn(async () => [
+      { publicationId: "p2", positionId: "pos-x", coin: "BTC", reason: "RENDER_TIMEOUT" },
+    ]);
+    const { svc, sent } = bot({ publications: { listRecentFailures } });
+    await svc.pollPublicationFailures();
+    await svc.pollPublicationFailures();
+    expect(sent).toEqual([
+      { chat: "100", text: "❌ Không đăng được card BTC: RENDER_TIMEOUT" },
+    ]);
   });
 });

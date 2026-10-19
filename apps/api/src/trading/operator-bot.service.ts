@@ -68,6 +68,7 @@ const HELP = [
   "/open <signalId> [accountId] - retry open for approved signal",
   "/close <positionId> - close position at market",
   "/positions [status] - list virtual positions",
+  "/accounts - list all virtual accounts",
   "/account [id] - account summary (equity, margin, PnL)",
   "/mode [auto|approve] [accountId] - get/set per-account open mode",
   "/openmode [manual|auto] - get/set global open switch",
@@ -297,6 +298,10 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     string,
     { updateId: string; signalId: string; expiresAt: number }
   >();
+  /** positionId -> operator private chat, for card-failure notices. */
+  private readonly publicationChat = new Map<string, number>();
+  private readonly notifiedFailures = new Set<string>();
+  private readonly failureSweepMs = 10 * 60 * 1000;
   private reviewTimer: ReturnType<typeof setInterval> | null = null;
   private bootedAt = new Date(0);
 
@@ -390,6 +395,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     void this.pollLoop();
     this.reviewTimer = setInterval(() => {
       void this.pollReviews().catch(() => undefined);
+      void this.pollPublicationFailures().catch(() => undefined);
     }, 30_000);
     this.reviewTimer.unref?.();
   }
@@ -473,7 +479,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     }
     this.lastCommandAt.set(key, now);
     try {
-      await this.dispatch(parsed, actor, reply, msg.text);
+      await this.dispatch(parsed, actor, reply, msg.text, msg.chat.id);
     } catch (err) {
       await reply(`Failed: ${err instanceof Error ? err.message : "unknown error"}`);
     }
@@ -484,6 +490,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     actor: string,
     reply: (text: string, replyMarkup?: unknown) => Promise<void>,
     rawText?: string,
+    chatId?: number | string,
   ): Promise<void> {
     const [a, b] = parsed.args;
     switch (parsed.name) {
@@ -522,6 +529,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           );
           if (out.position) {
             const pos = out.position as { id: string };
+            if (chatId !== undefined) this.publicationChat.set(pos.id, Number(chatId));
             if (out.published) {
               await reply(
                 `✅ ${created.direction} ${created.instrument} → position ${pos.id}\n` +
@@ -608,7 +616,23 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             .slice(0, 10)
             .map(
               (p) =>
-                `${p.id.slice(0, 8)} ${p.coin} ${p.direction} ${String(p.remainingSize)} @ ${String(p.entryPrice)} [${p.status}]`,
+                `${p.id} ${p.coin} ${p.direction} ${String(p.remainingSize)} @ ${String(p.entryPrice)} [${p.status}]`,
+            )
+            .join("\n"),
+        );
+        return;
+      }
+      case "accounts": {
+        const rows = await this.accounts.list();
+        if (rows.length === 0) {
+          await reply("Chưa có tài khoản ảo nào.");
+          return;
+        }
+        await reply(
+          rows
+            .map(
+              (acc) =>
+                `${acc.id} ${acc.name} [${acc.mode} ${acc.leverage}x] bal=${String(acc.balance)}`,
             )
             .join("\n"),
         );
@@ -748,7 +772,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             .slice(0, 15)
             .map(
               (s) =>
-                `${icon(s.enabled)} ${s.displayName} (${s.platform}) p${s.priority} ${s.id.slice(0, 8)}`,
+                `${icon(s.enabled)} ${s.displayName} (${s.platform}) p${s.priority} ${s.id}`,
             )
             .join("\n") + (rows.length > 15 ? `\n… +${rows.length - 15} more` : ""),
         );
@@ -1111,6 +1135,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       if (action === "style" && id && isCardKind(kind)) {
+        if (cb.message) this.publicationChat.set(id, Number(cb.message.chat.id));
         const outcome = await this.publications.chooseCardStyle(id, kind, actor);
         const label = kind === "position-stats" ? "Thống kê" : "PnL";
         const suffix =
@@ -1119,7 +1144,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             : "\n\n[Hết thời gian chọn — card PnL]";
         await answer(
           outcome === "promoted"
-            ? `Đã chọn card ${label}.`
+            ? `Đã chọn card ${label} — đang đăng…`
             : "Hết thời gian chọn — card PnL đã được đăng.",
         );
         if (cb.message) {
@@ -1375,6 +1400,28 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         );
       } else {
         await this.notifyReviewCard(forward, text, this.updateCardKeyboard(u.id, []));
+      }
+    }
+  }
+
+  /**
+   * Card-failure notices: a render/publish that ends FINAL_FAILURE posts
+   * nothing, so tell the operator who requested it (their private chat, else
+   * the review DM fan-out).
+   */
+  async pollPublicationFailures(): Promise<void> {
+    const failures = await this.publications.listRecentFailures(this.failureSweepMs);
+    for (const f of failures) {
+      const key = `pf:${f.publicationId}`;
+      if (this.notifiedFailures.has(key)) continue;
+      this.notifiedFailures.add(key);
+      if (!f.positionId) continue;
+      const text = `❌ Không đăng được card${f.coin ? ` ${f.coin}` : ""}: ${f.reason ?? "unknown"}`;
+      const chatId = this.publicationChat.get(f.positionId);
+      if (chatId != null) {
+        await this.send(chatId, text).catch(() => undefined);
+      } else {
+        await this.notifyAll(text);
       }
     }
   }

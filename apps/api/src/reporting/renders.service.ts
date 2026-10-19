@@ -26,6 +26,8 @@ export interface RenderJobData {
   actor?: string;
   /** Card image style; undefined renders the pnl-strip default. */
   cardKind?: CardKind;
+  /** Position size frozen when the card was requested (open card). */
+  volume?: number;
 }
 
 export interface SendJobData {
@@ -56,6 +58,9 @@ export interface RenderRequest {
   actor?: string;
   /** Card image style; undefined renders the pnl-strip default. */
   cardKind?: CardKind;
+  /** Position size frozen at request time; keeps open cards renderable
+   *  even if the position closes before the (delayed) render runs. */
+  volume?: number;
   /** Hold the job this many ms (used by the /pos style dialog, 5 min). */
   delayMs?: number;
 }

@@ -175,6 +175,10 @@ export class PublicationsService {
       });
       replyTo = original?.telegramMessageId ?? undefined;
     }
+    const position = await this.prisma.virtualPosition.findUnique({
+      where: { id: positionId },
+      select: { cardKind: true, size: true },
+    });
     let cardKind: CardKind;
     if (opts.cardKind) {
       cardKind = opts.cardKind;
@@ -183,10 +187,6 @@ export class PublicationsService {
         data: { cardKind },
       });
     } else {
-      const position = await this.prisma.virtualPosition.findUnique({
-        where: { id: positionId },
-        select: { cardKind: true },
-      });
       cardKind = isCardKind(position?.cardKind) ? position.cardKind : DEFAULT_CARD_KIND;
     }
     const publication = await this.prisma.telegramPublication.create({
@@ -202,6 +202,9 @@ export class PublicationsService {
         replyToMessageId: replyTo,
         actor,
         cardKind,
+        // Freeze the open size so the card still renders if the position
+        // closes before the (possibly delayed) render runs.
+        ...(position ? { volume: asNumber(position.size) } : {}),
         ...(opts.renderDelayMs && opts.renderDelayMs > 0 ? { delayMs: opts.renderDelayMs } : {}),
       },
       actor,
@@ -240,6 +243,22 @@ export class PublicationsService {
     return outcome;
   }
 
+  /** Recent FINAL_FAILURE publications (operator-bot failure notices). */
+  async listRecentFailures(sinceMs: number) {
+    const since = new Date(Date.now() - sinceMs);
+    const rows = await this.prisma.telegramPublication.findMany({
+      where: { publicationStatus: "FINAL_FAILURE", createdAt: { gte: since } },
+      orderBy: { createdAt: "desc" },
+      include: { position: { select: { coin: true } } },
+    });
+    return rows.map((row) => ({
+      publicationId: row.id,
+      positionId: row.virtualPositionId,
+      coin: row.position?.coin ?? null,
+      reason: row.renderedText ?? null,
+    }));
+  }
+
   async getPublication(id: string) {
     const publication = await this.prisma.telegramPublication.findUnique({ where: { id } });
     if (!publication) throw new NotFoundException(`publication ${id} not found`);
@@ -247,7 +266,11 @@ export class PublicationsService {
   }
 
   /** Build card data for a virtual position at an explicit mark. No rendering. */
-  async buildSnapshot(positionId: string, markPrice: number, volumeOverride?: number) {
+  async buildSnapshot(
+    positionId: string,
+    markPrice: number,
+    opts?: { status?: CardStatus; volume?: number },
+  ) {
     const position = await this.prisma.virtualPosition.findUnique({
       where: { id: positionId },
       include: {
@@ -265,7 +288,11 @@ export class PublicationsService {
           include: { source: true },
         })
       : null;
-    const volume = volumeOverride ?? asNumber(position.remainingSize);
+    // Freeze the open size: the open card must stay renderable even after the
+    // position closes (its `remainingSize` hits 0). Update cards (tp/sl/close)
+    // render as CLOSED.
+    const volume = opts?.volume ?? asNumber(position.size);
+    const isOpen = !opts?.status || opts.status === "filled";
     const entry = asNumber(position.entryPrice);
     const floating =
       (position.direction === "LONG" ? 1 : -1) * (markPrice - entry) * volume;
@@ -283,7 +310,7 @@ export class PublicationsService {
       profitCurrency: "USDC",
       brokerSnapshotAt: new Date().toISOString(),
       snapshotId: `snap_${position.id}_${Date.now()}`,
-      status: volume > 0 ? "OPEN" : "CLOSED",
+      status: isOpen ? "OPEN" : "CLOSED",
       priceDigits: decimals(entry),
       volumeDigits: decimals(volume),
       // Position-stats card extras (pnl-strip ignores them).
@@ -336,6 +363,7 @@ export class PublicationsService {
     const { position, signal, version, sourceMessage, snapshot } = await this.buildSnapshot(
       request.positionId,
       request.markPrice,
+      { status: request.status },
     );
     const photo = await this.renders.readArtifact(publicationId);
     // Telegram ingestion never stores a URL: fall back to the canonical

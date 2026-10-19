@@ -39,8 +39,17 @@ describe("validateSnapshot", () => {
     expect(validateSnapshot(snapshot(), DEFAULT_CARD_THEME, NOW).ok).toBe(true);
   });
 
-  it("rejects closed positions", () => {
+  it("accepts closed snapshots (tp/sl/close update cards)", () => {
     const result = validateSnapshot(snapshot({ status: "CLOSED" }), DEFAULT_CARD_THEME, NOW);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects an invalid status value", () => {
+    const result = validateSnapshot(
+      snapshot({ status: "FOO" as never }),
+      DEFAULT_CARD_THEME,
+      NOW,
+    );
     expect(result).toEqual(expect.objectContaining({ code: "POSITION_NOT_OPEN" }));
   });
 
@@ -214,22 +223,38 @@ describe("renderStatsHtml", () => {
       "Giá thanh lý (USDT)",
       "Vinh cưu",
       "Cross 10X",
-      ">L<",
     ]) {
       expect(html).toContain(label);
     }
-    expect(html).toContain("1280");
+    // Badge "L" inside the side cell.
+    expect(html).toMatch(/<div class="side">L<\/div>/);
+    expect(html).toContain(`${STATS_CARD_THEME.width}px`);
     expect(html).toContain(`${STATS_CARD_THEME.height}px`);
+    // Binance chrome: indicator bars, share svg, dotted underlines, tag borders.
+    expect(html).toContain('class="indicator"');
+    expect(html).toContain('class="green"');
+    expect(html).toContain('class="gray"');
+    expect((html.match(/class="green"/g) ?? []).length).toBe(2);
+    expect((html.match(/class="gray"/g) ?? []).length).toBe(2);
+    expect((html.match(/<svg/g) ?? []).length).toBe(2);
+    expect(html).toContain("border-bottom:2px dotted #687381");
+    expect(html).toContain("border:1px solid #414b58");
+    expect(html).toContain(STATS_CARD_THEME.background);
+    expect(html).toContain(STATS_CARD_THEME.positivePnl);
+    // Selective dotted underlines — 5 labels (ROI, Tỉ lệ ký quỹ, 3 prices).
+    expect((html.match(/class="label dotted"/g) ?? []).length).toBe(5);
+    // No placeholder spans in the reference design.
+    expect(html).not.toContain('class="ph"');
   });
 
-  it("hides the account chip and escapes html", () => {
+  it("hides the account tag and escapes html", () => {
     const vm = buildStatsViewModel(snapshot({ displaySymbol: "X<Y", accountName: null }), STATS_CARD_THEME);
     expect(vm.ok).toBe(true);
     if (!vm.ok) return;
     const html = renderStatsHtml(vm.model, STATS_CARD_THEME);
     expect(html).toContain("X&lt;Y");
-    // Only the margin-type chip remains — no account chip without a name.
-    expect(html.split('class="chip"').length - 1).toBe(1);
+    // Only the margin-type tag remains — no account tag without a name.
+    expect(html.split('class="tag"').length - 1).toBe(1);
   });
 });
 
@@ -269,13 +294,13 @@ describe("FloatingPnLCardRenderer", () => {
     expect(outcome.ok).toBe(false);
   });
 
-  it("rejects closed snapshots before touching the browser", async () => {
+  it("renders closed snapshots instead of short-circuiting", async () => {
     const factory = jest.fn(async () => {
-      throw new Error("should not launch");
+      throw new Error("no browser");
     });
     const renderer = new FloatingPnLCardRenderer(factory);
     const outcome = await renderer.render(snapshot({ status: "CLOSED" }));
-    expect(outcome).toEqual(expect.objectContaining({ code: "POSITION_NOT_OPEN" }));
-    expect(factory).not.toHaveBeenCalled();
+    expect(factory).toHaveBeenCalled();
+    expect(outcome).not.toEqual(expect.objectContaining({ code: "POSITION_NOT_OPEN" }));
   });
 });

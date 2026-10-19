@@ -57,7 +57,10 @@ async function bootstrap(): Promise<void> {
           if (mid === null) throw new Error(`NO_QUOTE for ${position.coin}`);
           markPrice = mid;
         }
-        const card = await publications.buildSnapshot(data.virtualPositionId, markPrice);
+        const card = await publications.buildSnapshot(data.virtualPositionId, markPrice, {
+          status: data.status,
+          volume: data.volume,
+        });
         const rendered = await renderer.render(card.snapshot, new Date(), data.cardKind ?? DEFAULT_CARD_KIND);
         if (!rendered.ok) throw new Error(`RENDER_FAILED: ${rendered.code}`);
         const artifactPath = await renders.writeArtifact(renderId, rendered.artifact.png);

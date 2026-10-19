@@ -76,19 +76,20 @@
 | Lệnh | Tác dụng |
 |---|---|
 | `/approve <id>` | Duyệt + mở vị thế ảo (đúng version) |
-| `/pos <signal text + post link> [src=".."] [chat=..] [acc=..]` | Tạo signal + duyệt + mở + hỏi chọn card (2 nút, 5 phút — không bấm dùng card PnL); link dán vào text là tự nhận diện |
+| `/pos <signal text + post link> [src=".."] [chat=..] [acc=..]` | Tạo signal + duyệt + mở + hỏi chọn card (2 nút, 5 phút — không bấm dùng card PnL); link dán vào text là tự nhận diện. Card mở render từ snapshot đông cứng lúc gọi nên vẫn đăng dù position đóng trong 5 phút chờ; đăng lỗi → bot DM "❌ Không đăng được card …" |
 | `/reject <id> [lý do]` | Từ chối tín hiệu |
 | `/open <signalId> [accountId]` | Mở lại cho signal đã approve |
 | `/close <positionId>` | Đóng vị thế theo giá thị trường |
-| `/positions [status]` | Danh sách vị thế ảo |
+| `/positions [status]` | Danh sách vị thế ảo (in **id đầy đủ** để dán vào `/close`) |
 | `/account [id]` | Tổng quan tài khoản (equity, margin, PnL) |
+| `/accounts` | Danh sách tài khoản ảo (in **id đầy đủ** để dán vào `/deposit`/`/withdraw`/`/reset`) |
 | `/mode [auto\|approve] [accountId]` | Xem/đổi mode mở lệnh từng ví |
 | `/openmode [manual\|auto]` | Xem/đổi switch mở lệnh toàn cục |
 | `/deposit <accountId> <amount>` | Nạp vốn ảo |
 | `/withdraw <accountId> <amount>` | Rút vốn ảo |
 | `/reset <accountId> <balance>` | Đóng hết + đặt lại số dư |
 | `/review` | Hàng đợi review (signals + updates) |
-| `/sources` | Danh sách kênh đang theo dõi |
+| `/sources` | Danh sách kênh đang theo dõi (in **id đầy đủ** để dán vào `/source_del`/`/source_edit`) |
 | `/source_add` | Thêm nhiều kênh, mỗi dòng một handle/ID; trùng handle được bỏ qua |
 | `/source_del` | Xóa mềm nhiều kênh theo handle/ID, giữ lịch sử |
 | `/source_edit <ref> name=".." kind=.. priority=..` | Sửa kênh theo handle/ID |

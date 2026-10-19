@@ -33,7 +33,10 @@ export function validateSnapshot(
       return { ok: false, code: "MISSING_REQUIRED_FIELD", detail: String(field) };
     }
   }
-  if (snapshot.status !== "OPEN") {
+  // Both OPEN and CLOSED are valid card states: open cards render OPEN, and
+  // tp/sl/close update cards render CLOSED. POSITION_NOT_OPEN now guards only
+  // against a missing/invalid status value.
+  if (snapshot.status !== "OPEN" && snapshot.status !== "CLOSED") {
     return { ok: false, code: "POSITION_NOT_OPEN", detail: String(snapshot.status) };
   }
   for (const field of ["entryPrice", "currentPrice", "volume"] as const) {

@@ -244,6 +244,13 @@ describe("evaluateVirtualRisk", () => {
     expect(result.passed).toBe(true);
   });
 
+  it("allows unlimited open positions when maxPositions is Infinity", () => {
+    const result = evaluateVirtualRisk(
+      baseRisk({ openPositions: 999, maxPositions: Number.POSITIVE_INFINITY }),
+    );
+    expect(result.failures).not.toContain("MAX_POSITIONS");
+  });
+
   it("STOP_ALL_MUTATIONS blocks even mutations", () => {
     const result = evaluateVirtualRisk(baseRisk({ isMutation: true, killSwitch: "STOP_ALL_MUTATIONS" }));
     expect(result.failures).toContain("KILL_SWITCH_ALL");

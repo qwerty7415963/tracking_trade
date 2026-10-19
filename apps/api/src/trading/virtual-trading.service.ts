@@ -27,7 +27,7 @@ export type PositionStatus = "OPEN" | "TP_HIT" | "SL_HIT" | "CLOSED" | "CANCELLE
 export const MARKET_WATCH_QUEUE_NAME = "market-watch";
 
 const OPEN_STATUSES = ["OPEN", "TP_HIT"];
-const MAX_POSITIONS = 5;
+const MAX_POSITIONS = Number.POSITIVE_INFINITY;
 const MAX_DAILY_LOSS = 300;
 const MAX_RISK_PER_TRADE = 100;
 

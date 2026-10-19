@@ -338,7 +338,7 @@ describe("PublicationsService card styles", () => {
   function styleSetup(position: Record<string, unknown> = {}) {
     const prisma = {
       virtualPosition: {
-        findUnique: jest.fn(async () => ({ cardKind: "pnl-strip", ...position })),
+        findUnique: jest.fn(async () => ({ cardKind: "pnl-strip", size: 1, ...position })),
         update: jest.fn(async (args: unknown) => args),
       },
       telegramPublication: {
@@ -413,6 +413,16 @@ describe("PublicationsService card styles", () => {
       "render-pub1",
     );
   });
+
+  it("freezes the position size onto the render job", async () => {
+    const { svc, requestRender } = styleSetup({ size: 3 });
+    await svc.requestPositionPublish("pos1", "filled", { markPrice: 2550 }, "alice");
+    expect(requestRender).toHaveBeenCalledWith(
+      expect.objectContaining({ volume: 3 }),
+      "alice",
+      "render-pub1",
+    );
+  });
 });
 
 describe("PublicationsService.buildSnapshot stats extras", () => {
@@ -445,6 +455,54 @@ describe("PublicationsService.buildSnapshot stats extras", () => {
     expect(snapshot.marginType).toBeNull();
     expect(snapshot.accountName).toBeNull();
     expect(snapshot.liquidationPrice).toBeCloseTo(2275, 6);
+  });
+
+  it("renders the open card from the frozen size, not live remaining size", async () => {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({ ...POSITION, size: 5, remainingSize: 0 })),
+      },
+      sourceMessage: { findUnique: jest.fn(async () => null) },
+    };
+    const svc = service({ prisma });
+    const { snapshot } = await svc.buildSnapshot("pos1", 2550, { status: "filled", volume: 5 });
+    expect(snapshot.volume).toBe(5);
+    expect(snapshot.status).toBe("OPEN");
+  });
+
+  it("renders tp/sl/close cards as CLOSED", async () => {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({ ...POSITION, size: 5, remainingSize: 0 })),
+      },
+      sourceMessage: { findUnique: jest.fn(async () => null) },
+    };
+    const svc = service({ prisma });
+    const { snapshot } = await svc.buildSnapshot("pos1", 2600, { status: "sl" });
+    expect(snapshot.status).toBe("CLOSED");
+    expect(snapshot.volume).toBe(5);
+  });
+});
+
+describe("PublicationsService.listRecentFailures", () => {
+  it("maps recent FINAL_FAILURE publications for operator notices", async () => {
+    const findMany = jest.fn(async () => [
+      {
+        id: "pub1",
+        virtualPositionId: "pos1",
+        renderedText: "POSITION_NOT_OPEN",
+        position: { coin: "ETH" },
+      },
+    ]);
+    const svc = service({ prisma: { telegramPublication: { findMany } } });
+    await expect(svc.listRecentFailures(600_000)).resolves.toEqual([
+      { publicationId: "pub1", positionId: "pos1", coin: "ETH", reason: "POSITION_NOT_OPEN" },
+    ]);
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ publicationStatus: "FINAL_FAILURE" }),
+      }),
+    );
   });
 });
 
