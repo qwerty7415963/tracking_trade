@@ -6,6 +6,7 @@ import {
   HyperliquidMarketData,
   HyperliquidMeta,
 } from "@tracking-auto/market-data";
+import { effectiveMmrFor } from "@tracking-auto/domain";
 
 export interface AssetSpec {
   coin: string;
@@ -62,7 +63,7 @@ export class MarketDataService {
       szDecimals: asset.szDecimals,
       minSize,
       sizeIncrement,
-      maintenanceMarginRate: 0.01,
+      maintenanceMarginRate: effectiveMmrFor(coin, 0),
     };
   }
 }

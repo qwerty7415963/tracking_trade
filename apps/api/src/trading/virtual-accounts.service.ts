@@ -124,17 +124,6 @@ export class VirtualAccountsService {
     return rows.reduce((sum, r) => sum + asNumber(r.amount), 0);
   }
 
-  async dailyRealizedLoss(accountId: string): Promise<number> {
-    const start = new Date();
-    start.setUTCHours(0, 0, 0, 0);
-    const rows = await this.prisma.virtualTransaction.findMany({
-      where: { accountId, type: "REALIZED_PNL", createdAt: { gte: start } },
-      select: { amount: true },
-    });
-    const pnl = rows.reduce((sum, r) => sum + asNumber(r.amount), 0);
-    return pnl < 0 ? -pnl : 0;
-  }
-
   async deposit(id: string, amount: number, actor: string) {
     if (!(amount > 0)) throw new BadRequestException("amount must be > 0");
     await this.get(id);

@@ -1,16 +1,19 @@
 import {
   accountEquity,
-  calcPerpSize,
+  calcPerpSizeByNotional,
+  crossLiquidationPrice,
   crossMarginRatio,
   detectTpSlHit,
   evaluateVirtualRisk,
   liquidationPrice,
+  maintenanceMarginUsed,
   realizedPnl,
   roundDownToStep,
   splitTps,
   unrealizedPnl,
   VirtualRiskInput,
 } from "./virtual-account";
+import { maintenanceMarginFor } from "./margin-tiers";
 
 function baseRisk(overrides: Partial<VirtualRiskInput> = {}): VirtualRiskInput {
   return {
@@ -25,68 +28,62 @@ function baseRisk(overrides: Partial<VirtualRiskInput> = {}): VirtualRiskInput {
     equity: 10000,
     openPositions: 0,
     maxPositions: 5,
-    dailyRealizedLoss: 0,
-    maxDailyLoss: 300,
-    estimatedRisk: 50,
-    maxRiskPerTrade: 100,
     isMutation: false,
     ...overrides,
   };
 }
 
-describe("calcPerpSize", () => {
-  it("sizes from risk budget over stop distance", () => {
-    // risk $50, stop 100 away -> 0.5 units
-    const r = calcPerpSize({
-      riskBudget: 50,
+describe("calcPerpSizeByNotional", () => {
+  it("sizes from fixed USDC notional", () => {
+    const r = calcPerpSizeByNotional({
+      notional: 100000,
       entryPrice: 3500,
-      stopLossPrice: 3400,
       minSize: 0.001,
       sizeIncrement: 0.001,
     });
-    expect(r).toEqual({ size: 0.5, rejected: false, reason: null });
+    expect(r.rejected).toBe(false);
+    expect(r.reason).toBeNull();
+    expect(r.size).toBeCloseTo(28.571, 9);
   });
 
   it("rounds DOWN to increment", () => {
-    const r = calcPerpSize({
-      riskBudget: 50,
+    const r = calcPerpSizeByNotional({
+      notional: 50000,
       entryPrice: 3500,
-      stopLossPrice: 3400,
       minSize: 0.001,
       sizeIncrement: 0.1,
     });
-    expect(r.size).toBe(0.5);
-    const r2 = calcPerpSize({
-      riskBudget: 55,
+    expect(r.size).toBeCloseTo(14.2, 9);
+    const r2 = calcPerpSizeByNotional({
+      notional: 55000,
       entryPrice: 3500,
-      stopLossPrice: 3400,
       minSize: 0.001,
       sizeIncrement: 0.1,
     });
-    expect(r2.size).toBe(0.5); // 0.55 floored to 0.5
+    expect(r2.size).toBeCloseTo(15.7, 9);
   });
 
-  it("rejects when min size exceeds budget", () => {
-    const r = calcPerpSize({
-      riskBudget: 1,
+  it("rejects when min size exceeds the notional size", () => {
+    const r = calcPerpSizeByNotional({
+      notional: 10,
       entryPrice: 3500,
-      stopLossPrice: 3400,
       minSize: 1,
       sizeIncrement: 0.001,
     });
     expect(r.rejected).toBe(true);
-    expect(r.reason).toBe("MIN_SIZE_EXCEEDS_BUDGET");
+    expect(r.reason).toBe("MIN_SIZE_EXCEEDS_NOTIONAL");
   });
 
   it("rejects invalid inputs", () => {
     expect(
-      calcPerpSize({ riskBudget: 0, entryPrice: 1, stopLossPrice: 2, minSize: 1, sizeIncrement: 1 })
-        .reason,
-    ).toBe("INVALID_RISK_BUDGET");
+      calcPerpSizeByNotional({ notional: 0, entryPrice: 1, minSize: 1, sizeIncrement: 1 }).reason,
+    ).toBe("INVALID_NOTIONAL");
     expect(
-      calcPerpSize({ riskBudget: 10, entryPrice: 5, stopLossPrice: 5, minSize: 1, sizeIncrement: 1 })
-        .reason,
-    ).toBe("INVALID_STOP_DISTANCE");
+      calcPerpSizeByNotional({ notional: 10, entryPrice: 0, minSize: 1, sizeIncrement: 1 }).reason,
+    ).toBe("INVALID_ENTRY_PRICE");
+    expect(
+      calcPerpSizeByNotional({ notional: 10, entryPrice: 5, minSize: 0, sizeIncrement: 0 }).reason,
+    ).toBe("INVALID_SIZE_SPEC");
   });
 });
 
@@ -127,8 +124,11 @@ describe("accountEquity / crossMarginRatio / liquidationPrice", () => {
   });
 
   it("margin ratio = maintenance / equity", () => {
-    // notional 3100, mmr 1% -> 31 / 10100
-    expect(crossMarginRatio(10000, positions, { ETH: 3100 }, 0.01)).toBeCloseTo(31 / 10100, 9);
+    // notional 3100, tier-1 MMR 0.5% -> 15.5 / 10100
+    expect(crossMarginRatio(10000, positions, { ETH: 3100 })).toBeCloseTo(
+      (3100 * 0.005) / 10100,
+      9,
+    );
   });
 
   it("returns null on non-positive equity", () => {
@@ -145,6 +145,73 @@ describe("accountEquity / crossMarginRatio / liquidationPrice", () => {
 
   it("returns null for invalid leverage", () => {
     expect(liquidationPrice("LONG", 3000, 0)).toBeNull();
+  });
+});
+
+describe("tiered maintenance margin", () => {
+  it("uses the self-defined tier-1 MMR", () => {
+    expect(maintenanceMarginFor("ETH", 50_000)).toBeCloseTo(250, 9);
+    expect(maintenanceMarginFor("ETH", 100_000)).toBeCloseTo(500, 9);
+  });
+
+  it("is continuous at the first bracket boundary", () => {
+    expect(maintenanceMarginFor("ETH", 99_999)).toBeCloseTo(499.995, 6);
+    expect(maintenanceMarginFor("ETH", 100_000)).toBeCloseTo(500, 6);
+    // 100001 × 0.65% − 150 = 500.0065
+    expect(maintenanceMarginFor("ETH", 100_001)).toBeCloseTo(500.0065, 6);
+  });
+
+  it("sums maintenance across positions", () => {
+    const many = [
+      { coin: "ETH", direction: "LONG" as const, size: 1, entryPrice: 3000, leverage: 10 },
+      { coin: "SOL", direction: "LONG" as const, size: 10, entryPrice: 100, leverage: 10 },
+    ];
+    const expected =
+      maintenanceMarginFor("ETH", 3100) + maintenanceMarginFor("SOL", 1500);
+    expect(maintenanceMarginUsed(many, { ETH: 3100, SOL: 150 })).toBeCloseTo(
+      expected,
+      9,
+    );
+  });
+});
+
+describe("crossLiquidationPrice", () => {
+  const longPosition = {
+    coin: "ETH",
+    direction: "LONG" as const,
+    size: 1,
+    entryPrice: 3000,
+    leverage: 10,
+  };
+
+  it("LONG liquidates below entry and equity equals MM there", () => {
+    const liq = crossLiquidationPrice(300, longPosition, [], { ETH: 3000 });
+    expect(liq).not.toBeNull();
+    const price = liq as number;
+    expect(price).toBeLessThan(3000);
+    expect(accountEquity(300, [longPosition], { ETH: price })).toBeCloseTo(
+      maintenanceMarginFor("ETH", price),
+      4,
+    );
+  });
+
+  it("SHORT liquidates above entry and equity equals MM there", () => {
+    const shortPosition = {
+      ...longPosition,
+      direction: "SHORT" as const,
+    };
+    const liq = crossLiquidationPrice(300, shortPosition, [], { ETH: 3000 });
+    expect(liq).not.toBeNull();
+    const price = liq as number;
+    expect(price).toBeGreaterThan(3000);
+    expect(accountEquity(300, [shortPosition], { ETH: price })).toBeCloseTo(
+      maintenanceMarginFor("ETH", price),
+      4,
+    );
+  });
+
+  it("returns null when the account is too over-collateralised", () => {
+    expect(crossLiquidationPrice(10_000, longPosition, [], { ETH: 3000 })).toBeNull();
   });
 });
 
@@ -229,8 +296,6 @@ describe("evaluateVirtualRisk", () => {
     ["SIZE_TOO_SMALL", { size: 0.0001 }],
     ["INSUFFICIENT_MARGIN", { equity: 1 }],
     ["MAX_POSITIONS", { openPositions: 5 }],
-    ["DAILY_LOSS_LIMIT", { dailyRealizedLoss: 300 }],
-    ["RISK_PER_TRADE", { estimatedRisk: 500 }],
   ])("rejects %s", (code, overrides) => {
     const result = evaluateVirtualRisk(baseRisk(overrides as Partial<VirtualRiskInput>));
     expect(result.passed).toBe(false);

@@ -32,7 +32,7 @@ describe("buildOpenCaption (template #11)", () => {
 
 function service(overrides: Record<string, unknown> = {}) {
   const prisma = {
-    virtualPosition: { findUnique: jest.fn() },
+    virtualPosition: { findUnique: jest.fn(), findMany: jest.fn(async () => []) },
     signal: { findUnique: jest.fn() },
     sourceMessage: { findUnique: jest.fn(async () => null) },
     telegramPublication: {
@@ -54,6 +54,8 @@ function service(overrides: Record<string, unknown> = {}) {
     (overrides.config ?? {}) as never,
     (overrides.renders ??
       { readArtifact: jest.fn(async () => Buffer.from("png-bytes")) }) as never,
+    (overrides.marketData ??
+      { getAllMids: jest.fn(async () => ({} as Record<string, number>)) }) as never,
   );
 }
 
@@ -188,13 +190,32 @@ describe("PublicationsService.sendPublication", () => {
     ).rejects.toThrow(/no destination chat/);
   });
 
-  it("holds an update while the original is fresh", async () => {
+  it("holds an update while the original is fresh and records the wait", async () => {
     const setup = okSetup();
     const svc = service(setup);
     await expect(
       svc.sendPublication("pub1", sendInput({ status: "tp", replyToMessageId: undefined })),
     ).rejects.toThrow(/ORIGINAL_NOT_PUBLISHED_YET/);
     expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
+    // PENDING means "not rendered yet" and would shadow the /pos dialog.
+    expect(setup.prisma.telegramPublication.update).toHaveBeenCalledWith({
+      where: { id: "pub1" },
+      data: { publicationStatus: "RETRY_PENDING" },
+    });
+  });
+
+  it("keeps an already-held row at RETRY_PENDING", async () => {
+    const setup = okSetup();
+    (setup.prisma.telegramPublication.findUnique as jest.Mock).mockResolvedValue({
+      id: "pub1",
+      publicationStatus: "RETRY_PENDING",
+      createdAt: new Date(),
+    });
+    const svc = service(setup);
+    await expect(
+      svc.sendPublication("pub1", sendInput({ status: "tp", replyToMessageId: undefined })),
+    ).rejects.toThrow(/ORIGINAL_NOT_PUBLISHED_YET/);
+    expect(setup.prisma.telegramPublication.update).not.toHaveBeenCalled();
   });
 
   it("self-heals the reply target when the original published late", async () => {
@@ -305,6 +326,19 @@ describe("PublicationsService.sendPublication", () => {
     expect(caption).toContain("https://t.me/c/3763643270/431");
     // Name line comes before the link line, like the reference format.
     expect(caption.indexOf("Kaka trades")).toBeLessThan(caption.indexOf("https://"));
+  });
+
+  it("lets the worker resolve the live mark when the open card omits markPrice", async () => {
+    const setup = okSetup();
+    const requestRender = jest.fn(async () => ({ id: "render-pub1" }));
+    const svc = service({
+      ...setup,
+      config: { reportDestinationChatId: "@chan" },
+      renders: { ...setup.renders, requestRender },
+    });
+    await svc.requestPositionPublish("pos1", "filled", {}, "alice");
+    const data = (requestRender as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(data).not.toHaveProperty("markPrice");
   });
 
   it("enqueues a render job instead of publishing inline", async () => {
@@ -431,18 +465,27 @@ describe("PublicationsService.buildSnapshot stats extras", () => {
       virtualPosition: {
         findUnique: jest.fn(async () => ({
           ...POSITION,
-          account: { name: "Vinh cưu", marginType: "CROSS" },
+          account: { name: "Vinh cuu", marginType: "CROSS", balance: 125 },
         })),
+        findMany: jest.fn(async () => [{ ...POSITION, remainingSize: 0.5 }]),
       },
       sourceMessage: { findUnique: jest.fn(async () => null) },
     };
-    const svc = service({ prisma });
+    const svc = service({
+      prisma,
+      marketData: { getAllMids: jest.fn(async () => ({ ETH: 2550 })) },
+    });
     const { snapshot } = await svc.buildSnapshot("pos1", 2550);
     expect(snapshot.leverage).toBe(10);
     expect(snapshot.marginType).toBe("CROSS");
-    expect(snapshot.accountName).toBe("Vinh cưu");
-    // LONG entry 2500 lev 10 mmr 0.01 → 2500 × (1 − (0.1 − 0.01)).
-    expect(snapshot.liquidationPrice).toBeCloseTo(2275, 6);
+    expect(snapshot.accountName).toBe("Vinh cuu");
+    expect(snapshot.maintenanceMarginRate).toBeCloseTo(0.005, 9);
+    // Maintenance 0.5 x 2550 x 0.5% / equity (125 + 25).
+    expect(snapshot.accountMarginRatio).toBeCloseTo(0.0425, 9);
+    // PnL is anchored to entry × size, never a broker-reported float.
+    expect(snapshot.floatingProfit).toBeCloseTo((2550 - 2500) * 0.5, 6);
+    // Cross LONG: (125 − 0.5×2500) / (0.5×(0.005 − 1)).
+    expect(snapshot.liquidationPrice).toBeCloseTo(2261.3065, 4);
   });
 
   it("leaves stats extras null without an account", async () => {
@@ -454,7 +497,79 @@ describe("PublicationsService.buildSnapshot stats extras", () => {
     const { snapshot } = await svc.buildSnapshot("pos1", 2550);
     expect(snapshot.marginType).toBeNull();
     expect(snapshot.accountName).toBeNull();
-    expect(snapshot.liquidationPrice).toBeCloseTo(2275, 6);
+    expect(snapshot.accountMarginRatio).toBeNull();
+    expect(snapshot.liquidationPrice).toBeNull();
+  });
+
+  it("sets the account ratio to null when a coin mark is missing", async () => {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({
+          ...POSITION,
+          account: { name: "Vinh cuu", marginType: "CROSS", balance: 10000 },
+        })),
+        findMany: jest.fn(async () => [{ ...POSITION, coin: "BTC" }]),
+      },
+      sourceMessage: { findUnique: jest.fn(async () => null) },
+    };
+    const svc = service({
+      prisma,
+      marketData: { getAllMids: jest.fn(async () => ({})) },
+    });
+    const { snapshot } = await svc.buildSnapshot("pos1", 2550);
+    expect(snapshot.accountMarginRatio).toBeNull();
+  });
+
+  it("keeps the ratio self-consistent when the card's position already closed", async () => {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({
+          ...POSITION,
+          remainingSize: 0,
+          status: "CLOSED",
+          account: { name: "Vinh cuu", marginType: "CROSS", balance: 10000 },
+        })),
+        // No open positions left in the account.
+        findMany: jest.fn(async () => []),
+      },
+      sourceMessage: { findUnique: jest.fn(async () => null) },
+    };
+    const svc = service({
+      prisma,
+      marketData: { getAllMids: jest.fn(async () => ({ ETH: 2550 })) },
+    });
+    const { snapshot } = await svc.buildSnapshot("pos1", 2550, { status: "sl" });
+    // Frozen size 0.5 is still counted: 0.5 × 2550 × 0.5% / (10000 + 25).
+    expect(snapshot.accountMarginRatio).toBeCloseTo(0.0006359, 6);
+  });
+
+  it("sums tiered maintenance across all open positions", async () => {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({
+          ...POSITION,
+          account: { name: "Vinh cuu", marginType: "CROSS", balance: 10000 },
+        })),
+        findMany: jest.fn(async () => [
+          {
+            ...POSITION,
+            id: "pos2",
+            coin: "BTC",
+            size: 1,
+            remainingSize: 1,
+            entryPrice: 50000,
+          },
+        ]),
+      },
+      sourceMessage: { findUnique: jest.fn(async () => null) },
+    };
+    const svc = service({
+      prisma,
+      marketData: { getAllMids: jest.fn(async () => ({ ETH: 2550, BTC: 51000 })) },
+    });
+    const { snapshot } = await svc.buildSnapshot("pos1", 2550);
+    // ETH MM 6.375 + BTC MM 255 = 261.375; equity = 10000 + 25 + 1000.
+    expect(snapshot.accountMarginRatio).toBeCloseTo(261.375 / 11025, 9);
   });
 
   it("renders the open card from the frozen size, not live remaining size", async () => {
@@ -507,24 +622,46 @@ describe("PublicationsService.listRecentFailures", () => {
 });
 
 describe("PublicationsService.chooseCardStyle", () => {
-  function dialogSetup(promoteResult: string, publication: unknown) {
+  function dialogSetup(promoteOutcome: "promoted" | "expired", publications: Array<{ id: string }>) {
     const prisma = {
       virtualPosition: { update: jest.fn(async (args: unknown) => args) },
-      telegramPublication: { findFirst: jest.fn(async () => publication) },
+      telegramPublication: {
+        findFirst: jest.fn(async () => null),
+        findMany: jest.fn(async () => publications),
+      },
     };
-    const promoteRender = jest.fn(async () => promoteResult);
+    const promoteFirstDelayed = jest.fn(async () => ({
+      publicationId: promoteOutcome === "promoted" ? (publications[0]?.id ?? null) : null,
+      outcome: promoteOutcome,
+    }));
     const svc = service({
       prisma,
       config: { reportDestinationChatId: "@chan" },
-      renders: { promoteRender, readArtifact: jest.fn() },
+      renders: { promoteFirstDelayed, readArtifact: jest.fn() },
     });
-    return { svc, prisma, promoteRender };
+    return { svc, prisma, promoteFirstDelayed };
   }
 
-  it("promotes the delayed render and persists the choice", async () => {
-    const { svc, prisma, promoteRender } = dialogSetup("promoted", { id: "pub9" });
+  it("offers every pending publication, newest first (TP card shadows the dialog)", async () => {
+    const { svc, prisma, promoteFirstDelayed } = dialogSetup("promoted", [
+      { id: "tp-pub" },
+      { id: "dialog-pub" },
+    ]);
     await expect(svc.chooseCardStyle("pos1", "position-stats", "alice")).resolves.toBe("promoted");
-    expect(promoteRender).toHaveBeenCalledWith("pub9", "position-stats", "alice");
+    expect(prisma.telegramPublication.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          virtualPositionId: "pos1",
+          publicationStatus: { in: ["PENDING", "RETRY_PENDING"] },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    );
+    expect(promoteFirstDelayed).toHaveBeenCalledWith(
+      ["tp-pub", "dialog-pub"],
+      "position-stats",
+      "alice",
+    );
     expect(prisma.virtualPosition.update).toHaveBeenCalledWith({
       where: { id: "pos1" },
       data: { cardKind: "position-stats" },
@@ -532,15 +669,77 @@ describe("PublicationsService.chooseCardStyle", () => {
   });
 
   it("reports expired when no pending publication is waiting", async () => {
-    const { svc, prisma, promoteRender } = dialogSetup("promoted", null);
+    const { svc, prisma, promoteFirstDelayed } = dialogSetup("promoted", []);
     await expect(svc.chooseCardStyle("pos1", "position-stats", "alice")).resolves.toBe("expired");
-    expect(promoteRender).not.toHaveBeenCalled();
+    expect(promoteFirstDelayed).not.toHaveBeenCalled();
     expect(prisma.virtualPosition.update).not.toHaveBeenCalled();
   });
 
   it("does not persist the kind when promotion is refused", async () => {
-    const { svc, prisma } = dialogSetup("expired", { id: "pub9" });
+    const { svc, prisma } = dialogSetup("expired", [{ id: "tp-pub" }]);
     await expect(svc.chooseCardStyle("pos1", "position-stats", "alice")).resolves.toBe("expired");
     expect(prisma.virtualPosition.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("PublicationsService.markSendFailed", () => {
+  function failedSetup(status: string) {
+    const prisma = {
+      telegramPublication: {
+        findUnique: jest.fn(async () => ({ id: "pub1", publicationStatus: status })),
+        update: jest.fn(async (args: unknown) => args),
+      },
+    };
+    const audit = { record: jest.fn(async () => ({})) };
+    const svc = service({ prisma, audit });
+    return { svc, prisma, audit };
+  }
+
+  it("turns exhausted send retries into a FINAL_FAILURE the bot can sweep", async () => {
+    const { svc, prisma, audit } = failedSetup("RETRY_PENDING");
+    await svc.markSendFailed("pub1", "ORIGINAL_NOT_PUBLISHED_YET: retryable", "worker");
+    expect(prisma.telegramPublication.update).toHaveBeenCalledWith({
+      where: { id: "pub1" },
+      data: { publicationStatus: "FINAL_FAILURE", renderedText: "ORIGINAL_NOT_PUBLISHED_YET" },
+    });
+    expect(audit.record).toHaveBeenCalledWith("worker", "publication.failed", {
+      publicationId: "pub1",
+      reason: "ORIGINAL_NOT_PUBLISHED_YET",
+    });
+  });
+
+  it("never downgrades an already published card", async () => {
+    const { svc, prisma, audit } = failedSetup("PUBLISHED");
+    await svc.markSendFailed("pub1", "TELEGRAM_429: slow down", "worker");
+    expect(prisma.telegramPublication.update).not.toHaveBeenCalled();
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+});
+
+describe("PublicationsService.styleDialogRemainingMs", () => {
+  function holdSetup(rows: Array<{ id: string }>, remaining: number) {
+    const prisma = {
+      telegramPublication: { findMany: jest.fn(async () => rows) },
+    };
+    const dialogRemainingMs = jest.fn(async () => remaining);
+    const svc = service({ prisma, renders: { dialogRemainingMs, readArtifact: jest.fn() } });
+    return { svc, prisma, dialogRemainingMs };
+  }
+
+  it("returns 0 when the position has no pending publication", async () => {
+    const { svc, dialogRemainingMs } = holdSetup([], 99_999);
+    await expect(svc.styleDialogRemainingMs("pos1")).resolves.toBe(0);
+    expect(dialogRemainingMs).not.toHaveBeenCalled();
+  });
+
+  it("asks the renderer how long the dialog still has left", async () => {
+    const { svc, prisma, dialogRemainingMs } = holdSetup([{ id: "pub1" }, { id: "pub2" }], 12_345);
+    await expect(svc.styleDialogRemainingMs("pos1")).resolves.toBe(12_345);
+    expect(prisma.telegramPublication.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { virtualPositionId: "pos1", publicationStatus: "PENDING" },
+      }),
+    );
+    expect(dialogRemainingMs).toHaveBeenCalledWith(["pub1", "pub2"]);
   });
 });

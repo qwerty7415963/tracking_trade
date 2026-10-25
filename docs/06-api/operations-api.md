@@ -55,6 +55,9 @@
 | Method | Endpoint | Mô tả |
 |---|---|---|
 | POST | `/api/v1/operations/kill-switch` | Bật/tắt kill switch |
+| GET | `/api/v1/operations/notional` | Danh sách notional cố định theo coin |
+| PUT | `/api/v1/operations/notional/:symbol` | Đổi notional `{notionalUsd}`, ghi audit |
+| DELETE | `/api/v1/operations/notional/:symbol` | Reset notional về mặc định theo ticker |
 | GET | `/api/v1/health` | Health check |
 
 ## 2. Quy tắc
@@ -99,6 +102,7 @@
 | `/coin_add` | Thêm nhiều coin, mỗi dòng một symbol; trùng được bỏ qua |
 | `/coin_del` | Xóa hẳn nhiều coin, giữ lịch sử audit |
 | `/coin_enable\|/coin_disable <SYM> [...]` | Bật/tắt từng coin |
+| `/vol [SYM] [amount\|reset]` | Xem/đổi notional cố định (USDC) của coin; BTC/ETH/SOL mặc định 100k, còn lại 50k |
 | `/kill [new\|all]` | Bật kill switch (`STOP NEW TRADES` / `STOP ALL AUTOMATED MUTATIONS`) |
 
 Review mơ hồ: bot **DM thẳng từng operator** (theo `OPERATOR_CHAT_IDS`) kèm nút **Approve** / **Reject** (inline buttons); bấm Reject từ chối ngay. Một operator block bot không ảnh hưởng người còn lại; chưa cấu hình chat nào thì không gửi (log warn).
@@ -131,7 +135,7 @@ Mỗi thông báo review gồm card trực quan, không bao giờ in id đầy �
 - Chỉ username trong `OPERATOR_USERNAMES`, chỉ trong **private chat** — bot không nhận lệnh trong group/channel.
 - Rate limit lệnh liên tiếp; mọi lệnh đổi trạng thái tuân thủ đúng rule mục 2 (auth, audit, conflict checks, approval đúng version).
 - Quản lý nguồn qua bot dùng cùng resolver “không đoán”: ID trước, handle chuẩn hóa sau; mơ hồ thì yêu cầu dùng ID.
-- **Không cho qua bot:** đổi risk limits, sửa template/route, xóa dữ liệu, deploy. Ngoại lệ duy nhất là vòng đời nguồn (`/source_add`, `/source_del`, `/source_edit`, enable/disable), trong đó xóa nguồn luôn là **soft delete**, giữ lịch sử và ghi audit.
+- **Không cho qua bot:** đổi risk limits, sửa template/route, xóa dữ liệu, deploy. Ngoại lệ: vòng đời nguồn (`/source_add`, `/source_del`, `/source_edit`, enable/disable), trong đó xóa nguồn luôn là **soft delete**, giữ lịch sử và ghi audit; và `/vol` đổi notional cố định theo coin (có audit, áp dụng ngay).
 
 ## 4. Liên kết tài liệu
 

@@ -1,5 +1,5 @@
 # Render/publish worker image: Debian slim (Playwright Chromium needs apt deps).
-FROM node:22-slim AS builder
+FROM node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS builder
 
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
@@ -24,7 +24,7 @@ COPY packages packages
 RUN npm run build
 RUN npx playwright install --with-deps chromium
 
-FROM node:22-slim AS runner
+FROM node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS runner
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/card-renderer/dist ./packages/card-renderer/dist

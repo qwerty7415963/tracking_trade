@@ -11,7 +11,7 @@
 
 - Bỏ hẳn MT5: xóa EA, bridge, Wine/Docker MT5, reconciliation, execution commands.
 - Nguồn giá duy nhất: **Hyperliquid public info API** (`meta`/`allMids`, không key), mapping symbol **data-driven** từ universe (vàng → `PAXG`, đã verify live).
-- **Tài khoản ảo cross-margin** (mặc định x10): equity/balance, unrealized PnL, margin ratio, liquidation xấp xỉ; MVP chưa fee/funding.
+- **Tài khoản ảo cross-margin** (mặc định x10): equity/balance, unrealized PnL, margin ratio với MMR theo bậc notional tự định nghĩa, liquidation theo công thức Cross Binance; MVP chưa fee/funding.
 - 2 mode mở lệnh: `AUTO` / `APPROVE` (mặc định, approve = mở); multi-TP (TP1 50%, còn lại chia đều); SL đóng hết.
 - TP/SL detector poll `allMids` ~5s; card + publish reply như cũ.
 
@@ -20,3 +20,7 @@
 - Tích cực: không còn phụ thuộc terminal/Wine/broker; test được toàn bộ bằng mock + live public API; deploy gọn 1 VPS.
 - Tiêu cực: không phải lệnh thật — báo cáo phải ghi rõ paper; P&L chưa trừ fee/funding.
 - Ràng buộc: thiếu quote thì từ chối (không đoán); mapping fail thì review.
+
+## Update 2026-10-20
+
+- Entry của paper position lấy từ `SignalVersion.entry` (fallback mid nếu signal không có entry), thay vì luôn lấy mid lúc mở: card/caption khớp bài đăng, PNL/ROI so với mark live; size tính theo `notional / entry`, notional cấu hình theo coin.

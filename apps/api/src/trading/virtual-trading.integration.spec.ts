@@ -36,6 +36,9 @@ describeIntegration("Virtual trading flow (live DB, mocked market)", () => {
     const trading = app.get(VirtualTradingService);
     const prisma = app.get(PrismaService);
 
+    const eth = await prisma.tradableCoin.findUniqueOrThrow({ where: { symbol: "ETH" } });
+    expect(Number(eth.notionalUsd)).toBe(100000);
+
     const account = await prisma.virtualAccount.create({
       data: { name: "it-flow", balance: 10000, leverage: 10, mode: "APPROVE" },
     });
@@ -72,29 +75,29 @@ describeIntegration("Virtual trading flow (live DB, mocked market)", () => {
     const positionId = (out.position as { id: string }).id;
 
     let position = await prisma.virtualPosition.findUniqueOrThrow({ where: { id: positionId } });
-    // risk $50 over $100 stop = 0.5 units
-    expect(Number(position.size)).toBe(0.5);
+    // 100k notional / 3000 entry = 33.333 units, rounded down to 0.001
+    expect(Number(position.size)).toBe(33.333);
     expect(position.status).toBe("OPEN");
 
     // TP1 hit at 3100 -> closes 50%.
     const tp1 = await trading.applyTpHit(positionId, 3100, "worker");
-    expect(tp1.closedSize).toBe(0.25);
+    expect(tp1.closedSize).toBe(16.6665);
     expect(tp1.fullyClosed).toBe(false);
     expect(tp1.position.status).toBe("TP_HIT");
 
     // TP2 hit at 3200 -> closes the rest.
     const tp2 = await trading.applyTpHit(positionId, 3200, "worker");
-    expect(tp2.closedSize).toBeCloseTo(0.25, 9);
+    expect(tp2.closedSize).toBeCloseTo(16.6665, 9);
     expect(tp2.fullyClosed).toBe(true);
 
     position = await prisma.virtualPosition.findUniqueOrThrow({ where: { id: positionId } });
     expect(position.status).toBe("CLOSED");
-    expect(Number(position.realizedPnl)).toBeCloseTo(0.25 * 100 + 0.25 * 200, 6);
+    expect(Number(position.realizedPnl)).toBeCloseTo(16.6665 * 100 + 16.6665 * 200, 6);
 
     const txs = await prisma.virtualTransaction.findMany({ where: { accountId: account.id } });
     expect(txs.filter((t) => t.type === "REALIZED_PNL")).toHaveLength(2);
     const acc = await prisma.virtualAccount.findUniqueOrThrow({ where: { id: account.id } });
-    expect(Number(acc.balance)).toBeCloseTo(10000 + 25 + 50, 6);
+    expect(Number(acc.balance)).toBeCloseTo(10000 + 1666.65 + 3333.3, 6);
 
     // Cleanup.
     await prisma.virtualTransaction.deleteMany({ where: { accountId: account.id } });

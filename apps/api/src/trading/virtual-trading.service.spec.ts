@@ -27,7 +27,6 @@ const SIGNAL = {
 };
 
 const CONFIG = {
-  riskBudgetUsdc: 50,
   signalMaxAgeHours: 24,
 } as never;
 
@@ -59,8 +58,14 @@ function mockMarketData(overrides: Record<string, unknown> = {}) {
 function mockAccounts(overrides: Record<string, unknown> = {}) {
   return {
     get: jest.fn(async () => ({ id: "acc1", balance: 10000, leverage: 10, mode: "APPROVE" })),
-    dailyRealizedLoss: jest.fn(async () => 0),
     applyRealizedPnl: jest.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+function mockCoins(overrides: Record<string, unknown> = {}) {
+  return {
+    notionalFor: jest.fn(async () => 100000),
     ...overrides,
   };
 }
@@ -70,6 +75,7 @@ function service(
   marketData: unknown,
   accounts: unknown,
   killMode: "OFF" | "STOP_NEW_TRADES" | "STOP_ALL_MUTATIONS" = "OFF",
+  coins: unknown = mockCoins(),
 ) {
   const kill = { getMode: () => killMode, setMode: jest.fn() };
   return new VirtualTradingService(
@@ -77,6 +83,7 @@ function service(
     { record: jest.fn() } as never,
     marketData as never,
     accounts as never,
+    coins as never,
     kill as never,
     CONFIG,
   );
@@ -91,10 +98,63 @@ describe("VirtualTradingService.openApproved", () => {
     };
     expect(position.status).toBe("OPEN");
     expect(position.coin).toBe("ETH");
-    // risk $50 over $100 stop distance = 0.5 units
+    // 100k notional / 3000 entry = 33.333 units, rounded down to 0.001
     expect(prisma.virtualPosition.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ size: 0.5 }) }),
+      expect.objectContaining({ data: expect.objectContaining({ size: 33.333 }) }),
     );
+  });
+
+  it("opens at the signal entry when it differs from the mid", async () => {
+    const prisma = mockPrisma({
+      signal: {
+        findUnique: jest.fn(async () => ({
+          ...SIGNAL,
+          versions: [{ ...VERSION, entry: 2427.63, stopLoss: 2400 }],
+        })),
+      },
+    });
+    const marketData = mockMarketData({ getMid: jest.fn(async () => 2412.75) });
+    const svc = service(prisma, marketData, mockAccounts());
+    const { position } = (await svc.openApproved("s1", "acc1", "alice")) as unknown as {
+      position: { entryPrice: number; size: number };
+    };
+    expect(position.entryPrice).toBe(2427.63);
+    // 100k notional / 2427.63 entry = 41.192..., rounded down to 0.001
+    expect(position.size).toBeCloseTo(41.192, 6);
+    expect(prisma.virtualPosition.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ entryPrice: 2427.63 }),
+      }),
+    );
+  });
+
+  it("falls back to the mid when the signal has no entry", async () => {
+    const prisma = mockPrisma({
+      signal: {
+        findUnique: jest.fn(async () => ({
+          ...SIGNAL,
+          versions: [{ ...VERSION, entry: null }],
+        })),
+      },
+    });
+    const svc = service(prisma, mockMarketData(), mockAccounts());
+    const { position } = (await svc.openApproved("s1", "acc1", "alice")) as unknown as {
+      position: { entryPrice: number };
+    };
+    expect(position.entryPrice).toBe(3000);
+  });
+
+  it("rejects a non-positive signal entry instead of guessing", async () => {
+    const prisma = mockPrisma({
+      signal: {
+        findUnique: jest.fn(async () => ({
+          ...SIGNAL,
+          versions: [{ ...VERSION, entry: 0 }],
+        })),
+      },
+    });
+    const svc = service(prisma, mockMarketData(), mockAccounts());
+    await expect(svc.openApproved("s1", "acc1", "alice")).rejects.toThrow(/INVALID_ENTRY/);
   });
 
   it("returns the existing position instead of duplicating (idempotent)", async () => {
@@ -277,7 +337,10 @@ describe("VirtualTradingService.pollMarketOnce", () => {
     // p-sl: mark 3100 vs SL 2950 LONG → not hit; p-tp hits TP1 (single TP → full close)
     const events = await svc.pollMarketOnce();
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ positionId: "p-tp", kind: "TP" });
+    expect(events[0]).toMatchObject({ positionId: "p-tp", kind: "TP", markPrice: 3100, tpIndex: 0 });
+    // Detect only: the settle job renders the card first, closes afterwards.
+    expect(prisma.virtualPosition.update).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it("returns [] when kill switch stops all mutations", async () => {

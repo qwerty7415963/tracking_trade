@@ -1,4 +1,9 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Prisma, TradableCoin } from "@prisma/client";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../database/prisma.service";
@@ -6,6 +11,18 @@ import { CreateCoinDto, UpdateCoinDto } from "./dto/coin.dto";
 
 export function normalizeSymbol(raw: string): string {
   return raw.trim().toUpperCase();
+}
+
+export const DEFAULT_COIN_NOTIONAL_USD = 50_000;
+export const COIN_NOTIONAL_DEFAULTS: Readonly<Record<string, number>> = {
+  BTC: 100_000,
+  ETH: 100_000,
+  SOL: 100_000,
+};
+
+/** Fixed USDC notional used when a coin has no explicit override. */
+export function defaultNotionalFor(symbol: string): number {
+  return COIN_NOTIONAL_DEFAULTS[normalizeSymbol(symbol)] ?? DEFAULT_COIN_NOTIONAL_USD;
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -19,6 +36,89 @@ export class CoinsService {
 
   list(): Promise<TradableCoin[]> {
     return this.prisma.tradableCoin.findMany({ orderBy: { symbol: "asc" } });
+  }
+
+  async listNotionals(): Promise<
+    Array<{ id: string; symbol: string; enabled: boolean; notionalUsd: number }>
+  > {
+    const rows = await this.list();
+    return rows.map((row) => ({
+      id: row.id,
+      symbol: row.symbol,
+      enabled: row.enabled,
+      notionalUsd: Number(row.notionalUsd),
+    }));
+  }
+
+  /**
+   * Fixed USDC notional for a resolved Hyperliquid coin. A missing or invalid
+   * row falls back to the symbol defaults so sizing never silently becomes 0.
+   */
+  async notionalFor(symbol: string): Promise<number> {
+    const row = await this.prisma.tradableCoin
+      .findUnique({
+        where: { symbol: normalizeSymbol(symbol) },
+        select: { notionalUsd: true },
+      })
+      .catch(() => null);
+    const value = row ? Number(row.notionalUsd) : NaN;
+    return Number.isFinite(value) && value > 0 ? value : defaultNotionalFor(symbol);
+  }
+
+  async setNotional(
+    ref: string,
+    amount: number,
+    actor: string,
+  ): Promise<{ id: string; symbol: string; notionalUsd: number }> {
+    const coin = await this.resolve(ref);
+    const next = this.validNotional(amount);
+    const previous = Number(coin.notionalUsd);
+    const updated = await this.prisma.tradableCoin.update({
+      where: { id: coin.id },
+      data: { notionalUsd: next, updatedBy: actor },
+    });
+    await this.audit.record(actor, "coin.notional", {
+      coinId: coin.id,
+      symbol: coin.symbol,
+      from: Number.isFinite(previous) ? previous : defaultNotionalFor(coin.symbol),
+      to: next,
+    });
+    return {
+      id: updated.id,
+      symbol: updated.symbol,
+      notionalUsd: Number(updated.notionalUsd),
+    };
+  }
+
+  async resetNotional(
+    ref: string,
+    actor: string,
+  ): Promise<{ id: string; symbol: string; notionalUsd: number }> {
+    const coin = await this.resolve(ref);
+    const next = defaultNotionalFor(coin.symbol);
+    const previous = Number(coin.notionalUsd);
+    const updated = await this.prisma.tradableCoin.update({
+      where: { id: coin.id },
+      data: { notionalUsd: next, updatedBy: actor },
+    });
+    await this.audit.record(actor, "coin.notional.reset", {
+      coinId: coin.id,
+      symbol: coin.symbol,
+      from: Number.isFinite(previous) ? previous : next,
+      to: next,
+    });
+    return {
+      id: updated.id,
+      symbol: updated.symbol,
+      notionalUsd: Number(updated.notionalUsd),
+    };
+  }
+
+  private validNotional(amount: number): number {
+    if (!Number.isFinite(amount) || !(amount > 0)) {
+      throw new BadRequestException("notionalUsd must be > 0");
+    }
+    return amount;
   }
 
   /** Uppercase enabled symbols — the operator-managed gate for parsed coins. */
@@ -57,11 +157,13 @@ export class CoinsService {
   async create(dto: CreateCoinDto, actor: string): Promise<TradableCoin> {
     const symbol = normalizeSymbol(dto.symbol);
     if (!symbol) throw new ConflictException("coin symbol must not be empty");
+    const notionalUsd =
+      dto.notionalUsd === undefined ? defaultNotionalFor(symbol) : this.validNotional(dto.notionalUsd);
     try {
       const coin = await this.prisma.tradableCoin.create({
-        data: { symbol, notes: dto.notes, createdBy: actor },
+        data: { symbol, notionalUsd, notes: dto.notes, createdBy: actor },
       });
-      await this.audit.record(actor, "coin.create", { coinId: coin.id, symbol });
+      await this.audit.record(actor, "coin.create", { coinId: coin.id, symbol, notionalUsd });
       return coin;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
@@ -77,17 +179,23 @@ export class CoinsService {
     if (symbol !== undefined && !symbol) {
       throw new ConflictException("coin symbol must not be empty");
     }
+    const notionalUsd =
+      dto.notionalUsd === undefined ? undefined : this.validNotional(dto.notionalUsd);
     try {
       const coin = await this.prisma.tradableCoin.update({
         where: { id },
         data: {
           symbol,
           enabled: dto.enabled,
+          notionalUsd,
           notes: dto.notes,
           updatedBy: actor,
         },
       });
-      await this.audit.record(actor, "coin.update", { coinId: id });
+      await this.audit.record(actor, "coin.update", {
+        coinId: id,
+        ...(notionalUsd === undefined ? {} : { notionalUsd }),
+      });
       return coin;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {

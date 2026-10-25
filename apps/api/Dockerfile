@@ -1,8 +1,11 @@
-# API image: Node 22 alpine, non-root, production deps only.
+# API image: Node 24 slim (Debian) + Chromium, because the API now hosts the
+# card-render worker (Playwright/Chromium cannot run on Alpine/musl).
 # Record the base digest at build time (docker images --digests).
-FROM node:22-alpine AS builder
+FROM node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS builder
 
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/worker/package.json apps/worker/package.json
@@ -20,11 +23,11 @@ COPY tsconfig.json tsconfig.*.json jest.config.cjs ./
 COPY apps apps
 COPY packages packages
 # NOTE: keep dev deps (incl. prisma CLI for `migrate deploy` one-offs).
-# Slimming the runner (prune + prisma reinstall) is a later optimization.
 RUN npm run build
+RUN npx playwright install --with-deps chromium
 
-FROM node:22-alpine AS runner
-RUN addgroup -S app && adduser -S app -G app
+FROM node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS runner
+RUN addgroup --system app && adduser --system --ingroup app app
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/node_modules ./node_modules
 COPY --from=builder --chown=app:app /app/dist ./dist
@@ -46,10 +49,15 @@ COPY --from=builder --chown=app:app /app/packages/reporting/dist ./packages/repo
 COPY --from=builder --chown=app:app /app/packages/reporting/package.json ./packages/reporting/package.json
 COPY --from=builder --chown=app:app /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder --chown=app:app /app/packages/shared/package.json ./packages/shared/package.json
-RUN mkdir -p /data/artifacts && chown -R app:app /data/artifacts
+# Chromium needs system libs installed as root, then the browser cache.
+RUN npx --no-install playwright install-deps chromium
+COPY --from=builder /root/.cache/ms-playwright /home/app/.cache/ms-playwright
+RUN chown -R app:app /home/app/.cache \
+  && mkdir -p /data/artifacts && chown app:app /data/artifacts
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/app/.cache/ms-playwright
+ENV ARTIFACTS_DIR=/data/artifacts
 USER app
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD node -e "fetch('http://localhost:3000/api/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 CMD ["node", "dist/apps/api/src/main.js"]
-

@@ -1,8 +1,13 @@
-import { IsBoolean, IsOptional, IsString } from "class-validator";
+import { IsBoolean, IsNumber, IsOptional, IsPositive, IsString } from "class-validator";
 
 export class CreateCoinDto {
   @IsString()
   symbol!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  notionalUsd?: number;
 
   @IsOptional()
   @IsString()
@@ -17,6 +22,11 @@ export class UpdateCoinDto {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  notionalUsd?: number;
 
   @IsOptional()
   @IsString()

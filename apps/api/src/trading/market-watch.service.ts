@@ -3,23 +3,24 @@ import { Queue, Worker } from "bullmq";
 import Redis from "ioredis";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { REDIS_CLIENT } from "../queue/redis.provider";
-import { PublicationsService } from "../reporting/publications.service";
-import { MARKET_WATCH_QUEUE_NAME, VirtualTradingService } from "./virtual-trading.service";
+import { MARKET_WATCH_QUEUE_NAME, MarketHitEvent, VirtualTradingService } from "./virtual-trading.service";
+import { SETTLE_QUEUE_NAME, SettleJobData, settleJobId } from "./settle.service";
 
 @Injectable()
 export class MarketWatchService implements OnModuleInit, OnModuleDestroy {
   private worker: Worker | null = null;
   private scheduler: Queue | null = null;
+  private settleQueue: Queue | null = null;
 
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly trading: VirtualTradingService,
-    private readonly publications: PublicationsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
     this.scheduler = new Queue(MARKET_WATCH_QUEUE_NAME, { connection: this.redis });
+    this.settleQueue = new Queue(SETTLE_QUEUE_NAME, { connection: this.redis });
     // Repeatable price watch (deduplicated by scheduler id).
     await this.scheduler.upsertJobScheduler(
       "market-watch",
@@ -30,22 +31,46 @@ export class MarketWatchService implements OnModuleInit, OnModuleDestroy {
       MARKET_WATCH_QUEUE_NAME,
       async () => {
         const events = await this.trading.pollMarketOnce();
-        for (const ev of events) {
-          await this.publications.requestPositionPublish(
-            ev.positionId,
-            ev.kind === "SL" ? "sl" : "tp",
-            { markPrice: ev.closePrice },
-            "api",
-          );
-        }
+        for (const ev of events) await this.enqueueSettle(ev);
         return { hits: events.length };
       },
       { connection: this.redis },
     );
   }
 
+  /**
+   * One settle job per hit. The jobId is stable, so re-detection while a
+   * settle is in flight is a no-op; a job that exhausted its attempts is
+   * dropped and re-queued so an open position can never be stranded.
+   */
+  private async enqueueSettle(ev: MarketHitEvent): Promise<void> {
+    const queue = this.settleQueue;
+    if (!queue) return;
+    const jobId = settleJobId(ev);
+    const existing = await queue.getJob(jobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (state === "failed") await existing.remove().catch(() => undefined);
+      else return;
+    }
+    const data: SettleJobData = {
+      positionId: ev.positionId,
+      kind: ev.kind,
+      markPrice: ev.markPrice,
+      tpIndex: ev.tpIndex,
+    };
+    await queue.add("settle-position", data, {
+      jobId,
+      attempts: 5,
+      backoff: { type: "fixed", delay: 30_000 },
+      removeOnComplete: 100,
+      removeOnFail: 200,
+    });
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.worker?.close();
     await this.scheduler?.close();
+    await this.settleQueue?.close();
   }
 }

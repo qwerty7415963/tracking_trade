@@ -12,9 +12,12 @@
 | Mở trùng | Cùng signal+version đang mở → trả vị thế hiện có, không tạo mới |
 | Market data lỗi | Bỏ qua chu kỳ poll, không tác động vị thế |
 | Telegram timeout | Publication UNKNOWN; xử lý thận trọng để tránh bài trùng |
-| Update đến trước bài gốc | Giữ chờ retryable 5 phút (`ORIGINAL_NOT_PUBLISHED_YET`), rồi đăng lẻ + audit `publication.orphaned` |
-| Send job | 10 attempts, fixed backoff 30s (~5 phút, khớp hold timeout) |
-| BullMQ jobId | Custom job id **không được chứa `:`** (BullMQ ném lỗi) — prefix `render-`/`send-` |
+| Update đến trước bài gốc | Giữ chờ retryable 5 phút (`ORIGINAL_NOT_PUBLISHED_YET`), đổi sang `RETRY_PENDING` trong lúc chờ, rồi đăng lẻ + audit `publication.orphaned` |
+| Send job | 10 attempts, fixed backoff **60s** (~10 phút) — phải vượt hold 5 phút, nếu không card TP/SL bắn sớm chết vĩnh viễn |
+| Send job hết attempts | Consumer `failed` ở lần cuối → `FINAL_FAILURE` (trước đây im lặng, row kẹt `PENDING` mãi) |
+| Settle job (TP/SL) | 5 attempts × 30s, jobId dedupe `settle-<positionId>-TP-<i>` / `-SL`; **card trước, đóng sau** với giá đóng băng |
+| Chọn kind card lúc dialog | Quét mọi publication `PENDING/RETRY_PENDING` của position, chỉ promote job **có `delayMs`** (đang delayed) — job TP/SL không delay không được chọn |
+| BullMQ jobId | Custom job id **không được chứa `:`** (BullMQ ném lỗi) — prefix `render-`/`send-`/`settle-` |
 | Lỗi tạm thời | Exponential backoff + jitter, max attempts, DLQ |
 | Lỗi vĩnh viễn | Không retry mù; báo operator |
 | Update đồng thời | Serialize theo signal/position |
@@ -27,6 +30,7 @@
 - Mở lệnh idempotent theo signal+version — không tạo vị thế trùng.
 - **Không đoán giá**: thiếu quote thì từ chối, không bịa entry/close.
 - Retry Telegram publication thận trọng để tránh **bài trùng**.
+- Chốt TP/SL: **đăng card xong mới đóng lệnh** (giá đóng đóng băng từ lúc detect); retry không bao giờ đóng slice lần hai.
 - Lỗi tạm thời: backoff + jitter + max attempts + DLQ.
 - Lỗi vĩnh viễn: báo operator, không retry mù.
 

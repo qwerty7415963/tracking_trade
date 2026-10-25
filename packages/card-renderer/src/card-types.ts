@@ -21,6 +21,9 @@ export type CardKind = "pnl-strip" | "position-stats";
 
 export const DEFAULT_CARD_KIND: CardKind = "pnl-strip";
 
+/** Maintenance margin rate used for liquidation + margin-ratio display. */
+export const DEFAULT_MAINTENANCE_MARGIN_RATE = 0.005;
+
 export function isCardKind(value: unknown): value is CardKind {
   return value === "pnl-strip" || value === "position-stats";
 }
@@ -47,6 +50,14 @@ export interface PositionSnapshot {
   marginType?: string | null;
   accountName?: string | null;
   liquidationPrice?: number | null;
+  /** Per-coin maintenance margin rate (falls back to 0.5%). */
+  maintenanceMarginRate?: number | null;
+  /**
+   * Cross-account margin ratio (maintenance margin used / account equity)
+   * supplied by the API. null means it could not be computed; an absent value
+   * (older snapshot) falls back to MMR × leverage in the stats view model.
+   */
+  accountMarginRatio?: number | null;
 }
 
 export interface CardViewModel {

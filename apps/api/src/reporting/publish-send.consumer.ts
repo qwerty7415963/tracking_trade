@@ -23,6 +23,19 @@ export class PublishSendConsumer implements OnModuleInit, OnModuleDestroy {
       },
       { connection: this.redis },
     );
+    // Intermediate attempts only back off; the last one is terminal and has
+    // to surface (otherwise the row stays PENDING and the bot never says a
+    // word). attemptsMade is incremented before this event fires.
+    this.worker.on("failed", (job, err) => {
+      if (!job) return;
+      if (job.attemptsMade < (job.opts.attempts ?? 1)) return;
+      const data = job.data as SendJobData;
+      void this.publications.markSendFailed(
+        data.publicationId,
+        err?.message ?? "SEND_FAILED",
+        data.actor ?? "worker",
+      );
+    });
   }
 
   async onModuleDestroy(): Promise<void> {

@@ -701,6 +701,47 @@ describe("OperatorBotService coin commands", () => {
     expect(update).toHaveBeenCalledWith("c1", { enabled: false }, "tg:alice");
     expect(toggleReplies[0]).toContain("⏸️ ZEC disabled");
   });
+
+  it("lists and updates fixed notionals", async () => {
+    const listNotionals = jest.fn(async () => [
+      { id: "c1", symbol: "BTC", enabled: true, notionalUsd: 100000 },
+      { id: "c2", symbol: "XRP", enabled: true, notionalUsd: 50000 },
+    ]);
+    const listed = await dispatchCoin("vol", [], "/vol", { listNotionals });
+    expect(listed[0]).toContain("BTC notional=100000");
+    expect(listed[0]).toContain("XRP notional=50000");
+
+    const setNotional = jest.fn(async () => ({
+      id: "c1",
+      symbol: "BTC",
+      notionalUsd: 120000,
+    }));
+    const set = await dispatchCoin("vol", ["btc", "120000"], "/vol btc 120000", {
+      setNotional,
+    });
+    expect(setNotional).toHaveBeenCalledWith("btc", 120000, "tg:alice");
+    expect(set[0]).toBe("BTC notional=120000");
+  });
+
+  it("resets a notional to its ticker default", async () => {
+    const resetNotional = jest.fn(async () => ({
+      id: "c1",
+      symbol: "BTC",
+      notionalUsd: 100000,
+    }));
+    const replies = await dispatchCoin("vol", ["BTC", "reset"], "/vol BTC reset", {
+      resetNotional,
+    });
+    expect(resetNotional).toHaveBeenCalledWith("BTC", "tg:alice");
+    expect(replies[0]).toBe("BTC notional=100000 (default)");
+  });
+
+  it("rejects invalid /vol usage without writing", async () => {
+    const setNotional = jest.fn();
+    const replies = await dispatchCoin("vol", ["BTC", "0"], "/vol BTC 0", { setNotional });
+    expect(setNotional).not.toHaveBeenCalled();
+    expect(replies[0]).toBe("Usage: /vol <SYM> <amount|reset>");
+  });
 });
 
 describe("OperatorBotService review fan-out", () => {

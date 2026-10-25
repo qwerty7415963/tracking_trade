@@ -35,6 +35,8 @@ describe("ApprovalFlowService.approveSignal", () => {
       expect.objectContaining({ destinationChatId: "@chan" }),
       "alice",
     );
+    const opts = (publications.requestPositionPublish as jest.Mock).mock.calls[0][2] as Record<string, unknown>;
+    expect(opts).not.toHaveProperty("markPrice");
   });
 
   it("keeps approval but reports open failure without throwing", async () => {

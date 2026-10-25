@@ -9,7 +9,13 @@ import {
   isCardKind,
   PositionSnapshot,
 } from "@tracking-auto/card-renderer";
-import { buildPostLink, liquidationPrice } from "@tracking-auto/domain";
+import {
+  buildPostLink,
+  crossLiquidationPrice,
+  crossMarginRatio,
+  effectiveMmrFor,
+} from "@tracking-auto/domain";
+import { MarketDataService } from "../market-data/market-data.service";
 
 /** Max wait for the original card before an update posts standalone. */
 export const ORIGINAL_HOLD_MS = 5 * 60 * 1000;
@@ -147,13 +153,15 @@ export class PublicationsService {
     @Inject(TELEGRAM_SENDER) private readonly sender: TelegramSender,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(RendersService) private readonly renders: RendersService,
+    private readonly marketData: MarketDataService,
   ) {}
 
   async requestPositionPublish(
     positionId: string,
     status: CardStatus,
     opts: {
-      markPrice: number;
+      /** Omit for open cards so the worker resolves the live mark at render time. */
+      markPrice?: number;
       destinationChatId?: string;
       replyToMessageId?: string;
       /** Persist + render this card style; omit to inherit the position's. */
@@ -195,7 +203,7 @@ export class PublicationsService {
     await this.renders.requestRender(
       {
         virtualPositionId: positionId,
-        markPrice: opts.markPrice,
+        ...(opts.markPrice !== undefined ? { markPrice: opts.markPrice } : {}),
         publicationId: publication.id,
         status,
         destinationChatId: destination,
@@ -222,18 +230,26 @@ export class PublicationsService {
    * /pos style dialog: persist the operator's card choice on the position
    * (source for TP/SL inheritance) and promote the still-delayed render
    * job. "expired" = the 5-minute window passed (default card rendered).
+   *
+   * Every pending publication of the position is offered to the renderer:
+   * a TP/SL card enqueued mid-dialog is newer but not the dialog job.
    */
   async chooseCardStyle(
     positionId: string,
     cardKind: CardKind,
     actor: string,
   ): Promise<"promoted" | "expired"> {
-    const publication = await this.prisma.telegramPublication.findFirst({
-      where: { virtualPositionId: positionId, publicationStatus: "PENDING" },
+    const publications = await this.prisma.telegramPublication.findMany({
+      where: { virtualPositionId: positionId, publicationStatus: { in: ["PENDING", "RETRY_PENDING"] } },
       orderBy: { createdAt: "desc" },
+      select: { id: true },
     });
-    if (!publication) return "expired";
-    const outcome = await this.renders.promoteRender(publication.id, cardKind, actor);
+    if (publications.length === 0) return "expired";
+    const { outcome } = await this.renders.promoteFirstDelayed(
+      publications.map((row) => row.id),
+      cardKind,
+      actor,
+    );
     if (outcome === "promoted") {
       await this.prisma.virtualPosition.update({
         where: { id: positionId },
@@ -241,6 +257,22 @@ export class PublicationsService {
       });
     }
     return outcome;
+  }
+
+  /**
+   * Milliseconds left on the /pos style dialog still gating this position's
+   * update cards (0 = no dialog waiting). The render consumer holds TP/SL/
+   * close jobs for that long so they render the style actually chosen.
+   */
+  async styleDialogRemainingMs(positionId: string): Promise<number> {
+    const rows = await this.prisma.telegramPublication.findMany({
+      where: { virtualPositionId: positionId, publicationStatus: "PENDING" },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+      take: 10,
+    });
+    if (rows.length === 0) return 0;
+    return this.renders.dialogRemainingMs(rows.map((row) => row.id));
   }
 
   /** Recent FINAL_FAILURE publications (operator-bot failure notices). */
@@ -265,6 +297,25 @@ export class PublicationsService {
     return publication;
   }
 
+  /**
+   * Send retries exhausted (consumer "failed" on the last attempt). Terminal
+   * rows drive the operator bot's ❌ sweep; PUBLISHED rows are never downgraded.
+   */
+  async markSendFailed(publicationId: string, reason: string, actor: string): Promise<void> {
+    const publication = await this.prisma.telegramPublication
+      .findUnique({ where: { id: publicationId }, select: { publicationStatus: true } })
+      .catch(() => null);
+    if (!publication || publication.publicationStatus === "PUBLISHED") return;
+    const code = (reason || "SEND_FAILED").split(":")[0].slice(0, 200);
+    await this.prisma.telegramPublication
+      .update({
+        where: { id: publicationId },
+        data: { publicationStatus: "FINAL_FAILURE", renderedText: code },
+      })
+      .catch(() => undefined);
+    await this.audit.record(actor, "publication.failed", { publicationId, reason: code });
+  }
+
   /** Build card data for a virtual position at an explicit mark. No rendering. */
   async buildSnapshot(
     positionId: string,
@@ -274,7 +325,7 @@ export class PublicationsService {
     const position = await this.prisma.virtualPosition.findUnique({
       where: { id: positionId },
       include: {
-        account: { select: { name: true, marginType: true } },
+        account: { select: { name: true, marginType: true, balance: true } },
         signal: { include: { versions: { orderBy: { versionNumber: "desc" }, take: 1 }, source: true } },
       },
     });
@@ -296,6 +347,49 @@ export class PublicationsService {
     const entry = asNumber(position.entryPrice);
     const floating =
       (position.direction === "LONG" ? 1 : -1) * (markPrice - entry) * volume;
+    // Account-level cross margin ratio, same formula as /accounts: total
+    // maintenance margin (tiered MMR) over equity across all positions.
+    const balance = asNumber(position.account?.balance);
+    let accountMarginRatio: number | null = null;
+    let liquidation: number | null = null;
+    if (position.account && Number.isFinite(balance)) {
+      const opens = await this.prisma.virtualPosition.findMany({
+        where: { accountId: position.accountId, status: { in: ["OPEN", "TP_HIT"] } },
+      });
+      const mids = await this.marketData.getAllMids().catch(() => null);
+      const otherPriced = opens
+        .filter((p) => p.id !== position.id)
+        .map((p) => ({
+          coin: p.coin,
+          direction: p.direction as "LONG" | "SHORT",
+          size: asNumber(p.remainingSize),
+          entryPrice: asNumber(p.entryPrice),
+          leverage: p.leverage,
+        }));
+      // Keep the card self-consistent: count THIS position at the frozen
+      // request size (not its live remaining size), so a card rendered after
+      // the position closed or partially TP'd still shows a ratio matching the
+      // size/margin printed on the card.
+      const currentPriced = {
+        coin: position.coin,
+        direction: (position.direction === "SHORT" ? "SHORT" : "LONG") as
+          | "LONG"
+          | "SHORT",
+        size: Math.abs(volume),
+        entryPrice: entry,
+        leverage: position.leverage,
+      };
+      const priced = [...otherPriced, currentPriced];
+      const midsComplete =
+        mids !== null &&
+        priced.every(
+          (p) => typeof mids[p.coin] === "number" && Number.isFinite(mids[p.coin]),
+        );
+      if (midsComplete) {
+        accountMarginRatio = crossMarginRatio(balance, priced, mids);
+        liquidation = crossLiquidationPrice(balance, currentPriced, otherPriced, mids);
+      }
+    }
     const snapshot: PositionSnapshot = {
       accountId: position.accountId,
       positionId: position.id,
@@ -317,14 +411,12 @@ export class PublicationsService {
       leverage: position.leverage,
       marginType: position.account?.marginType ?? null,
       accountName: position.account?.name ?? null,
-      liquidationPrice:
-        entry > 0 && position.leverage > 0
-          ? liquidationPrice(
-              position.direction === "SHORT" ? "SHORT" : "LONG",
-              entry,
-              position.leverage,
-            )
-          : null,
+      maintenanceMarginRate: effectiveMmrFor(
+        position.coin,
+        Math.abs(volume) * markPrice,
+      ),
+      accountMarginRatio,
+      liquidationPrice: liquidation,
     };
     return { snapshot, position, signal: position.signal, version, sourceMessage };
   }
@@ -352,6 +444,15 @@ export class PublicationsService {
       if (original?.telegramMessageId) {
         replyTo = original.telegramMessageId;
       } else if (Date.now() - publication.createdAt.getTime() < ORIGINAL_HOLD_MS) {
+        // Still waiting for the original card. Record the hold so this row
+        // stops looking like an un-rendered card (it must not shadow the
+        // /pos style dialog), then let the send job retry.
+        if (publication.publicationStatus === "PENDING") {
+          await this.prisma.telegramPublication.update({
+            where: { id: publicationId },
+            data: { publicationStatus: "RETRY_PENDING" },
+          });
+        }
         throw new Error("ORIGINAL_NOT_PUBLISHED_YET: retryable");
       } else {
         await this.audit.record(request.actor, "publication.orphaned", {

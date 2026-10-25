@@ -68,13 +68,7 @@ export class ApprovalFlowService {
       const { position, created } = await this.trading.openApproved(signalId, account.id, actor);
       let published = false;
       if (created) {
-        published = await this.publishOpened(
-          position.id,
-          Number((position as { entryPrice: unknown }).entryPrice),
-          actor,
-          destinationChatId,
-          publishOpts,
-        );
+        published = await this.publishOpened(position.id, actor, destinationChatId, publishOpts);
       }
       return { approval, position, openError: null, published };
     } catch (err) {
@@ -94,19 +88,13 @@ export class ApprovalFlowService {
     const account = await this.resolveAccount(accountId);
     const { position, created } = await this.trading.openApproved(signalId, account.id, actor);
     const published = created
-      ? await this.publishOpened(
-          position.id,
-          Number((position as { entryPrice: unknown }).entryPrice),
-          actor,
-          destinationChatId,
-        )
+      ? await this.publishOpened(position.id, actor, destinationChatId)
       : false;
     return { position, created, published };
   }
 
   private async publishOpened(
     positionId: string,
-    markPrice: number,
     actor: string,
     destinationChatId?: string,
     publishOpts: ApprovePublishOptions = {},
@@ -124,7 +112,6 @@ export class ApprovalFlowService {
         positionId,
         "filled",
         {
-          markPrice,
           destinationChatId: destination,
           ...(publishOpts.cardKind ? { cardKind: publishOpts.cardKind } : {}),
           ...(publishOpts.renderDelayMs ? { renderDelayMs: publishOpts.renderDelayMs } : {}),

@@ -1,5 +1,9 @@
 import { CardTheme } from "./card-config";
-import { PositionSnapshot, RenderErrorCode } from "./card-types";
+import {
+  DEFAULT_MAINTENANCE_MARGIN_RATE,
+  PositionSnapshot,
+  RenderErrorCode,
+} from "./card-types";
 
 export interface StatsCardViewModel {
   symbol: string;
@@ -32,12 +36,12 @@ export function formatGrouped(value: number, precision: number): string {
 
 function formatSigned(value: number, precision: number): string {
   const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(precision)}`;
+  return `${sign}${formatGrouped(value, precision)}`;
 }
 
 function formatPercent(value: number): string {
   const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(2)}%`;
+  return `${sign}${formatGrouped(value, 2)}%`;
 }
 
 function capitalize(value: string): string {
@@ -45,23 +49,59 @@ function capitalize(value: string): string {
 }
 
 /**
- * View model for the Vietnamese position-stats card. Derives margin,
- * ROI and margin ratio from the snapshot (not stored anywhere); missing
- * leverage/margin/liquidation renders "--" instead of guessing.
+ * View model for the Vietnamese position-stats card. PnL is derived from the
+ * entry price and size (dir × (mark − entry) × size); the snapshot's
+ * `floatingProfit` is only a fallback when those inputs are unusable.
+ * Notional and margin track the live mark: notional = size × mark,
+ * margin = notional / leverage. ROI stays anchored to the entry margin
+ * (size × entry / leverage) so a mark move does not change the return on the
+ * capital used to open the position. The margin ratio is the account cross
+ * ratio supplied by the API (maintenance used / equity); older snapshots
+ * without it fall back to MMR × leverage. Missing leverage/margin/liquidation
+ * renders "--" instead of guessing.
  */
 export function buildStatsViewModel(
   snapshot: PositionSnapshot,
   theme: CardTheme,
 ): StatsViewModelResult {
   const isBuy = snapshot.direction === "BUY";
-  const notional = snapshot.volume * snapshot.entryPrice;
+  const direction = isBuy ? 1 : -1;
+  const { volume, entryPrice, currentPrice } = snapshot;
+  const pricesUsable =
+    Number.isFinite(volume) && Number.isFinite(entryPrice) && Number.isFinite(currentPrice);
+  const fallbackPnl =
+    typeof snapshot.floatingProfit === "number" && Number.isFinite(snapshot.floatingProfit)
+      ? snapshot.floatingProfit
+      : 0;
+  const pnl = pricesUsable
+    ? direction * (currentPrice - entryPrice) * volume
+    : fallbackPnl;
+  const entryNotional = volume * entryPrice;
+  const notional = pricesUsable ? volume * currentPrice : entryNotional;
   const leverage =
     typeof snapshot.leverage === "number" && Number.isFinite(snapshot.leverage)
       ? snapshot.leverage
       : null;
   const margin = leverage !== null && leverage > 0 ? notional / leverage : null;
-  const roiPct = margin !== null && margin > 0 ? (snapshot.floatingProfit / margin) * 100 : null;
-  const ratioPct = leverage !== null && leverage > 0 ? 100 / leverage : null;
+  const initialMargin =
+    leverage !== null && leverage > 0 ? entryNotional / leverage : null;
+  const roiPct =
+    initialMargin !== null && initialMargin > 0 ? (pnl / initialMargin) * 100 : null;
+  const mmr =
+    typeof snapshot.maintenanceMarginRate === "number" &&
+    Number.isFinite(snapshot.maintenanceMarginRate) &&
+    snapshot.maintenanceMarginRate > 0
+      ? snapshot.maintenanceMarginRate
+      : DEFAULT_MAINTENANCE_MARGIN_RATE;
+  const accountRatio = snapshot.accountMarginRatio;
+  const ratioPct =
+    typeof accountRatio === "number" && Number.isFinite(accountRatio) && accountRatio >= 0
+      ? accountRatio * 100
+      : accountRatio === null
+        ? null
+        : leverage !== null && leverage > 0
+          ? leverage * mmr * 100
+          : null;
   const liq =
     typeof snapshot.liquidationPrice === "number" && Number.isFinite(snapshot.liquidationPrice)
       ? snapshot.liquidationPrice
@@ -75,20 +115,16 @@ export function buildStatsViewModel(
     marginTypeText: `${capitalize((snapshot.marginType ?? "cross").trim() || "cross")} ${
       leverage ?? "?"
     }X`,
-    pnlText: formatSigned(snapshot.floatingProfit, theme.pnlPrecision),
+    pnlText: formatSigned(pnl, theme.pnlPrecision),
     roiText: roiPct === null ? "--" : formatPercent(roiPct),
     pnlColor:
-      snapshot.floatingProfit > 0
-        ? theme.positivePnl
-        : snapshot.floatingProfit < 0
-          ? theme.negativePnl
-          : theme.zeroPnl,
+      pnl > 0 ? theme.positivePnl : pnl < 0 ? theme.negativePnl : theme.zeroPnl,
     notionalText: formatGrouped(notional, 2),
     marginText: margin === null ? "--" : formatGrouped(margin, 2),
     marginRatioText: ratioPct === null ? "--" : `${ratioPct.toFixed(2)}%`,
-    entryText: snapshot.entryPrice.toFixed(snapshot.priceDigits),
-    markText: snapshot.currentPrice.toFixed(snapshot.priceDigits),
-    liqText: liq === null ? "--" : liq.toFixed(snapshot.priceDigits),
+    entryText: formatGrouped(snapshot.entryPrice, snapshot.priceDigits),
+    markText: formatGrouped(snapshot.currentPrice, snapshot.priceDigits),
+    liqText: liq === null ? "--" : formatGrouped(liq, snapshot.priceDigits),
   };
 
   const fields: Record<string, string> = {

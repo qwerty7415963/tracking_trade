@@ -22,7 +22,7 @@ describe("MarketDataService.assetSpec", () => {
       szDecimals: 4,
       minSize: 0.004,
       sizeIncrement: 0.0001,
-      maintenanceMarginRate: 0.01,
+      maintenanceMarginRate: 0.005,
     });
   });
 

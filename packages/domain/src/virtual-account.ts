@@ -2,6 +2,8 @@
 // Pure functions. MVP: PnL + cross-margin ratio + liquidation approx.
 // No fees, no funding (explicitly out of MVP scope).
 
+import { bracketFor, DEFAULT_MMR, maintenanceMarginFor } from "./margin-tiers";
+
 export type VirtualDirection = "LONG" | "SHORT";
 
 export interface CoinSpec {
@@ -12,8 +14,6 @@ export interface CoinSpec {
   /** Maintenance margin rate, e.g. 0.01 = 1%. */
   maintenanceMarginRate: number;
 }
-
-export const DEFAULT_MMR = 0.01;
 
 function floorTo(value: number, decimals: number): number {
   const factor = 10 ** decimals;
@@ -26,17 +26,15 @@ export function roundDownToStep(size: number, increment: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Position sizing: risk a fixed USDC budget if SL is hit.
-// size (coin units) = riskBudget / |entry - stopLoss|, rounded DOWN.
+// Position sizing: fixed USDC notional per coin.
+// size (coin units) = notional / entryPrice, rounded DOWN.
 // ---------------------------------------------------------------------------
 
 export interface PerpSizeInput {
-  riskBudget: number;
+  notional: number;
   entryPrice: number;
-  stopLossPrice: number;
   minSize: number;
   sizeIncrement: number;
-  maxNotional?: number;
 }
 
 export interface PerpSizeResult {
@@ -45,23 +43,21 @@ export interface PerpSizeResult {
   reason: string | null;
 }
 
-export function calcPerpSize(input: PerpSizeInput): PerpSizeResult {
-  const { riskBudget, entryPrice, stopLossPrice, minSize, sizeIncrement } = input;
-  if (!(riskBudget > 0)) return { size: 0, rejected: true, reason: "INVALID_RISK_BUDGET" };
-  const stopDistance = Math.abs(entryPrice - stopLossPrice);
-  if (!(stopDistance > 0) || !Number.isFinite(stopDistance)) {
-    return { size: 0, rejected: true, reason: "INVALID_STOP_DISTANCE" };
+export function calcPerpSizeByNotional(input: PerpSizeInput): PerpSizeResult {
+  const { notional, entryPrice, minSize, sizeIncrement } = input;
+  if (!(notional > 0) || !Number.isFinite(notional)) {
+    return { size: 0, rejected: true, reason: "INVALID_NOTIONAL" };
+  }
+  if (!(entryPrice > 0) || !Number.isFinite(entryPrice)) {
+    return { size: 0, rejected: true, reason: "INVALID_ENTRY_PRICE" };
   }
   if (!(minSize > 0) || !(sizeIncrement > 0)) {
     return { size: 0, rejected: true, reason: "INVALID_SIZE_SPEC" };
   }
-  const raw = riskBudget / stopDistance;
+  const raw = notional / entryPrice;
   const size = roundDownToStep(raw, sizeIncrement);
   if (size < minSize) {
-    return { size: 0, rejected: true, reason: "MIN_SIZE_EXCEEDS_BUDGET" };
-  }
-  if (input.maxNotional !== undefined && size * entryPrice > input.maxNotional) {
-    return { size: 0, rejected: true, reason: "MAX_NOTIONAL_EXCEEDED" };
+    return { size: 0, rejected: true, reason: "MIN_SIZE_EXCEEDS_NOTIONAL" };
   }
   return { size, rejected: false, reason: null };
 }
@@ -115,39 +111,107 @@ export function accountEquity(
   return equity;
 }
 
-/** Cross maintenance margin in use across all positions. */
+/** Cross maintenance margin in use across all positions (tiered MMR). */
 export function maintenanceMarginUsed(
   positions: PricedPosition[],
   mids: Record<string, number>,
-  mmr: number = DEFAULT_MMR,
 ): number {
   let used = 0;
   for (const p of positions) {
     const mark = mids[p.coin];
     if (typeof mark !== "number" || !Number.isFinite(mark)) continue;
-    used += Math.abs(p.size) * mark * mmr;
+    used += maintenanceMarginFor(p.coin, Math.abs(p.size) * mark);
   }
   return used;
 }
 
 /**
- * Cross margin ratio = maintenance used / equity.
+ * Cross margin ratio = total maintenance used / equity.
  * >= 1 means liquidation territory. Null when equity <= 0.
  */
 export function crossMarginRatio(
   balance: number,
   positions: PricedPosition[],
   mids: Record<string, number>,
-  mmr: number = DEFAULT_MMR,
 ): number | null {
   const equity = accountEquity(balance, positions, mids);
   if (!(equity > 0)) return null;
-  return maintenanceMarginUsed(positions, mids, mmr) / equity;
+  return maintenanceMarginUsed(positions, mids) / equity;
 }
 
 /**
- * Approximate liquidation price (isolated-style formula, documented
- * approximation for cross display purposes only).
+ * Binance-style cross liquidation price for one position, holding other
+ * positions at their current marks:
+ *
+ *   MP = (WB − side×Q×EP + UPNL_other + cum − TMM_other) / (Q × (MMR − side))
+ *
+ * side = +1 LONG, −1 SHORT. Bracket is resolved at the current notional and
+ * refined at the computed liquidation notional (brackets can switch tiers).
+ * Returns null when there is no positive solution (e.g. account is
+ * over-collateralised for a long).
+ */
+export function crossLiquidationPrice(
+  balance: number,
+  position: PricedPosition,
+  otherPositions: PricedPosition[],
+  mids: Record<string, number>,
+): number | null {
+  const quantity = Math.abs(position.size);
+  if (!(quantity > 0) || !(position.entryPrice > 0) || !Number.isFinite(balance)) {
+    return null;
+  }
+  const mark = mids[position.coin];
+  if (typeof mark !== "number" || !Number.isFinite(mark) || !(mark > 0)) return null;
+
+  const side = position.direction === "LONG" ? 1 : -1;
+  let upnlOther = 0;
+  let maintenanceOther = 0;
+  for (const other of otherPositions) {
+    const otherMark = mids[other.coin];
+    if (typeof otherMark !== "number" || !Number.isFinite(otherMark)) continue;
+    upnlOther += unrealizedPnl(
+      other.direction,
+      Math.abs(other.size),
+      other.entryPrice,
+      otherMark,
+    );
+    maintenanceOther += maintenanceMarginFor(
+      other.coin,
+      Math.abs(other.size) * otherMark,
+    );
+  }
+
+  let notional = quantity * mark;
+  let price: number | null = null;
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const bracket = bracketFor(position.coin, notional);
+    const denominator = quantity * (bracket.mmr - side);
+    if (!Number.isFinite(denominator) || Math.abs(denominator) < 1e-12) return null;
+    const numerator =
+      balance -
+      side * quantity * position.entryPrice +
+      upnlOther +
+      bracket.maintenanceAmount -
+      maintenanceOther;
+    const next = numerator / denominator;
+    if (!Number.isFinite(next) || next <= 0) return null;
+    price = next;
+    const nextNotional = quantity * next;
+    const nextBracket = bracketFor(position.coin, nextNotional);
+    if (
+      nextBracket.notionalFloor === bracket.notionalFloor &&
+      nextBracket.notionalCap === bracket.notionalCap
+    ) {
+      break;
+    }
+    notional = nextNotional;
+  }
+  return price;
+}
+
+/**
+ * LEGACY isolated-style approximation (kept for older callers/tests).
+ * New code must use crossLiquidationPrice().
  * LONG:  entry * (1 - (1/leverage - mmr))
  * SHORT: entry * (1 + (1/leverage - mmr))
  */
@@ -234,10 +298,6 @@ export interface VirtualRiskInput {
   equity: number;
   openPositions: number;
   maxPositions: number;
-  dailyRealizedLoss: number;
-  maxDailyLoss: number;
-  estimatedRisk: number;
-  maxRiskPerTrade: number;
   isMutation: boolean;
 }
 
@@ -262,7 +322,5 @@ export function evaluateVirtualRisk(input: VirtualRiskInput): VirtualRiskResult 
   if (!(input.leverage > 0)) fail("INVALID_LEVERAGE");
   if (input.notional / input.leverage > input.equity) fail("INSUFFICIENT_MARGIN");
   if (!input.isMutation && input.openPositions >= input.maxPositions) fail("MAX_POSITIONS");
-  if (input.dailyRealizedLoss >= input.maxDailyLoss) fail("DAILY_LOSS_LIMIT");
-  if (input.estimatedRisk > input.maxRiskPerTrade) fail("RISK_PER_TRADE");
   return { passed: failures.length === 0, failures };
 }

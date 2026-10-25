@@ -12,6 +12,8 @@ import { OperatorBotService } from "./operator-bot.service";
 import { SourcesModule } from "../sources/sources.module";
 import { QueueModule } from "../queue/queue.module";
 import { SignalApprovalsController } from "./signal-approvals.controller";
+import { SettleConsumer } from "./settle.consumer";
+import { SettleService } from "./settle.service";
 import { AccountsController, OperationsController, PositionsController } from "./trading.controller";
 import { VirtualAccountsService } from "./virtual-accounts.service";
 import { VirtualTradingService } from "./virtual-trading.service";
@@ -27,6 +29,8 @@ import { VirtualTradingService } from "./virtual-trading.service";
     OpenModeService,
     OperatorBotService,
     MarketWatchService,
+    SettleService,
+    SettleConsumer,
   ],
   exports: [VirtualAccountsService, VirtualTradingService, ApprovalFlowService, KillSwitchService, OpenModeService],
 })

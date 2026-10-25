@@ -95,17 +95,18 @@ https://t.me/traderosho/4375
 - `{{direction}}` hiển thị **Long/Short**.
 - Bài đầu tiên **đính kèm ảnh card gen bằng code** (từ dữ liệu vị thế đã xác minh — không chụp MT5; gửi dạng photo + caption là nội dung trên; caption Telegram giới hạn 1024 ký tự). Có **2 kind ảnh card** (`virtual_positions.card_kind`):
   - **`pnl-strip`** (mặc định) — 1280×180: symbol/direction/size + `entry → mark` + PnL lớn.
-  - **`position-stats`** — 1280×540, label tiếng Việt: badge L/S + symbol + tên account + `Cross {lev}X`; PNL (USDT) + ROI; *Kích thước / Margin / Tỉ lệ ký quỹ*; *Giá vào lệnh / Giá đánh dấu / Giá thanh lý* (margin = notional/leverage, ROI = PnL/margin, thanh lý tính bằng `liquidationPrice()`).
-  - `/pos` mở dialog 2 nút hỏi kind (render job delayed 5 phút — hết giờ tự render `pnl-strip`); card TP/SL **kế thừa** kind từ card mở; ingest/REST mặc định `pnl-strip` (REST truyền được `cardKind`). Card mở render từ snapshot **đông cứng lúc yêu cầu** (volume = `size` + `status=OPEN`) nên không hỏng khi position đóng trong 5 phút chờ; card TP/SL/close render `status=CLOSED`.
+  - **`position-stats`** — 1040×480 (page 520×240 render ở 2×, font IBM Plex Sans nhúng offline, chuỗi ưu tiên `BinancePlex` nếu máy có sẵn), palette Binance dark (`#181a20` nền, `#0ecb81` lãi/long, `#f6465d` lỗ/short, `#848e9c` nhãn/số 0), label tiếng Việt cỡ 17px, số giữ 18px, header +2px; badge L/S + symbol + tên account + `Cross {lev}X`; PNL (USDT) + ROI; *Kích thước / Margin / Tỉ lệ ký quỹ*; *Giá vào lệnh / Giá đánh dấu / Giá thanh lý*. Card **tự tính** `PNL = dir × (mark−entry) × size` và `ROI = PNL / (size × entry / leverage)` (không phụ thuộc `floatingProfit`; field đó chỉ là fallback khi thiếu giá/size), `notional = size × mark`, `margin = notional/leverage` (hai số này đổi theo mark), `tỉ lệ ký quỹ = Σ maintenance margin (MMR theo bậc notional) / equity tài khoản` (cross account, cùng công thức `/accounts`; snapshot cũ fallback `MMR × leverage`), thanh lý tính bằng `crossLiquidationPrice()` (công thức Cross Binance, có thể hiển thị `--`); PNL = 0 hiển thị xám `#848e9c`; `entry` lấy từ signal (fallback mid), `mark` lấy live tại lúc render.
+  - `/pos` mở dialog 2 nút hỏi kind (render job delayed 5 phút — hết giờ tự render `pnl-strip`); bấm nút chỉ promote job **còn delayed** (marker `delayMs`) trong các publication `PENDING/RETRY_PENDING` của position, nên TP/SL nổ giữa dialog không cướp lựa chọn; card TP/SL **kế thừa** kind từ card mở — đọc `virtual_positions.card_kind` **lúc render** và bị render consumer **hold tới khi dialog kết thúc** (kind bị đóng băng lúc enqueue sẽ ra `pnl-strip` oan nếu TP nổ trước khi bấm chọn); ingest/REST mặc định `pnl-strip` (REST truyền được `cardKind`). Card mở **đông cứng entry/volume/status lúc yêu cầu** (`entry` = signal entry, volume = `size`, `status=OPEN`) nên không hỏng khi position đóng trong 5 phút chờ; `mark` do API (render consumer) fetch live tại lúc render (API bỏ trống `markPrice`), nên PNL, kích thước và margin phản ánh giá tại lúc render; ROI vẫn tính trên margin ban đầu. Card TP/SL/close render `status=CLOSED`.
 - Mọi bài cập nhật sau bài đầu tiên **reply vào bài đầu tiên** (xem rule #7).
 - Thiếu `source_url` bắt buộc → validation error/review, **không bịa link**.
 - Ngoại lệ rule "luôn có tên destination channel": mẫu này không in tên kênh vì bài đăng nằm ngay trong channel đích (tên kênh là implicit).
 
-## 6. Tách render/gửi (worker/API)
+## 6. Tách render/gửi (trong API)
 
-- Worker (`card-render`): chỉ render PNG bằng Chromium vào volume `artifacts` chung.
-- API (`telegram-send`): dựng caption từ DB, đọc PNG, gửi Telegram, cập nhật `telegram_publications`.
-- API (`market-watch`): poll giá TP/SL, enqueue publish khi hit.
+- API (`card-render`): `apps/api/src/reporting/render.consumer.ts` render PNG bằng Chromium (Playwright) vào volume `artifacts`; chạy trong process API, `concurrency: 1`, tắt bằng `RENDER_WORKER_ENABLED=false`. Card **TP/SL/close được hold** (`styleDialogRemainingMs` → `job.moveToDelayed` + `DelayedError`, re-check mỗi 5s) khi position còn dialog `/pos` đang mở, và kind đọc **lúc render** — card update không bao giờ ra kind cũ do chốt lúc enqueue.
+- API (`telegram-send`): dựng caption từ DB, đọc PNG, gửi Telegram, cập nhật `telegram_publications`. Retry **10 × 60s** (phải vượt hold 5 phút); trong lúc chờ card gốc thì đổi row sang `RETRY_PENDING`; hết attempts → `FINAL_FAILURE` + bot báo `❌ Không đăng được card …`.
+- API (`market-watch`): poll giá TP/SL, **chỉ detect** rồi enqueue 1 job `position-settle` (jobId dedupe theo vị thế + TP ordinal). Settle: render + reply card trước (chờ tối đa `SETTLE_PUBLISH_TIMEOUT_MS`, mặc định 60s), **mới** đóng lệnh với giá đóng băng — xem [04-risk-execution/risk-engine.md](../04-risk-execution/risk-engine.md) §5.
+- `apps/screenshot-worker` chỉ còn là legacy/rollback, không nằm trong compose stack.
 - Không lưu metadata ảnh trong DB; file PNG dọn theo mtime sau 7 ngày.
 
 ## 7. Liên kết tài liệu

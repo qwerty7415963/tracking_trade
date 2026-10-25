@@ -16,7 +16,7 @@ export type RenderOutcome = RenderSuccess | RenderFailure;
 /** Bump a kind's number when its template changes markup. */
 export const TEMPLATE_VERSIONS: Record<CardKind, number> = {
   "pnl-strip": 1,
-  "position-stats": 6,
+  "position-stats": 10,
 };
 /** Original strip version — kept for existing imports/tests. */
 export const TEMPLATE_VERSION = TEMPLATE_VERSIONS["pnl-strip"];
@@ -42,7 +42,7 @@ export class FloatingPnLCardRenderer {
     kind: CardKind = DEFAULT_CARD_KIND,
   ): Promise<RenderOutcome> {
     const theme = kind === "position-stats" ? STATS_CARD_THEME : this.theme;
-    const validation = validateSnapshot(snapshot, theme, now);
+    const validation = validateSnapshot(snapshot, theme, now, kind);
     if (!validation.ok) return validation;
     const full = snapshot as PositionSnapshot;
 
@@ -59,10 +59,19 @@ export class FloatingPnLCardRenderer {
     let browser: Browser | null = null;
     try {
       browser = await this.withTimeout(this.browserFactory(), "browser launch");
+      // `theme.width/height` are output pixels; the page is authored in CSS px
+      // and rasterised at `theme.scale` (2× for the stats card).
+      const scale = theme.scale ?? 1;
       const page: Page = await browser.newPage({
-        viewport: { width: theme.width, height: theme.height },
+        viewport: { width: theme.width / scale, height: theme.height / scale },
+        deviceScaleFactor: scale,
       });
       await this.withTimeout(page.setContent(html, { waitUntil: "load" }), "page load");
+      // Inline base64 fonts still load asynchronously; wait before snapshotting.
+      await this.withTimeout(
+        page.evaluate(() => document.fonts.ready.then(() => undefined)),
+        "font load",
+      );
       const png = await this.withTimeout(
         page.screenshot({ type: "png", fullPage: false }),
         "screenshot",

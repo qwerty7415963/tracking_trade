@@ -30,6 +30,12 @@ describe("loadAppConfig", () => {
     expect(loadAppConfig({ OPERATOR_USERNAMES: "alice" }).tradingEnabled).toBe(false);
   });
 
+  it("hosts the card render consumer unless explicitly disabled", () => {
+    expect(loadAppConfig({}).renderWorkerEnabled).toBe(true);
+    expect(loadAppConfig({ RENDER_WORKER_ENABLED: "true" }).renderWorkerEnabled).toBe(true);
+    expect(loadAppConfig({ RENDER_WORKER_ENABLED: "false" }).renderWorkerEnabled).toBe(false);
+  });
+
   it("defaults database and redis urls to local compose", () => {
     const config = loadAppConfig({});
     expect(config.databaseUrl).toContain("localhost:5434");
@@ -39,20 +45,20 @@ describe("loadAppConfig", () => {
   it("defaults paper-trading settings", () => {
     const config = loadAppConfig({});
     expect(config.hyperliquidApiUrl).toBe("https://api.hyperliquid.xyz");
-    expect(config.riskBudgetUsdc).toBe(50);
     expect(config.marketPollMs).toBe(5000);
+    expect(config.settlePublishTimeoutMs).toBe(60_000);
     expect(config.defaultAccountId).toBe("");
   });
 
   it("parses paper-trading overrides", () => {
     const config = loadAppConfig({
-      RISK_BUDGET_USDC: "25",
       MARKET_POLL_MS: "10000",
+      SETTLE_PUBLISH_TIMEOUT_MS: "30000",
       VIRTUAL_DEFAULT_ACCOUNT_ID: "acc-1",
       REPORT_DESTINATION_CHAT_ID: "@chan",
     });
-    expect(config.riskBudgetUsdc).toBe(25);
     expect(config.marketPollMs).toBe(10000);
+    expect(config.settlePublishTimeoutMs).toBe(30000);
     expect(config.defaultAccountId).toBe("acc-1");
     expect(config.reportDestinationChatId).toBe("@chan");
   });

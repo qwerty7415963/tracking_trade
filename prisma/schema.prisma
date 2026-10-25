@@ -330,14 +330,15 @@ model ParserProfile {
 }
 
 model TradableCoin {
-  id        String   @id @default(uuid())
-  symbol    String   @unique
-  enabled   Boolean  @default(true)
-  notes     String?
-  createdBy String?  @map("created_by")
-  updatedBy String?  @map("updated_by")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id          String   @id @default(uuid())
+  symbol      String   @unique
+  enabled     Boolean  @default(true)
+  notionalUsd Decimal  @default(50000) @map("notional_usd") @db.Decimal(30, 8)
+  notes       String?
+  createdBy   String?  @map("created_by")
+  updatedBy   String?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   @@map("tradable_coins")
 }

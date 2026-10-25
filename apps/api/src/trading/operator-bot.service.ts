@@ -86,6 +86,7 @@ const HELP = [
   "/coin_add - add coins (1 per line after command)",
   "/coin_del - delete coins (1 per line)",
   "/coin_enable|/coin_disable <SYM> [...] - toggle coins",
+  "/vol [SYM] [amount|reset] - view/set fixed position notional (USDC)",
   "/cancel - abort a pending manual completion",
   "/help - this message",
 ].join("\n");
@@ -978,6 +979,43 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           }
         }
         await reply(out.join("\n"));
+        return;
+      }
+      case "vol": {
+        if (parsed.args.length === 0) {
+          const rows = await this.coins.listNotionals();
+          if (rows.length === 0) {
+            await reply("No tradable coins yet. Use /coin_add to add the first symbol.");
+            return;
+          }
+          await reply(
+            rows
+              .map((row) => `${row.symbol} notional=${row.notionalUsd}${row.enabled ? "" : " (disabled)"}`)
+              .join("\n"),
+          );
+          return;
+        }
+        if (parsed.args.length !== 2) {
+          await reply("Usage: /vol <SYM> <amount|reset>");
+          return;
+        }
+        const [ref, value] = parsed.args;
+        try {
+          if (value.toLowerCase() === "reset") {
+            const updated = await this.coins.resetNotional(ref, actor);
+            await reply(`${updated.symbol} notional=${updated.notionalUsd} (default)`);
+            return;
+          }
+          const amount = Number(value);
+          if (!Number.isFinite(amount) || amount <= 0) {
+            await reply("Usage: /vol <SYM> <amount|reset>");
+            return;
+          }
+          const updated = await this.coins.setNotional(ref, amount, actor);
+          await reply(`${updated.symbol} notional=${updated.notionalUsd}`);
+        } catch (err) {
+          await reply(`ERR ${ref} — ${err instanceof Error ? err.message : "unknown error"}`);
+        }
         return;
       }
       default:

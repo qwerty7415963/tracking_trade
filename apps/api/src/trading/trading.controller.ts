@@ -1,7 +1,20 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
-import { IsIn, IsInt, IsNumber, IsOptional, IsString, Min } from "class-validator";
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+  Req,
+  UseGuards,
+} from "@nestjs/common";
+import { IsIn, IsInt, IsNumber, IsOptional, IsPositive, IsString, Min } from "class-validator";
 import { KillSwitchMode } from "@tracking-auto/domain";
 import { OperatorGuard } from "../auth/operator.guard";
+import { CoinsService } from "../coins/coins.service";
 import { ApprovalFlowService } from "./approval-flow.service";
 import { KillSwitchService } from "./kill-switch.service";
 import { OpenModeService } from "./open-mode.service";
@@ -76,11 +89,18 @@ class OpenModeDto {
   mode!: string;
 }
 
+class NotionalDto {
+  @IsNumber()
+  @IsPositive()
+  notionalUsd!: number;
+}
+
 @Controller("v1/operations")
 export class OperationsController {
   constructor(
     private readonly killSwitch: KillSwitchService,
     private readonly openMode: OpenModeService,
+    private readonly coins: CoinsService,
   ) {}
 
   private actor(req: OperatorRequest): string {
@@ -103,6 +123,28 @@ export class OperationsController {
   @UseGuards(OperatorGuard)
   setOpenMode(@Body() dto: OpenModeDto, @Req() req: OperatorRequest) {
     return this.openMode.setMode(dto.mode, this.actor(req)).then((mode) => ({ mode }));
+  }
+
+  @Get("notional")
+  @UseGuards(OperatorGuard)
+  listNotional() {
+    return this.coins.listNotionals();
+  }
+
+  @Put("notional/:symbol")
+  @UseGuards(OperatorGuard)
+  setNotional(
+    @Param("symbol") symbol: string,
+    @Body() dto: NotionalDto,
+    @Req() req: OperatorRequest,
+  ) {
+    return this.coins.setNotional(symbol, dto.notionalUsd, this.actor(req));
+  }
+
+  @Delete("notional/:symbol")
+  @UseGuards(OperatorGuard)
+  resetNotional(@Param("symbol") symbol: string, @Req() req: OperatorRequest) {
+    return this.coins.resetNotional(symbol, this.actor(req));
   }
 }
 

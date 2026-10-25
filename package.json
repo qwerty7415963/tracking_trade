@@ -7,8 +7,11 @@
     "apps/*",
     "packages/*"
   ],
+  "engines": {
+    "node": ">=24.22.1 <25"
+  },
   "scripts": {
-    "dev": "node --watch -r ts-node/register -r tsconfig-paths/register apps/api/src/main.ts",
+    "dev": "node --watch-path=apps/api/src --watch-path=packages -r ts-node/register -r tsconfig-paths/register apps/api/src/main.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p packages/domain && tsc -p packages/card-renderer && tsc -p packages/market-data && tsc -p packages/connectors && tsc -p packages/database && tsc -p packages/reporting && tsc -p packages/shared && tsc -p apps/api && tsc -p apps/worker && tsc -p apps/screenshot-worker",
     "test": "jest",

@@ -31,41 +31,16 @@ services:
       REDIS_URL: redis://redis:6379
       ARTIFACTS_DIR: /data/artifacts
       # Operator bot lives in the API process: one HTTP service, one poller.
-      # Keep OPERATOR_BOT_ENABLED=false on worker to avoid duplicate DMs (409).
       OPERATOR_BOT_ENABLED: "true"
+      # Card rendering (Chromium) runs inside the API; set "false" on extra
+      # HTTP-only replicas.
+      RENDER_WORKER_ENABLED: "true"
     volumes:
-      # Bind mount (repo-root ./artifacts) so local `npm run dev` API
-      # sees the same PNGs the worker renders. Do NOT use a named volume.
+      # Bind mount (repo-root ./artifacts) so rendered PNGs are visible on the
+      # host and survive container restarts. Do NOT use a named volume.
       - ../artifacts:/data/artifacts
     ports:
       - "3000:3000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-
-  worker:
-    build:
-      context: ..
-      dockerfile: apps/screenshot-worker/Dockerfile
-    image: tracking-trade-worker:local
-    env_file:
-      - ../.env
-    environment:
-      DATABASE_URL: postgresql://tracking:tracking@postgres:5432/tracking
-      REDIS_URL: redis://redis:6379
-      ARTIFACTS_DIR: /data/artifacts
-      # Bot poller is hosted by the api service; worker must stay off.
-      OPERATOR_BOT_ENABLED: "false"
-    volumes:
-      - ../artifacts:/data/artifacts
     depends_on:
       postgres:
         condition: service_healthy

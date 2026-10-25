@@ -28,6 +28,8 @@ export interface RenderJobData {
   cardKind?: CardKind;
   /** Position size frozen when the card was requested (open card). */
   volume?: number;
+  /** Non-zero only for the /pos style dialog: marks the job being chosen. */
+  delayMs?: number;
 }
 
 export interface SendJobData {
@@ -122,24 +124,88 @@ export class RendersService {
     cardKind: CardKind,
     actor: string,
   ): Promise<"promoted" | "expired"> {
+    const { outcome } = await this.promoteFirstDelayed([publicationId], cardKind, actor);
+    return outcome;
+  }
+
+  /**
+   * Same promotion across every pending publication of one position.
+   *
+   * TP/SL/close cards enqueue their render job *without* a delay, so right
+   * after a TP the newest PENDING row is usually not the dialog job: picking
+   * it answers "Hết thời gian chọn" while the real dialog job is still
+   * delayed. Choose the job that carries the dialog marker (`delayMs`); fall
+   * back to a plain delayed job for jobs enqueued before that marker existed.
+   */
+  async promoteFirstDelayed(
+    publicationIds: string[],
+    cardKind: CardKind,
+    actor: string,
+  ): Promise<{ publicationId: string | null; outcome: "promoted" | "expired" }> {
     const queue = this.queue(RENDER_QUEUE_NAME);
     try {
-      const jobId = `${RENDER_JOB_ID_PREFIX}${publicationId}`;
-      const job = await queue.getJob(jobId);
-      if (!job) return "expired";
-      const state = await job.getState();
-      if (state !== "delayed" && state !== "waiting" && state !== "prioritized") return "expired";
-      const data = job.data as RenderJobData;
-      await job.remove();
+      const candidates: Array<{ publicationId: string; job: Job; state: string; dialog: boolean }> = [];
+      const states: Record<string, string> = {};
+      for (const publicationId of publicationIds) {
+        const job = await queue.getJob(`${RENDER_JOB_ID_PREFIX}${publicationId}`);
+        if (!job) {
+          states[publicationId] = "missing";
+          continue;
+        }
+        const state = await job.getState();
+        states[publicationId] = state;
+        if (state !== "delayed" && state !== "waiting" && state !== "prioritized") continue;
+        const data = job.data as RenderJobData;
+        candidates.push({ publicationId, job, state, dialog: Number(data.delayMs ?? 0) > 0 });
+      }
+      const pick = candidates.find((c) => c.dialog) ?? candidates.find((c) => c.state === "delayed");
+      if (!pick) {
+        await this.audit.record(actor, "render.promotion_miss", { publicationIds, states });
+        return { publicationId: null, outcome: "expired" };
+      }
+      const data = pick.job.data as RenderJobData;
+      await pick.job.remove();
       await queue.add("render-card", { ...data, cardKind }, {
         attempts: 3,
         backoff: { type: "exponential", delay: 2000 },
         removeOnComplete: 100,
         removeOnFail: 200,
-        jobId,
+        jobId: `${RENDER_JOB_ID_PREFIX}${pick.publicationId}`,
       });
-      await this.audit.record(actor, "render.promoted", { publicationId, cardKind });
-      return "promoted";
+      await this.audit.record(actor, "render.promoted", {
+        publicationId: pick.publicationId,
+        cardKind,
+        jobState: pick.state,
+        dialogJob: pick.dialog,
+      });
+      return { publicationId: pick.publicationId, outcome: "promoted" };
+    } finally {
+      await queue.close();
+    }
+  }
+
+  /**
+   * Milliseconds left before a pending /pos style dialog expires, for the
+   * given publications (0 when none is waiting). Uses the same rule
+   * `promoteFirstDelayed` uses to recognise the dialog job: `delayMs` marker
+   * + still in the `delayed` state. Update cards poll this so they only
+   * render after the operator picked (or missed) the style.
+   */
+  async dialogRemainingMs(publicationIds: string[]): Promise<number> {
+    if (publicationIds.length === 0) return 0;
+    const queue = this.queue(RENDER_QUEUE_NAME);
+    try {
+      for (const publicationId of publicationIds) {
+        const job = await queue.getJob(`${RENDER_JOB_ID_PREFIX}${publicationId}`);
+        if (!job) continue;
+        if (Number((job.data as RenderJobData).delayMs ?? 0) <= 0) continue;
+        if ((await job.getState()) !== "delayed") continue;
+        const delay = Number(job.opts.delay ?? 0);
+        if (delay <= 0) continue;
+        const remaining = job.timestamp + delay - Date.now();
+        if (remaining > 0) return remaining;
+      }
+      return 0;
     } finally {
       await queue.close();
     }

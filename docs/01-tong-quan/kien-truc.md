@@ -75,8 +75,8 @@ Telegram Connector ---- X Connector
           +-------+--------+
           |                |
           v                v
-   Screenshot Worker  Telegram Publisher
-   (render + publish) (reply bài gốc)
+   API (render + publish)
+   (Chromium card, Telegram reply)
 ```
 
 ### 3.1 Giải thích luồng
@@ -87,10 +87,10 @@ Telegram Connector ---- X Connector
 4. **Signal Parser** chuyển nội dung thành tín hiệu có cấu trúc (chuẩn hóa).
 5. **Signal Matcher** ghép update với tín hiệu gốc.
 6. **Approval**: mode `AUTO` tự mở khi đủ field; mode `APPROVE` chờ operator (`/approve` hoặc nút Approve) — approve đồng nghĩa mở lệnh. Update mơ hồ → review queue + noti operator.
-7. **Virtual Trading Service** tính size từ risk budget, chạy risk gate, chia multi-TP (TP1 50%, còn lại chia đều).
+7. **Virtual Trading Service** tính size từ notional cố định theo ticker, chạy risk gate, chia multi-TP (TP1 50%, còn lại chia đều).
 8. **Virtual Positions** lưu vị thế giấy gắn signal gốc (traceability).
 9. **Hyperliquid Market Data** (`allMids`, mapping data-driven từ `meta`) + **TP/SL detector** poll giá, phát hiện hit.
-10. **Screenshot Worker** chỉ render card PNG; **API** dựng caption, gửi báo cáo Telegram, reply đúng bài gốc và chạy market-watch TP/SL.
+10. **API** render card PNG (Chromium, consumer `card-render` trong process API), dựng caption, gửi báo cáo Telegram, reply đúng bài gốc và chạy market-watch TP/SL.
 
 ## 4. Nguyên tắc thiết kế chủ đạo
 

@@ -7,7 +7,7 @@ import {
 } from "@nestjs/common";
 import { Prisma, VirtualPosition } from "@prisma/client";
 import {
-  calcPerpSize,
+  calcPerpSizeByNotional,
   detectTpSlHit,
   evaluateVirtualRisk,
   realizedPnl,
@@ -16,6 +16,7 @@ import {
 } from "@tracking-auto/domain";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
+import { CoinsService } from "../coins/coins.service";
 import { PrismaService } from "../database/prisma.service";
 import { MarketDataService } from "../market-data/market-data.service";
 import { KillSwitchService } from "./kill-switch.service";
@@ -28,8 +29,6 @@ export const MARKET_WATCH_QUEUE_NAME = "market-watch";
 
 const OPEN_STATUSES = ["OPEN", "TP_HIT"];
 const MAX_POSITIONS = Number.POSITIVE_INFINITY;
-const MAX_DAILY_LOSS = 300;
-const MAX_RISK_PER_TRADE = 100;
 
 function asNumber(value: unknown): number {
   return value instanceof Object && "toNumber" in value
@@ -45,11 +44,10 @@ function asPriceArray(value: unknown): number[] {
 export interface MarketHitEvent {
   positionId: string;
   kind: "TP" | "SL";
-  closePrice: number;
-  closedSize: number;
-  realized: number;
-  remainingSize: number;
-  status: string;
+  /** Price frozen at detection: the card and the close both use it. */
+  markPrice: number;
+  /** TP ordinal at detection (filledTps.length) — settle-job dedupe key. */
+  tpIndex: number;
 }
 
 @Injectable()
@@ -59,6 +57,7 @@ export class VirtualTradingService {
     private readonly audit: AuditService,
     private readonly marketData: MarketDataService,
     private readonly accounts: VirtualAccountsService,
+    private readonly coins: CoinsService,
     private readonly killSwitch: KillSwitchService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
@@ -107,9 +106,13 @@ export class VirtualTradingService {
     const coin = await this.marketData.resolveCoin(version.instrument);
     if (!coin) throw new ConflictException(`NO_SYMBOL_MAP: ${version.instrument} not on Hyperliquid`);
     const mid = await this.marketData.getMid(coin);
-    if (mid === null) throw new ConflictException(`NO_QUOTE for ${coin}: refusing to guess entry`);
+    if (mid === null) throw new ConflictException(`NO_QUOTE for ${coin}: refusing to open without a mark`);
 
-    const entry = mid;
+    const signalEntry = version.entry == null ? null : asNumber(version.entry);
+    if (signalEntry !== null && (!Number.isFinite(signalEntry) || signalEntry <= 0)) {
+      throw new ConflictException(`INVALID_ENTRY: ${String(version.entry)}`);
+    }
+    const entry = signalEntry ?? mid;
     const stopLoss = version.stopLoss === null ? null : asNumber(version.stopLoss);
     const tps = asPriceArray(version.takeProfits);
     if (stopLoss === null) throw new ConflictException("STOP_LOSS_REQUIRED");
@@ -117,10 +120,10 @@ export class VirtualTradingService {
 
     const spec = await this.marketData.assetSpec(coin);
     if (!spec) throw new ConflictException(`NO_SYMBOL_MAP: no spec for ${coin}`);
-    const sizing = calcPerpSize({
-      riskBudget: this.config.riskBudgetUsdc,
+    const targetNotional = await this.coins.notionalFor(coin);
+    const sizing = calcPerpSizeByNotional({
+      notional: targetNotional,
       entryPrice: entry,
-      stopLossPrice: stopLoss,
       minSize: spec.minSize,
       sizeIncrement: spec.sizeIncrement,
     });
@@ -156,10 +159,6 @@ export class VirtualTradingService {
       equity,
       openPositions: opens.length,
       maxPositions: MAX_POSITIONS,
-      dailyRealizedLoss: await this.accounts.dailyRealizedLoss(accountId),
-      maxDailyLoss: MAX_DAILY_LOSS,
-      estimatedRisk: sizing.size * Math.abs(entry - stopLoss),
-      maxRiskPerTrade: MAX_RISK_PER_TRADE,
       isMutation: false,
     });
     await this.prisma.riskEvent.create({
@@ -167,7 +166,15 @@ export class VirtualTradingService {
         checkName: "VIRTUAL_OPEN",
         passed: risk.passed,
         reason: risk.passed ? null : risk.failures.join(","),
-        configJson: { signalId, versionId: version.id, accountId } as unknown as Prisma.InputJsonValue,
+        configJson: {
+          signalId,
+          versionId: version.id,
+          accountId,
+          coin,
+          targetNotional,
+          size: sizing.size,
+          notional: sizing.size * entry,
+        } as unknown as Prisma.InputJsonValue,
       },
     });
     if (!risk.passed) {
@@ -197,6 +204,10 @@ export class VirtualTradingService {
       coin,
       size: sizing.size,
       entry,
+      targetNotional,
+      notional: sizing.size * entry,
+      entrySource: signalEntry === null ? "mid" : "signal",
+      markPriceAtOpen: mid,
     });
     return { position, created: true };
   }
@@ -340,34 +351,16 @@ export class VirtualTradingService {
         remainingTps: tps.slice(filled.length),
       });
       if (hit.kind === "NONE") continue;
-      try {
-        if (hit.kind === "TP") {
-          const r = await this.applyTpHit(position.id, mark, "worker");
-          events.push({
-            positionId: position.id,
-            kind: "TP",
-            closePrice: mark,
-            closedSize: r.closedSize,
-            realized: r.realized,
-            remainingSize: asNumber(r.position.remainingSize),
-            status: r.position.status,
-          });
-        } else {
-          const r = await this.applySlHit(position.id, mark, "worker");
-          events.push({
-            positionId: position.id,
-            kind: "SL",
-            closePrice: mark,
-            closedSize: (r as { closedSize: number }).closedSize,
-            realized: (r as { realized: number }).realized,
-            remainingSize: 0,
-            status: "SL_HIT",
-          });
-        }
-      } catch {
-        // Per-position failure must never break the whole poll cycle.
-        continue;
-      }
+      // Detect only. The card is rendered and replied under the original
+      // post first, the position is closed afterwards (SettleService), so a
+      // Telegram hiccup can never reorder the ledger. The market-watch
+      // worker enqueues one settle job per event; `tpIndex` dedupes it.
+      events.push({
+        positionId: position.id,
+        kind: hit.kind,
+        markPrice: mark,
+        tpIndex: filled.length,
+      });
     }
     return events;
   }

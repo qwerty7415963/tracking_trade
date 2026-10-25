@@ -71,6 +71,7 @@ OPEN -> CANCELLED
 - TP1 đóng 50%, các TP còn lại chia đều; TP duy nhất đóng 100%.
 - SL đóng toàn bộ phần còn lại; SL thắng khi giá chạm cả 2 phía.
 - Mỗi lần đóng ghi realized PnL vào ledger; số dư chỉ đổi qua ledger.
+- Chạm TP/SL: **card đăng trước, lệnh đóng sau** (settle job, giá đóng băng lúc detect — xem [04-risk-execution/risk-engine.md](../04-risk-execution/risk-engine.md) §5). Vị thế vì thế hiển thị `OPEN` thêm tối đa 60s.
 
 ## 4. Publication lifecycle
 
@@ -82,12 +83,13 @@ PENDING
 
 Nhánh khác:
 
-- `RETRY_PENDING` — lỗi tạm thời, sẽ retry.
+- `RETRY_PENDING` — render xong, đang gửi/retrying (kể cả lúc đang chờ card gốc) — **không còn là "chưa render" nên không che dialog chọn kind**.
 - `UNKNOWN` — kết quả gửi không rõ.
-- `FINAL_FAILURE` — lỗi vĩnh viễn.
+- `FINAL_FAILURE` — lỗi vĩnh viễn (render hỏng hoặc send hết attempts) → bot báo `❌ Không đăng được card …`.
 
 ### Quy tắc
 
+- `PENDING` = row mới tạo, render job chưa chạy (dialog `/pos` giữ row ở trạng thái này tối đa 5 phút).
 - **Publication lỗi không được mở/đóng vị thế.**
 - Publication `UNKNOWN` phải xử lý thận trọng để tránh bài trùng (xem retry/idempotency).
 

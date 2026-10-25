@@ -190,7 +190,7 @@ Vị thế giấy theo dõi giá Hyperliquid.
 | `coin` | Tên coin Hyperliquid đã resolve (ví dụ `ETH`, `PAXG`) |
 | `direction` | `LONG` \| `SHORT` |
 | `size` | Size mở (đơn vị coin) |
-| `entry_price` | Giá mid lúc mở |
+| `entry_price` | Giá entry của signal (fallback mid lúc mở) |
 | `stop_loss` | SL (bắt buộc) |
 | `take_profits` | Mảng TP theo thứ tự |
 | `leverage` | Đòn bẩy lúc mở (snapshot từ account) |
@@ -206,7 +206,7 @@ Quy tắc multi-TP: TP1 đóng 50%, các TP còn lại chia đều phần còn l
 
 ### 2.11 `virtual_transactions`
 
-Sổ cái (ledger) mọi biến động số dư: `DEPOSIT` / `WITHDRAW` / `REALIZED_PNL`, kèm `reference` và thời điểm. Nguồn duy nhất tính balance history và daily loss.
+Sổ cái (ledger) mọi biến động số dư: `DEPOSIT` / `WITHDRAW` / `REALIZED_PNL`, kèm `reference` và thời điểm. Nguồn duy nhất tính balance history và realized PnL.
 
 ### 2.12 `risk_events`
 
@@ -298,6 +298,7 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối (cho
 | `id` | Khóa chính |
 | `symbol` | Unique, chữ hoa (`BTC`, `ZEC`) |
 | `enabled` | Bật/tắt (tắt mềm an toàn hơn xóa) |
+| `notional_usd` | Notional cố định mỗi lệnh (USDC); BTC/ETH/SOL 100k, còn lại 50k |
 | `notes` | Ghi chú |
 | `created_by` / `updated_by` | Audit |
 | `created_at` / `updated_at` | Thời điểm |

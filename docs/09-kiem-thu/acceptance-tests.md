@@ -37,7 +37,7 @@
 - Cùng signal+version đang mở → **không tạo vị thế trùng**.
 - Thiếu quote/mapping → **từ chối**, không đoán giá.
 - Size sai step/min, margin thiếu, SL thiếu bị **chặn**.
-- **Daily loss limit** và **kill switch** chặn mở mới.
+- Notional cố định theo ticker (BTC/ETH/SOL 100k, còn lại 50k) và **kill switch** chặn mở mới; đổi notional qua `/vol` hoặc API có audit.
 - TP1 đóng **50%**, các TP còn lại chia đều; TP duy nhất đóng 100%.
 - SL đóng **toàn bộ** phần còn lại; SL thắng khi chạm cả 2 phía.
 - Mỗi lần đóng ghi realized PnL vào **ledger**; số dư chỉ đổi qua ledger.

@@ -4,7 +4,7 @@ import { validateSnapshot } from "./snapshot-validator";
 import { buildViewModel } from "./view-model";
 import { buildStatsViewModel, formatGrouped } from "./stats-view-model";
 import { renderCardHtml } from "./card-template";
-import { renderStatsHtml } from "./stats-card-template";
+import { renderStatsHtml, STATS_CARD_TUNING } from "./stats-card-template";
 import {
   FloatingPnLCardRenderer,
   parsePngDimensions,
@@ -78,6 +78,13 @@ describe("validateSnapshot", () => {
     );
     expect(result).toEqual(expect.objectContaining({ code: "INVALID_PNL" }));
   });
+
+  it("lets position-stats omit floatingProfit (it derives PnL itself)", () => {
+    const { floatingProfit: _dropped, ...rest } = snapshot();
+    void _dropped;
+    expect(validateSnapshot(rest, STATS_CARD_THEME, NOW, "position-stats").ok).toBe(true);
+    expect(validateSnapshot(rest, DEFAULT_CARD_THEME, NOW).ok).toBe(false);
+  });
 });
 
 describe("buildViewModel", () => {
@@ -138,21 +145,111 @@ describe("buildStatsViewModel", () => {
       marginType: "CROSS",
       accountName: "Vinh cưu",
       liquidationPrice: 2275,
+      maintenanceMarginRate: 0.01,
       ...overrides,
     });
   }
 
-  it("derives margin, ROI and margin ratio from leverage", () => {
-    // notional 1×4172.493, margin /10, ROI = 35.2/margin.
+  it("derives notional and margin at mark, ROI at entry margin, and MMR x leverage fallback", () => {
+    // PnL (4172.845−4172.493)×1, notional 1×mark, margin /10.
     const result = buildStatsViewModel(stats(), STATS_CARD_THEME);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.model.notionalText).toBe("4,172.85");
+    expect(result.model.marginText).toBe("417.28");
+    expect(result.model.roiText).toBe("+0.08%");
+    expect(result.model.marginRatioText).toBe("10.00%");
+    expect(result.model.pnlText).toBe("+0.35");
+    expect(result.model.pnlColor).toBe(STATS_CARD_THEME.positivePnl);
+  });
+
+  it("tracks the mark price for notional and margin", () => {
+    // 41.1924016427545 ETH: entry 2427.63, mark 2383.75, 10x.
+    const result = buildStatsViewModel(
+      stats({
+        volume: 41.1924016427545,
+        entryPrice: 2427.63,
+        currentPrice: 2383.75,
+        leverage: 10,
+        priceDigits: 2,
+      }),
+      STATS_CARD_THEME,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.notionalText).toBe("98,192.39");
+    expect(result.model.marginText).toBe("9,819.24");
+    expect(result.model.pnlText).toBe("-1,807.52");
+    expect(result.model.roiText).toBe("-18.08%");
+  });
+
+  it("ignores a stale floatingProfit when price × size are usable", () => {
+    const result = buildStatsViewModel(stats({ floatingProfit: 9999 }), STATS_CARD_THEME);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.pnlText).toBe("+0.35");
+  });
+
+  it("falls back to floatingProfit when prices are unusable", () => {
+    const result = buildStatsViewModel(
+      stats({ currentPrice: Number.NaN, floatingProfit: 12.5 }),
+      STATS_CARD_THEME,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.pnlText).toBe("+12.50");
+    expect(result.model.roiText).toBe("+3.00%");
+    // Mark is unusable: notional/margin fall back to entry.
     expect(result.model.notionalText).toBe("4,172.49");
     expect(result.model.marginText).toBe("417.25");
-    expect(result.model.roiText).toBe("+8.44%");
-    expect(result.model.marginRatioText).toBe("10.00%");
-    expect(result.model.pnlText).toBe("+35.20");
-    expect(result.model.pnlColor).toBe(STATS_CARD_THEME.positivePnl);
+  });
+
+  it("treats an unusable fallback PnL as zero", () => {
+    const result = buildStatsViewModel(
+      stats({ currentPrice: Number.NaN, floatingProfit: Number.NaN }),
+      STATS_CARD_THEME,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.pnlText).toBe("0.00");
+    expect(result.model.pnlColor).toBe(STATS_CARD_THEME.zeroPnl);
+  });
+
+  it("renders zero PnL neutral", () => {
+    const result = buildStatsViewModel(
+      stats({ entryPrice: 100, currentPrice: 100, volume: 2, floatingProfit: 0 }),
+      STATS_CARD_THEME,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.pnlText).toBe("0.00");
+    expect(result.model.pnlColor).toBe(STATS_CARD_THEME.zeroPnl);
+    const html = renderStatsHtml(result.model, STATS_CARD_THEME);
+    expect(html).toContain('class="big zero"');
+  });
+
+  it("derives PNL from prices and notional/margin from the live mark", () => {
+    // size 2: entry notional 200, mark notional 210, margin 42 at 5x.
+    const result = buildStatsViewModel(
+      stats({
+        volume: 2,
+        entryPrice: 100,
+        currentPrice: 105,
+        floatingProfit: 10,
+        leverage: 5,
+        priceDigits: 2,
+      }),
+      STATS_CARD_THEME,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.notionalText).toBe("210.00");
+    expect(result.model.marginText).toBe("42.00");
+    expect(result.model.pnlText).toBe("+10.00");
+    // ROI uses the entry margin (200/5), not the live margin.
+    expect(result.model.roiText).toBe("+25.00%");
+    // No accountMarginRatio: legacy fallback is MMR × leverage.
+    expect(result.model.marginRatioText).toBe("5.00%");
   });
 
   it("shows -- when leverage and liquidation are missing", () => {
@@ -169,11 +266,31 @@ describe("buildStatsViewModel", () => {
     expect(result.model.marginTypeText).toBe("Cross ?X");
   });
 
+  it("uses the account cross margin ratio supplied by the API", () => {
+    // 0.0012718 = maintenance 12.75 / equity 10025 from the API snapshot.
+    const result = buildStatsViewModel(
+      stats({ accountMarginRatio: 0.0012718 }),
+      STATS_CARD_THEME,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.marginRatioText).toBe("0.13%");
+  });
+
+  it("renders -- when the account ratio is unavailable", () => {
+    const result = buildStatsViewModel(
+      stats({ accountMarginRatio: null }),
+      STATS_CARD_THEME,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.marginRatioText).toBe("--");
+  });
+
   it("picks the S badge, cross-20x chip and negative colors", () => {
     const result = buildStatsViewModel(
       stats({
         direction: "SELL",
-        floatingProfit: -12.4,
         leverage: 20,
         accountName: "  ",
       }),
@@ -185,8 +302,11 @@ describe("buildStatsViewModel", () => {
     expect(result.model.directionColor).toBe(STATS_CARD_THEME.sellColor);
     expect(result.model.marginTypeText).toBe("Cross 20X");
     expect(result.model.accountName).toBe("");
-    expect(result.model.pnlText).toBe("-12.40");
-    expect(result.model.roiText).toBe("-5.94%");
+    // SELL loses when mark > entry: −(4172.845−4172.493)×1.
+    expect(result.model.pnlText).toBe("-0.35");
+    expect(result.model.roiText).toBe("-0.17%");
+    // No accountMarginRatio: legacy MMR 1% × 20x.
+    expect(result.model.marginRatioText).toBe("20.00%");
     expect(result.model.pnlColor).toBe(STATS_CARD_THEME.negativePnl);
   });
 
@@ -197,9 +317,9 @@ describe("buildStatsViewModel", () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.model.entryText).toBe("4172.493");
-    expect(result.model.markText).toBe("4172.845");
-    expect(result.model.liqText).toBe("4010.500");
+    expect(result.model.entryText).toBe("4,172.493");
+    expect(result.model.markText).toBe("4,172.845");
+    expect(result.model.liqText).toBe("4,010.500");
   });
 });
 
@@ -226,24 +346,66 @@ describe("renderStatsHtml", () => {
     ]) {
       expect(html).toContain(label);
     }
-    // Badge "L" inside the side cell.
-    expect(html).toMatch(/<div class="side">L<\/div>/);
-    expect(html).toContain(`${STATS_CARD_THEME.width}px`);
-    expect(html).toContain(`${STATS_CARD_THEME.height}px`);
-    // Binance chrome: indicator bars, share svg, dotted underlines, tag borders.
-    expect(html).toContain('class="indicator"');
-    expect(html).toContain('class="green"');
-    expect(html).toContain('class="gray"');
-    expect((html.match(/class="green"/g) ?? []).length).toBe(2);
-    expect((html.match(/class="gray"/g) ?? []).length).toBe(2);
-    expect((html.match(/<svg/g) ?? []).length).toBe(2);
-    expect(html).toContain("border-bottom:2px dotted #687381");
-    expect(html).toContain("border:1px solid #414b58");
-    expect(html).toContain(STATS_CARD_THEME.background);
-    expect(html).toContain(STATS_CARD_THEME.positivePnl);
-    // Selective dotted underlines — 5 labels (ROI, Tỉ lệ ký quỹ, 3 prices).
-    expect((html.match(/class="label dotted"/g) ?? []).length).toBe(5);
-    // No placeholder spans in the reference design.
+    // Badge "L" in the header.
+    expect(html).toMatch(/<span class="badge long"><span class="badge-txt">L<\/span><\/span>/);
+    expect(html).toContain(
+      `translate(${STATS_CARD_TUNING.badgeTextOffsetX}px,${STATS_CARD_TUNING.badgeTextOffsetY}px)`,
+    );
+    // CSS is authored at theme.width/scale (420) and scaled by the renderer.
+    expect(html).toContain(`${STATS_CARD_THEME.width / 2}px`);
+    expect(html).toContain(`${STATS_CARD_THEME.height / 2}px`);
+    // Embedded IBM Plex Sans, no network font fetch.
+    expect(html).toContain("@font-face");
+    expect(html).toContain("IBM Plex Sans");
+    expect(html).toContain("data:font/woff2;base64,");
+    // Binance chrome: indicator bars, share/swap svgs, dotted underlines, tags.
+    expect(html).toContain('class="bars"');
+    // Thousands separators are wrapped so the comma can be nudged optically.
+    expect(html).toContain('4<span class="num-sep">,</span>172.85');
+    expect(html).toContain(`margin-left:${STATS_CARD_TUNING.numberSepShift}px`);
+    expect((html.match(/class="bar-item/g) ?? []).length).toBe(4);
+    expect((html.match(/class="bar-item off"/g) ?? []).length).toBe(1);
+    expect((html.match(/<rect/g) ?? []).length).toBe(4);
+    expect((html.match(/<circle/g) ?? []).length).toBe(7); // 3 share icon + 4 dots
+    expect((html.match(/<svg/g) ?? []).length).toBe(6);
+    // Swap icon: heads reversed (top ←, bottom →), one wing per tip, wings
+    // flaring out of the gap — geometry derived from the tunable knobs.
+    const swapGap = STATS_CARD_TUNING.swapLineGap;
+    const swapWing = STATS_CARD_TUNING.swapWingLen;
+    expect(html).toContain(
+      `d="M20 ${12 - swapGap / 2}H4l${swapWing} -${swapWing}M4 ${12 + swapGap / 2}H20l-${swapWing} ${swapWing}"`,
+    );
+    expect(html).not.toContain("M16 4.5l4 4-4 4");
+    // The swap row gets its own gap knob; the PNL/share row keeps labelRowGap.
+    expect(html).toContain(
+      `.lrow{display:flex;align-items:center;gap:${STATS_CARD_TUNING.labelRowGap}px}`,
+    );
+    expect(html).toContain(`.lrow.swap{gap:${STATS_CARD_TUNING.swapIconGap}px}`);
+    expect(html).toContain('class="lrow swap"');
+    expect(html).toContain(`fill="${STATS_CARD_TUNING.barOffColor}"`);
+    // Tags: fill + border come from the hand-tunable table.
+    expect(html).toContain(`background:${STATS_CARD_TUNING.tagBackground}`);
+    expect(html).toContain(`border:${STATS_CARD_TUNING.tagBorder}`);
+    expect(html).toContain(
+      `background:${STATS_CARD_TUNING.bodyBackground ?? STATS_CARD_THEME.background}`,
+    );
+    expect(html).toContain(STATS_CARD_TUNING.pnlUpColor ?? STATS_CARD_THEME.positivePnl);
+    expect(html).toContain("BinancePlex");
+    expect(html).toContain(`width:${STATS_CARD_TUNING.badgeSize}px`);
+    // Label uses the theme size; symbol/value use the hand-tunable sizes.
+    expect(html).toContain(
+      `font-size:${STATS_CARD_TUNING.labelFontSize ?? STATS_CARD_THEME.lineFontSize}px`,
+    );
+    expect(html).toContain(`font-size:${STATS_CARD_TUNING.symbolFontSize}px`);
+    expect(html).toContain(`font-size:${STATS_CARD_TUNING.valueFontSize}px`);
+    // Selective underlines — 5 labels (PNL, ROI, Tỉ lệ ký quỹ, Giá vào lệnh,
+    // Giá thanh lý); Giá đánh dấu / Kích thước / Margin are `.lbl.plain`.
+    expect((html.match(/class="lbl"/g) ?? []).length).toBe(5);
+    expect(html).toContain(`class="lbl plain">${STATS_CARD_TUNING.labels.mark}`);
+    // Underline is a gradient so dash/gap stay tunable at a fixed label width.
+    expect(html).toContain("repeating-linear-gradient(to right");
+    expect(html).toContain(`${STATS_CARD_TUNING.labelLineDash}px`);
+    expect(html).not.toContain("border-bottom");
     expect(html).not.toContain('class="ph"');
   });
 
