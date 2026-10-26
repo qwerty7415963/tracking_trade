@@ -104,10 +104,78 @@ describe("parseSignal", () => {
     expect(parsed.instrument).toBe("ZEC");
     expect(parsed.entry).toBe(1223);
     expect(parsed.entryZoneHigh).toBe(1154);
+    expect(parsed.entries).toEqual([1223]);
     expect(parsed.stopLoss).toBe(1068);
     expect(parsed.takeProfits).toEqual([1468, 1712, 1957]);
     expect(parsed.ambiguities).toContain("tp_percent_converted");
     expect(missingRequiredFields(parsed)).toEqual([]);
+  });
+
+  it("parses a ladder of entry levels (space separated)", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry 3000 2950 2900 SL 2800 TP1 3100 TP2 3200" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.entry).toBe(3000);
+    expect(parsed.entries).toEqual([3000, 2950, 2900]);
+    expect(parsed.entryZoneHigh).toBeNull();
+    expect(parsed.takeProfits).toEqual([3100, 3200]);
+    expect(parsed.ambiguities).toEqual([]);
+    expect(missingRequiredFields(parsed)).toEqual([]);
+  });
+
+  it("parses comma separated entry levels", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry 3000, 2950 SL 2800 TP 3100" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.entries).toEqual([3000, 2950]);
+  });
+
+  it("keeps a zone as one entry level, even when the dash order looks like a ladder", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry 100 - 110 SL 90 TP 120" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.entry).toBe(100);
+    expect(parsed.entryZoneHigh).toBe(110);
+    expect(parsed.entries).toEqual([100]);
+    expect(parsed.ambiguities).toEqual([]);
+  });
+
+  it("never reads a leverage token as another entry level", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry 3000 5x SL 2800 TP 3100" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.entries).toEqual([3000]);
+    expect(parsed.leverage).toBe(5);
+  });
+
+  it("falls back to the first level when the ladder points the wrong way", () => {
+    const long = parseSignal(
+      { ...base, text: "LONG ETH entry 2300 2400 2500 SL 2200 TP 2600" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(long.entries).toEqual([2300]);
+    expect(long.ambiguities).toContain("entries_wrong_order");
+
+    const short = parseSignal(
+      { ...base, text: "SHORT ETH entry 2500 2400 SL 2600 TP 2300" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(short.entries).toEqual([2500]);
+    expect(short.ambiguities).toContain("entries_wrong_order");
+  });
+
+  it("keeps a single entry as a one-element ladder", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry 3000 SL 2800 TP 3100" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.entry).toBe(3000);
+    expect(parsed.entries).toEqual([3000]);
+    expect(parsed.entryZoneHigh).toBeNull();
   });
 
   it("applies channel profile aliases over the built-in map", () => {

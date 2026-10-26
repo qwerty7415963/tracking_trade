@@ -62,7 +62,7 @@ describe("SettleService.settle", () => {
     expect(publications.requestPositionPublish).toHaveBeenCalledWith(
       "pos1",
       "tp",
-      { markPrice: 3100 },
+      { markPrice: 3100, tpIndex: 0 },
       "worker",
     );
     expect(trading.applyTpHit).toHaveBeenCalledWith("pos1", 3100, "worker");
@@ -121,7 +121,9 @@ describe("SettleService.settle", () => {
   });
 
   it("skips an SL whose position is already closed", async () => {
-    const { svc, trading } = setup({ position: { status: "CLOSED", filledTps: [3100] } });
+    const { svc, trading, publications } = setup({
+      position: { status: "CLOSED", filledTps: [3100] },
+    });
     const result = await svc.settle({
       positionId: "pos1",
       kind: "SL",
@@ -130,6 +132,13 @@ describe("SettleService.settle", () => {
     });
     expect(result.closeState).toBe("ALREADY_CLOSED");
     expect(trading.applySlHit).not.toHaveBeenCalled();
+    // An SL card never carries a TP ordinal, even if the job data has one.
+    expect(publications.requestPositionPublish).toHaveBeenCalledWith(
+      "pos1",
+      "sl",
+      { markPrice: 2900 },
+      "worker",
+    );
   });
 
   it("still settles the position when the card cannot be published", async () => {

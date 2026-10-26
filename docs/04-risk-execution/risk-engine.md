@@ -30,6 +30,7 @@ size = notional / entryPrice
 - **Làm tròn size xuống** theo `sizeIncrement` từ `meta`.
 - Size tối thiểu từ `minSize`.
 - Nếu size < min → **reject lệnh** (`MIN_SIZE_EXCEEDS_NOTIONAL`).
+- **Nhiều entry (DCA)**: entry[0] vào **toàn bộ** notional (công thức trên); mỗi level i≥1 đóng băng **notional/N** lúc mở và chỉ cộng size khi giá chạm (`applyEntryFill`, giá TB có trọng số). Tổng notional tối đa = `notional × (1 + (N−1)/N)`. **Không chạy lại risk gate** cho các lần DCA — nếu `size×mark/leverage > balance` chỉ ghi audit `position.entry_over_margin`.
 
 ## 3. Cross-margin account (MVP)
 
@@ -37,6 +38,7 @@ size = notional / entryPrice
 - MMR theo **bậc notional tự định nghĩa** (`packages/domain/src/margin-tiers.ts`): `MM = notional × MMR(bậc) − maintenanceAmount(bậc)`, maintenance amount tự suy ra để MM liên tục tại biên bậc.
 - `marginRatio = Σ MM(tất cả vị thế đang mở) / equity` — cấp tài khoản, giống `/accounts`; mọi card cùng account hiện cùng một số.
 - Giá thanh lý dùng công thức Cross của Binance: `MP = (WB − side×Q×EP + UPNL_other + cum − TMM_other) / (Q × (MMR − side))`; `side = +1` LONG, `−1` SHORT. Trả `--` nếu không có nghiệm dương.
+- **Khi nào LONG ra `--`**: mẫu số `Q × (MMR − 1)` của LONG luôn âm, còn tử số lấy từ equity — equity lớn hơn rất nhiều so với vị thế thì giá thanh lý **âm** → `null` → card hiện `--`. Ví dụ thật: balance 1,54 triệu + LONG 129k notional (mark 2315.7) → `--`; cùng dữ liệu ở **SHORT** → `29.532,54` (mẫu số dương). Không fallback sang giá isolated (`entry × (1 − 1/lev + MMR)` ≈ 2.160 với 10x) vì đó **không phải** mức bị thanh lý thật với tài khoản cross.
 - MMR **không phụ thuộc leverage**; leverage chỉ ảnh hưởng initial margin.
 - MVP **không** tính fee/funding (ghi rõ trong hiển thị và ADR).
 
@@ -45,6 +47,10 @@ size = notional / entryPrice
 - TP1 đóng **50%** size; các TP còn lại chia đều phần còn lại; TP duy nhất đóng 100%.
 - SL đóng **toàn bộ** phần còn lại.
 - Mỗi lần đóng ghi realized PnL vào ledger (`virtual_transactions`).
+- **Thao tác tay trên vị thế mở**:
+  - TP tay (`/tp` hoặc `POST /positions/:id/tp`) chốt tại mid hiện tại, theo `size`/`percent` (mặc định all); **không thêm vào `filled_tps`** — các TP level tự động vẫn là mốc giá riêng. TP một phần giữ position `OPEN/TP_HIT` và card hiện phần còn lại; TP all đóng vị thế.
+  - Dời SL (`/sl` hoặc `PATCH /positions/:id/stop-loss`) chỉ đổi `stop_loss`; chặn nếu SL mới đã vượt mark (LONG `SL >= mark`, SHORT `SL <= mark`). Không đăng card.
+  - `/close` đóng toàn bộ remaining tại mid.
 
 ## 5. Thứ tự chốt TP/SL (settle)
 

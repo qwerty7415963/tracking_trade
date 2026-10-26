@@ -190,12 +190,14 @@ Vị thế giấy theo dõi giá Hyperliquid.
 | `coin` | Tên coin Hyperliquid đã resolve (ví dụ `ETH`, `PAXG`) |
 | `direction` | `LONG` \| `SHORT` |
 | `size` | Size mở (đơn vị coin) |
-| `entry_price` | Giá entry của signal (fallback mid lúc mở) |
+| `entry_price` | Giá entry của signal (fallback mid lúc mở); với lệnh nhiều entry = **giá TB có trọng số** của các level đã khớp |
 | `stop_loss` | SL (bắt buộc) |
 | `take_profits` | Mảng TP theo thứ tự |
 | `leverage` | Đòn bẩy lúc mở (snapshot từ account) |
 | `remaining_size` | Size còn mở |
 | `filled_tps` | Các TP đã chạm |
+| `entries` | Ladder DCA `[{"price":…,"notional":…}]` — notional đóng băng lúc mở: entry[0] = notional đầy đủ, các level sau = notional/N |
+| `pending_entries` | Các level **chưa khớp**; poll chạm giá (LONG ≤ / SHORT ≥) → khớp, size tăng, `entry_price` chuyển thành TB |
 | `status` | `OPEN` / `TP_HIT` / `SL_HIT` / `CLOSED` / `CANCELLED` |
 | `opened_at` / `closed_at` | Thời điểm |
 | `close_price` | Giá đóng cuối |
@@ -288,7 +290,7 @@ Lưu risk check, cấu hình liên quan, kết quả và lý do từ chối (cho
 
 Ảnh card P&L gen bằng code **không lưu metadata trong database** — worker ghi file PNG vào volume `artifacts` dùng chung (`<renderId>.png`), API đọc file khi gửi. Trạng thái đăng vẫn theo dõi qua `telegram_publications`.
 
-- Retention 7 ngày: API quét folder theo mtime, không cần bảng.
+- Không lưu metadata ảnh trong DB; file PNG bị xóa ngay sau khi publication `PUBLISHED`. Không còn dọn theo mtime.
 - Idempotency theo `publicationId` (`telegram-send` jobId `send:<publicationId>`, render jobId `render:<publicationId>`).
 
 ### 2.19 `tradable_coins` (coin list do operator quản lý)

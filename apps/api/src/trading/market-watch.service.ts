@@ -3,6 +3,8 @@ import { Queue, Worker } from "bullmq";
 import Redis from "ioredis";
 import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { REDIS_CLIENT } from "../queue/redis.provider";
+import { AuditService } from "../audit/audit.service";
+import { PublicationsService } from "../reporting/publications.service";
 import { MARKET_WATCH_QUEUE_NAME, MarketHitEvent, VirtualTradingService } from "./virtual-trading.service";
 import { SETTLE_QUEUE_NAME, SettleJobData, settleJobId } from "./settle.service";
 
@@ -16,6 +18,8 @@ export class MarketWatchService implements OnModuleInit, OnModuleDestroy {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly trading: VirtualTradingService,
+    private readonly publications: PublicationsService,
+    private readonly audit: AuditService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -31,7 +35,27 @@ export class MarketWatchService implements OnModuleInit, OnModuleDestroy {
       MARKET_WATCH_QUEUE_NAME,
       async () => {
         const events = await this.trading.pollMarketOnce();
-        for (const ev of events) await this.enqueueSettle(ev);
+        for (const ev of events) {
+          if (ev.kind === "ENTRY") {
+            // DCA fill: the row is already updated, so the card renders the
+            // new size/average straight away (no settle — nothing to close).
+            try {
+              await this.publications.requestPositionPublish(
+                ev.positionId,
+                "entry",
+                { markPrice: ev.markPrice },
+                "worker",
+              );
+            } catch (err) {
+              await this.audit.record("worker", "publication.skipped", {
+                positionId: ev.positionId,
+                reason: err instanceof Error ? err.message.split(":")[0] : "unknown",
+              });
+            }
+            continue;
+          }
+          await this.enqueueSettle(ev);
+        }
         return { hits: events.length };
       },
       { connection: this.redis },
@@ -43,6 +67,7 @@ export class MarketWatchService implements OnModuleInit, OnModuleDestroy {
    * settle is in flight is a no-op; a job that exhausted its attempts is
    * dropped and re-queued so an open position can never be stranded.
    */
+  /** ENTRY events never reach here — the caller publishes those directly. */
   private async enqueueSettle(ev: MarketHitEvent): Promise<void> {
     const queue = this.settleQueue;
     if (!queue) return;
@@ -55,9 +80,9 @@ export class MarketWatchService implements OnModuleInit, OnModuleDestroy {
     }
     const data: SettleJobData = {
       positionId: ev.positionId,
-      kind: ev.kind,
+      kind: ev.kind === "SL" ? "SL" : "TP",
       markPrice: ev.markPrice,
-      tpIndex: ev.tpIndex,
+      tpIndex: ev.tpIndex ?? 0,
     };
     await queue.add("settle-position", data, {
       jobId,

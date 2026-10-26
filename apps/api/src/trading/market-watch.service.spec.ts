@@ -31,18 +31,25 @@ const HITS = [
 type Processor = () => Promise<unknown>;
 
 /** Boot the service and hand back the market-watch processor (last Worker). */
-async function start(trading: Record<string, unknown>) {
+async function start(
+  trading: Record<string, unknown>,
+  publications?: Record<string, unknown>,
+) {
   const workerClose = jest.fn();
   (Worker as unknown as jest.Mock).mockReturnValue({ close: workerClose });
+  const pubs = publications ?? { requestPositionPublish: jest.fn(async () => ({})) };
+  const audit = { record: jest.fn(async () => ({})) };
   const svc = new MarketWatchService(
     {} as never,
     { marketPollMs: 5000 } as never,
     trading as never,
+    pubs as never,
+    audit as never,
   );
   await svc.onModuleInit();
   const calls = (Worker as unknown as jest.Mock).mock.calls;
   const processor = calls[calls.length - 1][1] as Processor;
-  return { svc, workerClose, processor };
+  return { svc, workerClose, processor, pubs, audit };
 }
 
 describe("MarketWatchService", () => {
@@ -108,5 +115,54 @@ describe("MarketWatchService", () => {
     await processor();
     expect(remove).toHaveBeenCalled();
     expect(queues[1].add).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes a DCA fill card directly instead of settling it", async () => {
+    const queues: QueueMock[] = [];
+    (Queue as unknown as jest.Mock).mockImplementation(() => {
+      const q = queueMock();
+      queues.push(q);
+      return q;
+    });
+    const requestPositionPublish = jest.fn(async () => ({}));
+    const { processor } = await start(
+      {
+        pollMarketOnce: jest.fn(async () => [
+          { positionId: "p1", kind: "ENTRY", markPrice: 2318, entryPrice: 2320 },
+        ]),
+      },
+      { requestPositionPublish },
+    );
+
+    await expect(processor()).resolves.toEqual({ hits: 1 });
+    expect(requestPositionPublish).toHaveBeenCalledWith(
+      "p1",
+      "entry",
+      { markPrice: 2318 },
+      "worker",
+    );
+    expect(queues[1].add).not.toHaveBeenCalled();
+  });
+
+  it("audits a failed fill publish instead of breaking the poll loop", async () => {
+    (Queue as unknown as jest.Mock).mockImplementation(() => queueMock());
+    const requestPositionPublish = jest.fn(async () => {
+      throw new Error("PUBLICATION_VALIDATION_FAILED: no destination chat configured");
+    });
+    const { processor, audit } = await start(
+      {
+        pollMarketOnce: jest.fn(async () => [
+          { positionId: "p1", kind: "ENTRY", markPrice: 2318, entryPrice: 2320 },
+        ]),
+      },
+      { requestPositionPublish },
+    );
+
+    await expect(processor()).resolves.toEqual({ hits: 1 });
+    expect(audit.record).toHaveBeenCalledWith(
+      "worker",
+      "publication.skipped",
+      expect.objectContaining({ positionId: "p1", reason: "PUBLICATION_VALIDATION_FAILED" }),
+    );
   });
 });

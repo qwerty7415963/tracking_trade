@@ -11,6 +11,7 @@ import {
   detectTpSlHit,
   evaluateVirtualRisk,
   realizedPnl,
+  roundDownToStep,
   splitTps,
   unrealizedPnl,
 } from "@tracking-auto/domain";
@@ -41,13 +42,56 @@ function asPriceArray(value: unknown): number[] {
   return value.filter((v) => typeof v === "number" && Number.isFinite(v));
 }
 
+interface EntryLevel {
+  price: number;
+  notional: number;
+}
+
+/** `virtual_positions.entries` / `pending_entries` rows, validated. */
+function readEntryLevels(value: unknown): EntryLevel[] {
+  if (!Array.isArray(value)) return [];
+  const out: EntryLevel[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const price = Number((raw as { price?: unknown }).price);
+    const notional = Number((raw as { notional?: unknown }).notional);
+    if (Number.isFinite(price) && price > 0 && Number.isFinite(notional) && notional > 0) {
+      out.push({ price, notional });
+    }
+  }
+  return out;
+}
+
+/** Plain `entries` array from the parsed signal payload. */
+function readPayloadEntries(payload: unknown): number[] {
+  const raw = (payload as { entries?: unknown } | null)?.entries;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0);
+}
+
+/** DCA ladder must point away from the entry: LONG falls, SHORT climbs. */
+function ladderOrdered(direction: string, levels: number[]): boolean {
+  if (levels.length < 2) return true;
+  return direction === "LONG"
+    ? levels.every((v, i) => i === 0 || v <= levels[i - 1])
+    : levels.every((v, i) => i === 0 || v >= levels[i - 1]);
+}
+
+function decimalsOf(value: number): number {
+  const text = String(value);
+  const dot = text.indexOf(".");
+  return dot < 0 ? 0 : text.length - dot - 1;
+}
+
 export interface MarketHitEvent {
   positionId: string;
-  kind: "TP" | "SL";
+  kind: "TP" | "SL" | "ENTRY";
   /** Price frozen at detection: the card and the close both use it. */
   markPrice: number;
   /** TP ordinal at detection (filledTps.length) — settle-job dedupe key. */
-  tpIndex: number;
+  tpIndex?: number;
+  /** ENTRY only: the DCA level that just filled. */
+  entryPrice?: number;
 }
 
 @Injectable()
@@ -129,6 +173,23 @@ export class VirtualTradingService {
     });
     if (sizing.rejected) throw new ConflictException(`sizing rejected: ${sizing.reason}`);
 
+    // Multi-entry (DCA): entry[0] opens at the full target notional, every
+    // later level keeps 1/N of it frozen until the price reaches it. A ladder
+    // pointing the wrong way degrades to a single level (the parser flags it;
+    // payloads written before this feature carry no levels at all).
+    const payloadLevels = readPayloadEntries(version.normalizedPayloadJson);
+    const levels = payloadLevels.length > 0 ? payloadLevels : [entry];
+    const orderedLevels = ladderOrdered(version.direction, levels) ? levels : [levels[0]];
+    const sliceNotional = targetNotional / orderedLevels.length;
+    const entriesJson = orderedLevels.map((price, i) => ({
+      price,
+      notional: i === 0 ? targetNotional : sliceNotional,
+    }));
+    const pendingJson = orderedLevels.slice(1).map((price) => ({
+      price,
+      notional: sliceNotional,
+    }));
+
     const mids = await this.marketData.getAllMids().catch(() => ({} as Record<string, number>));
     const opens = await this.prisma.virtualPosition.findMany({
       where: { accountId, status: { in: OPEN_STATUSES } },
@@ -193,9 +254,11 @@ export class VirtualTradingService {
         stopLoss,
         takeProfits: tps,
         leverage: account.leverage,
-        remainingSize: sizing.size,
-        filledTps: [],
-        status: "OPEN",
+          remainingSize: sizing.size,
+          filledTps: [],
+          entries: entriesJson as unknown as Prisma.InputJsonValue,
+          pendingEntries: pendingJson as unknown as Prisma.InputJsonValue,
+          status: "OPEN",
       },
     });
     await this.audit.record(actor, "position.open", {
@@ -219,6 +282,131 @@ export class VirtualTradingService {
     const mid = await this.marketData.getMid(position.coin);
     if (mid === null) throw new ConflictException(`NO_QUOTE for ${position.coin}: refusing to guess close`);
     return this.closeAt(position, mid, "CLOSED", actor, reason);
+  }
+
+  /**
+   * Operator take-profit at the live mark. `percent` (0..100) or `size`
+   * (coin units); neither = close everything. `filled_tps` is intentionally
+   * left untouched — the pre-defined TP levels are price targets, not a
+   * bookkeeping slot for a manual exit.
+   */
+  async takeProfitManual(
+    positionId: string,
+    opts: { size?: number; percent?: number },
+    actor: string,
+  ): Promise<{
+    markPrice: number;
+    closedSize: number;
+    realized: number;
+    remainingSize: number;
+    fullyClosed: boolean;
+  }> {
+    const position = await this.getOpen(positionId);
+    const mid = await this.marketData.getMid(position.coin);
+    if (mid === null) throw new ConflictException(`NO_QUOTE for ${position.coin}: refusing to guess close`);
+    if (opts.size !== undefined && opts.percent !== undefined) {
+      throw new ConflictException("SIZE_OR_PERCENT_ONLY");
+    }
+    const remaining = asNumber(position.remainingSize);
+    if (!(remaining > 0)) throw new ConflictException("nothing left to close");
+
+    let closeSize = remaining;
+    if (opts.percent !== undefined) {
+      if (!Number.isFinite(opts.percent) || opts.percent <= 0 || opts.percent > 100) {
+        throw new ConflictException("INVALID_PERCENT");
+      }
+      closeSize = opts.percent >= 100 ? remaining : remaining * (opts.percent / 100);
+    } else if (opts.size !== undefined) {
+      if (!Number.isFinite(opts.size) || opts.size <= 0) {
+        throw new ConflictException("INVALID_SIZE");
+      }
+      closeSize = Math.min(opts.size, remaining);
+    }
+    if (closeSize < remaining) {
+      const spec = await this.marketData.assetSpec(position.coin);
+      if (spec) closeSize = Math.min(roundDownToStep(closeSize, spec.sizeIncrement), remaining);
+    }
+    if (!(closeSize > 0)) throw new ConflictException("SIZE_TOO_SMALL");
+
+    const realized = realizedPnl(
+      position.direction as VirtualDirection,
+      closeSize,
+      asNumber(position.entryPrice),
+      mid,
+    );
+    const newRemaining = Math.max(0, remaining - closeSize);
+    const dust = newRemaining <= 1e-8;
+    await this.prisma.$transaction(async (tx) => {
+      const changed = await tx.virtualPosition.updateMany({
+        where: {
+          id: position.id,
+          status: { in: OPEN_STATUSES },
+          remainingSize: position.remainingSize,
+        },
+        data: {
+          remainingSize: dust ? 0 : newRemaining,
+          realizedPnl: asNumber(position.realizedPnl ?? 0) + realized,
+          ...(dust
+            ? { status: "CLOSED", closedAt: new Date(), closePrice: mid }
+            : {}),
+        },
+      });
+      if (changed.count !== 1) {
+        throw new ConflictException("POSITION_CHANGED: retry");
+      }
+      await this.accounts.applyRealizedPnl(
+        tx,
+        position.accountId,
+        realized,
+        `TP_MANUAL:${position.id}`,
+      );
+    });
+    await this.audit.record(actor, "position.tp_manual", {
+      positionId: position.id,
+      closePrice: mid,
+      closedSize: closeSize,
+      realized,
+      remainingSize: dust ? 0 : newRemaining,
+      fullyClosed: dust,
+    });
+    return {
+      markPrice: mid,
+      closedSize: closeSize,
+      realized,
+      remainingSize: dust ? 0 : newRemaining,
+      fullyClosed: dust,
+    };
+  }
+
+  /** Move the stop loss of an open position. A level that is already through
+   *  the mark is rejected (the operator should close instead). */
+  async updateStopLoss(
+    positionId: string,
+    stopLoss: number,
+    actor: string,
+  ): Promise<{ old: number | null; new: number }> {
+    const position = await this.getOpen(positionId);
+    if (!Number.isFinite(stopLoss) || stopLoss <= 0) {
+      throw new ConflictException("INVALID_STOP_LOSS");
+    }
+    const mid = await this.marketData.getMid(position.coin);
+    if (mid === null) throw new ConflictException(`NO_QUOTE for ${position.coin}: refusing to guess stop`);
+    const triggered =
+      position.direction === "LONG" ? stopLoss >= mid : stopLoss <= mid;
+    if (triggered) throw new ConflictException("SL_ALREADY_TRIGGERED");
+    const old = position.stopLoss === null ? null : asNumber(position.stopLoss);
+    const changed = await this.prisma.virtualPosition.updateMany({
+      where: { id: position.id, status: { in: OPEN_STATUSES } },
+      data: { stopLoss },
+    });
+    if (changed.count !== 1) throw new ConflictException("POSITION_CHANGED: retry");
+    await this.audit.record(actor, "position.sl_update", {
+      positionId: position.id,
+      old,
+      new: stopLoss,
+      markPrice: mid,
+    });
+    return { old, new: stopLoss };
   }
 
   private async closeAt(
@@ -323,6 +511,116 @@ export class VirtualTradingService {
     return this.closeAt(position, markPrice, "SL_HIT", actor, "SL");
   }
 
+  // ----------------------------------------------------------------- DCA
+
+  /**
+   * One DCA level filled: grow size by the level's frozen notional and move
+   * `entryPrice` to the weighted average of the levels that actually filled.
+   * Idempotent — a level already out of `pending_entries` is a no-op, so a
+   * retried poll never fills the same level twice.
+   */
+  async applyEntryFill(
+    positionId: string,
+    entryPrice: number,
+    markPrice: number,
+    actor: string,
+  ): Promise<{
+    applied: boolean;
+    reason?: string;
+    size?: number;
+    entryPrice?: number;
+    filled?: number;
+    total?: number;
+  }> {
+    const position = await this.prisma.virtualPosition.findUnique({
+      where: { id: positionId },
+      include: { account: { select: { balance: true } } },
+    });
+    if (!position) return { applied: false, reason: "not_found" };
+    if (!OPEN_STATUSES.includes(position.status)) return { applied: false, reason: "not_open" };
+    const pending = readEntryLevels(position.pendingEntries);
+    const total = readEntryLevels(position.entries).length;
+    const idx = pending.findIndex((l) => Math.abs(l.price - entryPrice) < 1e-9);
+    if (idx < 0) return { applied: false, reason: "already_filled" };
+    const level = pending[idx];
+    const remaining = pending.filter((_, i) => i !== idx);
+    const spec = await this.marketData.assetSpec(position.coin);
+    const sizing = spec
+      ? calcPerpSizeByNotional({
+          notional: level.notional,
+          entryPrice: level.price,
+          minSize: spec.minSize,
+          sizeIncrement: spec.sizeIncrement,
+        })
+      : null;
+    if (!sizing || sizing.rejected || !(sizing.size > 0)) {
+      // Level is dust against min size: drop it so the queue keeps moving.
+      await this.prisma.virtualPosition.update({
+        where: { id: positionId },
+        data: { pendingEntries: remaining as unknown as Prisma.InputJsonValue },
+      });
+      const reason = sizing && sizing.rejected ? String(sizing.reason) : "no_spec";
+      await this.audit.record(actor, "position.entry_fill_skipped", {
+        positionId,
+        entryPrice: level.price,
+        reason,
+      });
+      return { applied: false, reason };
+    }
+    const sizeBefore = asNumber(position.size);
+    const entryBefore = asNumber(position.entryPrice);
+    const sizeAfter = sizeBefore + sizing.size;
+    const decimals = Math.max(2, decimalsOf(entryBefore), decimalsOf(level.price));
+    const entryAfter = Number(
+      ((sizeBefore * entryBefore + sizing.size * level.price) / sizeAfter).toFixed(decimals),
+    );
+    await this.prisma.virtualPosition.update({
+      where: { id: positionId },
+      data: {
+        size: sizeAfter,
+        remainingSize: asNumber(position.remainingSize) + sizing.size,
+        entryPrice: entryAfter,
+        pendingEntries: remaining as unknown as Prisma.InputJsonValue,
+      },
+    });
+    const filledCount = total - remaining.length;
+    const balance = asNumber(position.account?.balance);
+    const newNotional = sizeAfter * markPrice;
+    if (
+      Number.isFinite(balance) &&
+      position.leverage > 0 &&
+      newNotional / position.leverage > balance
+    ) {
+      // Paper margin is never reserved, so this only warns: the ladder was
+      // accepted at open and the levels stay on the book.
+      await this.audit.record(actor, "position.entry_over_margin", {
+        positionId,
+        notional: newNotional,
+        leverage: position.leverage,
+        balance,
+      });
+    }
+    await this.audit.record(actor, "position.entry_fill", {
+      positionId,
+      entryPrice: level.price,
+      sliceSize: sizing.size,
+      sliceNotional: level.notional,
+      sizeBefore,
+      sizeAfter,
+      entryBefore,
+      entryAfter,
+      filled: filledCount,
+      total,
+    });
+    return {
+      applied: true,
+      size: sizeAfter,
+      entryPrice: entryAfter,
+      filled: filledCount,
+      total,
+    };
+  }
+
   // ------------------------------------------------------------------ poll
 
   async pollMarketOnce(): Promise<MarketHitEvent[]> {
@@ -339,27 +637,51 @@ export class VirtualTradingService {
       return [];
     }
     const events: MarketHitEvent[] = [];
-    for (const position of positions) {
-      const mark = mids[position.coin];
+    for (const seeded of positions) {
+      const mark = mids[seeded.coin];
       if (typeof mark !== "number") continue;
+      let position = seeded;
+
+      // 1) DCA fills first: they change size and the average entry, which the
+      //    TP/SL check below must see. Applied inline (not deferred) because
+      //    the fill card renders numbers read from this very row.
+      const pending = readEntryLevels(position.pendingEntries);
+      for (const level of pending) {
+        const reached =
+          position.direction === "LONG" ? mark <= level.price : mark >= level.price;
+        if (!reached) continue;
+        const fill = await this.applyEntryFill(position.id, level.price, mark, "worker");
+        if (!fill.applied) continue;
+        events.push({
+          positionId: position.id,
+          kind: "ENTRY",
+          markPrice: mark,
+          entryPrice: level.price,
+        });
+        position =
+          (await this.prisma.virtualPosition.findUnique({ where: { id: position.id } })) ??
+          position;
+      }
+
+      // 2) TP/SL against the refreshed row. Detection only: the card renders
+      //    and replies under the original post first, SettleService closes
+      //    the slice afterwards, so a Telegram hiccup cannot reorder the
+      //    ledger. The market-watch worker enqueues one settle job per event;
+      //    `tpIndex` dedupes it.
       const tps = asPriceArray(position.takeProfits);
-      const filled = asPriceArray(position.filledTps);
+      const filledTps = asPriceArray(position.filledTps);
       const hit = detectTpSlHit({
         direction: position.direction as VirtualDirection,
         markPrice: mark,
         stopLoss: position.stopLoss === null ? null : asNumber(position.stopLoss),
-        remainingTps: tps.slice(filled.length),
+        remainingTps: tps.slice(filledTps.length),
       });
       if (hit.kind === "NONE") continue;
-      // Detect only. The card is rendered and replied under the original
-      // post first, the position is closed afterwards (SettleService), so a
-      // Telegram hiccup can never reorder the ledger. The market-watch
-      // worker enqueues one settle job per event; `tpIndex` dedupes it.
       events.push({
         positionId: position.id,
         kind: hit.kind,
         markPrice: mark,
-        tpIndex: filled.length,
+        tpIndex: filledTps.length,
       });
     }
     return events;

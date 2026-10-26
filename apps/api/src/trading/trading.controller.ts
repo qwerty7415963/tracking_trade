@@ -11,10 +11,11 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
-import { IsIn, IsInt, IsNumber, IsOptional, IsPositive, IsString, Min } from "class-validator";
+import { IsIn, IsInt, IsNumber, IsOptional, IsPositive, IsString, Max, Min } from "class-validator";
 import { KillSwitchMode } from "@tracking-auto/domain";
 import { OperatorGuard } from "../auth/operator.guard";
 import { CoinsService } from "../coins/coins.service";
+import { PublicationsService } from "../reporting/publications.service";
 import { ApprovalFlowService } from "./approval-flow.service";
 import { KillSwitchService } from "./kill-switch.service";
 import { OpenModeService } from "./open-mode.service";
@@ -77,6 +78,24 @@ class OpenPositionDto {
   @IsOptional()
   @IsString()
   destinationChatId?: string;
+}
+
+class ManualTpDto {
+  @IsOptional()
+  @IsPositive()
+  size?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.0001)
+  @Max(100)
+  percent?: number;
+}
+
+class UpdateStopLossDto {
+  @IsNumber()
+  @IsPositive()
+  stopLoss!: number;
 }
 
 class KillSwitchDto {
@@ -212,10 +231,33 @@ export class PositionsController {
   constructor(
     private readonly trading: VirtualTradingService,
     private readonly flow: ApprovalFlowService,
+    private readonly publications: PublicationsService,
   ) {}
 
   private actor(req: OperatorRequest): string {
     return req.operatorUsername ?? "unknown";
+  }
+
+  private async publishManualCard(
+    positionId: string,
+    status: "tp" | "close",
+    opts: { markPrice?: number; volume: number; open: boolean },
+    req: OperatorRequest,
+  ): Promise<{ publicationId?: string; cardError?: string }> {
+    try {
+      const publication = await this.publications.requestPositionPublish(
+        positionId,
+        status,
+        opts,
+        this.actor(req),
+      );
+      return { publicationId: publication.publicationId };
+    } catch (err) {
+      return {
+        cardError:
+          err instanceof Error ? err.message.split(":")[0] : "CARD_PUBLISH_FAILED",
+      };
+    }
   }
 
   @Get()
@@ -236,9 +278,59 @@ export class PositionsController {
     return this.flow.openSignal(dto.signalId, dto.accountId, this.actor(req), dto.destinationChatId);
   }
 
+  @Post(":id/tp")
+  @UseGuards(OperatorGuard)
+  async takeProfit(
+    @Param("id") id: string,
+    @Body() dto: ManualTpDto,
+    @Req() req: OperatorRequest,
+  ) {
+    const result = await this.trading.takeProfitManual(
+      id,
+      {
+        ...(dto.size !== undefined ? { size: dto.size } : {}),
+        ...(dto.percent !== undefined ? { percent: dto.percent } : {}),
+      },
+      this.actor(req),
+    );
+    const card = await this.publishManualCard(
+      id,
+      "tp",
+      {
+        markPrice: result.markPrice,
+        volume: result.fullyClosed ? result.closedSize : result.remainingSize,
+        open: !result.fullyClosed,
+      },
+      req,
+    );
+    return { ...result, ...card };
+  }
+
+  @Patch(":id/stop-loss")
+  @UseGuards(OperatorGuard)
+  updateStopLoss(
+    @Param("id") id: string,
+    @Body() dto: UpdateStopLossDto,
+    @Req() req: OperatorRequest,
+  ) {
+    return this.trading.updateStopLoss(id, dto.stopLoss, this.actor(req));
+  }
+
   @Post(":id/close")
   @UseGuards(OperatorGuard)
-  close(@Param("id") id: string, @Req() req: OperatorRequest) {
-    return this.trading.closePosition(id, this.actor(req));
+  async close(@Param("id") id: string, @Req() req: OperatorRequest) {
+    const result = await this.trading.closePosition(id, this.actor(req));
+    const raw = result.position.closePrice === null ? null : Number(result.position.closePrice);
+    const card = await this.publishManualCard(
+      id,
+      "close",
+      {
+        ...(raw !== null && Number.isFinite(raw) ? { markPrice: raw } : {}),
+        volume: result.closedSize,
+        open: false,
+      },
+      req,
+    );
+    return { ...result, ...card };
   }
 }

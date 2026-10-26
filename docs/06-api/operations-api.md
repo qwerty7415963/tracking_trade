@@ -48,7 +48,9 @@
 | GET | `/api/v1/positions` | Danh sách vị thế (`?status=`) |
 | GET | `/api/v1/positions/:id` | Chi tiết vị thế |
 | POST | `/api/v1/positions/open` | Mở lại cho signal đã approve (`signalId`, `accountId?`) |
-| POST | `/api/v1/positions/:id/close` | Đóng thủ công theo giá thị trường |
+| POST | `/api/v1/positions/:id/close` | Đóng thủ công toàn bộ remaining theo giá thị trường |
+| POST | `/api/v1/positions/:id/tp` | Chốt lời tay tại mid: `{size?}` hoặc `{percent?}`, không truyền = all; đăng card `tp` (partial giữ OPEN) |
+| PATCH | `/api/v1/positions/:id/stop-loss` | Dời SL `{stopLoss}`; chặn nếu SL đã vượt mark |
 
 ### Vận hành
 
@@ -82,7 +84,9 @@
 | `/pos <signal text + post link> [src=".."] [chat=..] [acc=..]` | Tạo signal + duyệt + mở + hỏi chọn card (2 nút, 5 phút — không bấm dùng card PnL); link dán vào text là tự nhận diện. Card mở render từ snapshot đông cứng lúc gọi nên vẫn đăng dù position đóng trong 5 phút chờ; đăng lỗi → bot DM "❌ Không đăng được card …" |
 | `/reject <id> [lý do]` | Từ chối tín hiệu |
 | `/open <signalId> [accountId]` | Mở lại cho signal đã approve |
-| `/close <positionId>` | Đóng vị thế theo giá thị trường |
+| `/close <positionId>` | Đóng toàn bộ remaining theo giá thị trường + đăng card `close` |
+| `/tp <positionId> [size\|percent\|all]` | Chốt lời tay tại mid; mặc định all. `25%`/`0.5` = một phần (giữ position OPEN, đăng card `tp`), không truyền = đóng hết. Không đụng `filled_tps` |
+| `/sl <positionId> <price>` | Dời SL; chặn nếu mức mới đã vượt mark hiện tại. Không đăng card |
 | `/positions [status]` | Danh sách vị thế ảo (in **id đầy đủ** để dán vào `/close`) |
 | `/account [id]` | Tổng quan tài khoản (equity, margin, PnL) |
 | `/accounts` | Danh sách tài khoản ảo (in **id đầy đủ** để dán vào `/deposit`/`/withdraw`/`/reset`) |

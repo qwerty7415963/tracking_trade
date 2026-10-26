@@ -186,6 +186,11 @@ model VirtualPosition {
   leverage        Int
   remainingSize   Decimal   @map("remaining_size") @db.Decimal(30, 8)
   filledTps       Json      @default("[]") @map("filled_tps")
+  // Multi-entry (DCA): every level with the notional frozen at open, plus the
+  // subset that has not filled yet. `entryPrice` is the average of the levels
+  // that actually filled.
+  entries         Json      @default("[]")
+  pendingEntries  Json      @default("[]") @map("pending_entries")
   status          String    @default("OPEN")
   openedAt        DateTime  @default(now()) @map("opened_at")
   closedAt        DateTime? @map("closed_at")

@@ -67,6 +67,8 @@ const HELP = [
   "/reject <signalId> [reason] - reject a signal",
   "/open <signalId> [accountId] - retry open for approved signal",
   "/close <positionId> - close position at market",
+  "/tp <positionId> [size|percent|all] - take profit now at market (default all)",
+  "/sl <positionId> <price> - move stop loss for an open position",
   "/positions [status] - list virtual positions",
   "/accounts - list all virtual accounts",
   "/account [id] - account summary (equity, margin, PnL)",
@@ -454,6 +456,23 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
     await this.api("sendMessage", { chat_id: chatId, text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
   }
 
+  /** Publish the update card for a manual TP/close; a card failure must not
+   *  undo the ledger action, so it only reports the reason. */
+  private async publishManualCard(
+    positionId: string,
+    status: "tp" | "close",
+    opts: { markPrice?: number; volume: number; open: boolean },
+    actor: string,
+  ): Promise<string> {
+    try {
+      await this.publications.requestPositionPublish(positionId, status, opts, actor);
+      return " Card published.";
+    } catch (err) {
+      const reason = err instanceof Error ? err.message.split(":")[0] : "error";
+      return ` Card skipped: ${reason}.`;
+    }
+  }
+
   // ------------------------------------------------------------- messages
 
   async handleMessage(msg: TgMessage): Promise<void> {
@@ -603,7 +622,63 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           closedSize: number;
           position: { closePrice: number | null };
         };
-        await reply(`Closed ${r.closedSize} @ ${JSON.stringify(r.position.closePrice)}.`);
+        const closePrice = Number(r.position.closePrice);
+        const card = await this.publishManualCard(a, "close", {
+          markPrice: Number.isFinite(closePrice) ? closePrice : undefined,
+          volume: r.closedSize,
+          open: false,
+        }, actor);
+        await reply(`Closed ${r.closedSize} @ ${JSON.stringify(r.position.closePrice)}.${card}`);
+        return;
+      }
+      case "tp": {
+        if (!a) {
+          await reply("Usage: /tp <positionId> [size|percent|all]");
+          return;
+        }
+        const arg = (b ?? "").trim().toLowerCase();
+        const opts: { size?: number; percent?: number } = {};
+        if (arg && arg !== "all") {
+          if (arg.endsWith("%")) {
+            const percent = Number(arg.slice(0, -1));
+            if (!Number.isFinite(percent)) {
+              await reply("Usage: /tp <positionId> [size|percent|all]");
+              return;
+            }
+            opts.percent = percent;
+          } else {
+            const size = Number(arg);
+            if (!Number.isFinite(size)) {
+              await reply("Usage: /tp <positionId> [size|percent|all]");
+              return;
+            }
+            opts.size = size;
+          }
+        }
+        const r = await this.trading.takeProfitManual(a, opts, actor);
+        const card = await this.publishManualCard(a, "tp", {
+          markPrice: r.markPrice,
+          volume: r.fullyClosed ? r.closedSize : r.remainingSize,
+          open: !r.fullyClosed,
+        }, actor);
+        const head = r.fullyClosed ? "TP toàn bộ" : "TP một phần";
+        await reply(
+          `${head}: ${Number(r.closedSize.toFixed(6))} @ ${r.markPrice} → PnL ${r.realized.toFixed(2)}; còn ${Number(r.remainingSize.toFixed(6))}.${card}`,
+        );
+        return;
+      }
+      case "sl": {
+        if (!a || !b) {
+          await reply("Usage: /sl <positionId> <price>");
+          return;
+        }
+        const price = Number(b);
+        if (!Number.isFinite(price)) {
+          await reply("Usage: /sl <positionId> <price>");
+          return;
+        }
+        const r = await this.trading.updateStopLoss(a, price, actor);
+        await reply(`SL ${r.old ?? "-"} → ${r.new}.`);
         return;
       }
       case "positions": {

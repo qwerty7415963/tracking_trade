@@ -91,7 +91,7 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
-export type CardStatus = "filled" | "tp" | "sl" | "close";
+export type CardStatus = "filled" | "entry" | "tp" | "sl" | "close";
 
 export interface PositionPublishRequest {
   positionId: string;
@@ -127,6 +127,26 @@ export function buildOpenCaption(input: {
     lines.push("", escapeHtml(input.sourceUrl));
   }
   return lines.join("\n");
+}
+
+/** ` (đã khớp 2/3 lệnh)` for multi-entry rows; empty for single-level ones. */
+function entryFillNote(position: { entries: unknown; pendingEntries: unknown }): string {
+  const total = Array.isArray(position.entries) ? position.entries.length : 0;
+  const pending = Array.isArray(position.pendingEntries) ? position.pendingEntries.length : 0;
+  if (total < 2) return "";
+  return ` (đã khớp ${Math.max(0, total - pending)}/${total} lệnh)`;
+}
+
+/**
+ * Every TP in order; the first `hitCount` levels carry `(đã khớp TPn)`.
+ * Count-based because a `tp` card publishes BEFORE the slice closes (settle
+ * order: card first), so its own TP comes from `tpIndex` — `filledTps` would
+ * only show the previous ones. Duplicate prices stay distinguishable.
+ */
+function takeProfitList(tps: number[], hitCount: number): string {
+  return tps
+    .map((tp, i) => (i < hitCount ? `${tp} (đã khớp TP${i + 1})` : String(tp)))
+    .join(", ");
 }
 
 function decimals(value: number): number {
@@ -166,8 +186,14 @@ export class PublicationsService {
       replyToMessageId?: string;
       /** Persist + render this card style; omit to inherit the position's. */
       cardKind?: CardKind;
+      /** Freeze this size on the card instead of the position's total size. */
+      volume?: number;
+      /** Override snapshot status (partial manual exit stays OPEN). */
+      open?: boolean;
       /** Hold the render job (the /pos style dialog waits 5 minutes). */
       renderDelayMs?: number;
+      /** TP ordinal for `tp` cards — the caption marks that level as hit. */
+      tpIndex?: number;
     },
     actor: string,
   ) {
@@ -212,8 +238,14 @@ export class PublicationsService {
         cardKind,
         // Freeze the open size so the card still renders if the position
         // closes before the (possibly delayed) render runs.
-        ...(position ? { volume: asNumber(position.size) } : {}),
+        ...(opts.volume !== undefined
+          ? { volume: opts.volume }
+          : position
+            ? { volume: asNumber(position.size) }
+            : {}),
+        ...(opts.open !== undefined ? { open: opts.open } : {}),
         ...(opts.renderDelayMs && opts.renderDelayMs > 0 ? { delayMs: opts.renderDelayMs } : {}),
+        ...(opts.tpIndex !== undefined ? { tpIndex: opts.tpIndex } : {}),
       },
       actor,
       `${RENDER_JOB_ID_PREFIX}${publication.id}`,
@@ -320,7 +352,7 @@ export class PublicationsService {
   async buildSnapshot(
     positionId: string,
     markPrice: number,
-    opts?: { status?: CardStatus; volume?: number },
+    opts?: { status?: CardStatus; volume?: number; open?: boolean },
   ) {
     const position = await this.prisma.virtualPosition.findUnique({
       where: { id: positionId },
@@ -343,7 +375,8 @@ export class PublicationsService {
     // position closes (its `remainingSize` hits 0). Update cards (tp/sl/close)
     // render as CLOSED.
     const volume = opts?.volume ?? asNumber(position.size);
-    const isOpen = !opts?.status || opts.status === "filled";
+    const isOpen =
+      opts?.open ?? (!opts?.status || opts.status === "filled" || opts.status === "entry");
     const entry = asNumber(position.entryPrice);
     const floating =
       (position.direction === "LONG" ? 1 : -1) * (markPrice - entry) * volume;
@@ -428,7 +461,11 @@ export class PublicationsService {
    */
   async sendPublication(publicationId: string, request: SendJobData) {
     const publication = await this.getPublication(publicationId);
-    if (publication.publicationStatus === "PUBLISHED") return publication;
+    if (publication.publicationStatus === "PUBLISHED") {
+      // The row is already done; the PNG is no longer needed for retries.
+      await this.renders.deleteArtifact(publicationId);
+      return publication;
+    }
     if (!request.destinationChatId.trim()) {
       throw new Error("PUBLICATION_VALIDATION_FAILED: no destination chat configured");
     }
@@ -486,13 +523,22 @@ export class PublicationsService {
     const tps: number[] = Array.isArray(version?.takeProfits)
       ? (version.takeProfits as number[])
       : [];
+    const filledTps = Array.isArray(position.filledTps) ? (position.filledTps as number[]) : [];
+    // A `tp` card knows the ordinal it is about (it publishes before the
+    // close); every other card annotates the TPs already in filledTps.
+    const hitCount = Math.min(
+      tps.length,
+      request.tpIndex !== undefined ? request.tpIndex + 1 : filledTps.length,
+    );
     const caption = buildOpenCaption({
       direction: position.direction === "SHORT" ? "SHORT" : "LONG",
       instrument: snapshot.displaySymbol,
-      status: request.status,
-      entry: String(snapshot.entryPrice),
+      // A DCA fill card reads "filled": the template vocabulary stays
+      // limit/filled/tp/sl/close and the entry note carries the ladder.
+      status: request.status === "entry" ? "filled" : request.status,
+      entry: String(snapshot.entryPrice) + entryFillNote(position),
       stopLoss: position.stopLoss === null ? "" : String(asNumber(position.stopLoss)),
-      takeProfit: tps.length > 0 ? String(tps[tps.length - 1]) : "",
+      takeProfit: takeProfitList(tps, hitCount),
       sourceDisplayName: signal?.source.displayName ?? "unknown source",
       sourceUrl,
     });
@@ -531,6 +577,11 @@ export class PublicationsService {
         publishedAt: new Date(),
       },
     });
+    // The card has been sent and the row is terminal-success; the PNG is no
+    // longer needed for retries, so drop it immediately instead of waiting
+    // for a periodic mtime sweep. Best-effort: a failed unlink leaves the
+    // publication PUBLISHED.
+    await this.renders.deleteArtifact(publicationId);
     await this.audit.record(request.actor, "publication.published", {
       publicationId,
       telegramMessageId: sent.telegramMessageId,

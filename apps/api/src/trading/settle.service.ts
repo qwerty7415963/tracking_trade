@@ -12,7 +12,7 @@ export const SETTLE_QUEUE_NAME = "position-settle";
 /** BullMQ rejects ":" inside custom job ids — keep the key colon-free. */
 export function settleJobId(ev: Pick<MarketHitEvent, "positionId" | "kind" | "tpIndex">): string {
   return ev.kind === "TP"
-    ? `settle-${ev.positionId}-TP-${ev.tpIndex}`
+    ? `settle-${ev.positionId}-TP-${ev.tpIndex ?? 0}`
     : `settle-${ev.positionId}-SL`;
 }
 
@@ -69,7 +69,12 @@ export class SettleService {
         const created = await this.publications.requestPositionPublish(
           data.positionId,
           status,
-          { markPrice: data.markPrice },
+          {
+            markPrice: data.markPrice,
+            // The card publishes before the slice closes, so it carries the
+            // ordinal it is about — the caption marks that TP as hit.
+            ...(data.kind === "TP" ? { tpIndex: data.tpIndex ?? 0 } : {}),
+          },
           "worker",
         );
         publicationId = created.publicationId;

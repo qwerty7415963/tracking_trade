@@ -1226,3 +1226,78 @@ describe("OperatorBotService.pollPublicationFailures", () => {
     ]);
   });
 });
+
+describe("OperatorBotService manual exit commands", () => {
+  async function dispatch(
+    name: string,
+    args: string[],
+    overrides: Record<string, unknown>,
+  ): Promise<string[]> {
+    const { svc } = bot(overrides);
+    const replies: string[] = [];
+    await svc.dispatch({ name, args }, "tg:alice", async (text) => {
+      replies.push(text);
+    });
+    return replies;
+  }
+
+  it("/tp partial publishes a TP card with the remaining size", async () => {
+    const takeProfitManual = jest.fn(async () => ({
+      markPrice: 3050,
+      closedSize: 10.5,
+      realized: 525,
+      remainingSize: 31.5,
+      fullyClosed: false,
+    }));
+    const requestPositionPublish = jest.fn(async () => ({ publicationId: "pub1" }));
+    const replies = await dispatch("tp", ["pos1", "25%"], {
+      trading: { takeProfitManual },
+      publications: { requestPositionPublish },
+    });
+
+    expect(takeProfitManual).toHaveBeenCalledWith("pos1", { percent: 25 }, "tg:alice");
+    expect(requestPositionPublish).toHaveBeenCalledWith(
+      "pos1",
+      "tp",
+      { markPrice: 3050, volume: 31.5, open: true },
+      "tg:alice",
+    );
+    expect(replies[0]).toContain("TP một phần");
+    expect(replies[0]).toContain("Card published.");
+  });
+
+  it("/sl moves the stop loss without publishing a card", async () => {
+    const updateStopLoss = jest.fn(async () => ({ old: 2900, new: 3000 }));
+    const requestPositionPublish = jest.fn(async () => ({ publicationId: "pub1" }));
+    const replies = await dispatch("sl", ["pos1", "3000"], {
+      trading: { updateStopLoss },
+      publications: { requestPositionPublish },
+    });
+
+    expect(updateStopLoss).toHaveBeenCalledWith("pos1", 3000, "tg:alice");
+    expect(requestPositionPublish).not.toHaveBeenCalled();
+    expect(replies[0]).toBe("SL 2900 → 3000.");
+  });
+
+  it("/close publishes the close card", async () => {
+    const closePosition = jest.fn(async () => ({
+      closedSize: 42,
+      realized: -100,
+      position: { closePrice: 3050 },
+    }));
+    const requestPositionPublish = jest.fn(async () => ({ publicationId: "pub1" }));
+    const replies = await dispatch("close", ["pos1"], {
+      trading: { closePosition },
+      publications: { requestPositionPublish },
+    });
+
+    expect(closePosition).toHaveBeenCalledWith("pos1", "tg:alice");
+    expect(requestPositionPublish).toHaveBeenCalledWith(
+      "pos1",
+      "close",
+      { markPrice: 3050, volume: 42, open: false },
+      "tg:alice",
+    );
+    expect(replies[0]).toContain("Card published.");
+  });
+});

@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
+﻿import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Queue, Job } from "bullmq";
 import { promises as fs } from "fs";
 import { join } from "path";
@@ -12,7 +12,7 @@ export const RENDER_QUEUE = "RENDER_QUEUE";
 export const RENDER_QUEUE_NAME = "card-render";
 export const PUBLISH_SEND_QUEUE = "PUBLISH_SEND_QUEUE";
 export const PUBLISH_SEND_QUEUE_NAME = "telegram-send";
-// BullMQ rejects custom job ids containing ":" — keep prefixes colon-free.
+// BullMQ rejects custom job ids containing ":" â€” keep prefixes colon-free.
 export const RENDER_JOB_ID_PREFIX = "render-";
 export const SEND_JOB_ID_PREFIX = "send-";
 
@@ -20,7 +20,7 @@ export interface RenderJobData {
   virtualPositionId: string;
   markPrice?: number;
   publicationId?: string;
-  status?: "filled" | "tp" | "sl" | "close";
+  status?: "filled" | "entry" | "tp" | "sl" | "close";
   destinationChatId?: string;
   replyToMessageId?: string;
   actor?: string;
@@ -28,15 +28,21 @@ export interface RenderJobData {
   cardKind?: CardKind;
   /** Position size frozen when the card was requested (open card). */
   volume?: number;
+  /** Snapshot status override: partial manual exits are still OPEN. */
+  open?: boolean;
   /** Non-zero only for the /pos style dialog: marks the job being chosen. */
   delayMs?: number;
+  /** TP ordinal the card is about (`tp` cards) — caption marks it as hit. */
+  tpIndex?: number;
 }
 
 export interface SendJobData {
   publicationId: string;
   positionId: string;
-  status: "filled" | "tp" | "sl" | "close";
+  status: "filled" | "entry" | "tp" | "sl" | "close";
   markPrice: number;
+  /** TP ordinal just hit; the card publishes before the slice closes. */
+  tpIndex?: number;
   destinationChatId: string;
   replyToMessageId?: string;
   artifactPath: string;
@@ -54,7 +60,7 @@ export interface RenderRequest {
   virtualPositionId: string;
   markPrice?: number;
   publicationId?: string;
-  status?: "filled" | "tp" | "sl" | "close";
+  status?: "filled" | "entry" | "tp" | "sl" | "close";
   destinationChatId?: string;
   replyToMessageId?: string;
   actor?: string;
@@ -63,8 +69,12 @@ export interface RenderRequest {
   /** Position size frozen at request time; keeps open cards renderable
    *  even if the position closes before the (delayed) render runs. */
   volume?: number;
+  /** Snapshot status override: partial manual exits are still OPEN. */
+  open?: boolean;
   /** Hold the job this many ms (used by the /pos style dialog, 5 min). */
   delayMs?: number;
+  /** TP ordinal this card is about (`tp` cards) — caption marks it as hit. */
+  tpIndex?: number;
 }
 
 function mapJobStatus(state: string): RenderJobStatus {
@@ -133,7 +143,7 @@ export class RendersService {
    *
    * TP/SL/close cards enqueue their render job *without* a delay, so right
    * after a TP the newest PENDING row is usually not the dialog job: picking
-   * it answers "Hết thời gian chọn" while the real dialog job is still
+   * it answers "Háº¿t thá»i gian chá»n" while the real dialog job is still
    * delayed. Choose the job that carries the dialog marker (`delayMs`); fall
    * back to a plain delayed job for jobs enqueued before that marker existed.
    */
@@ -259,30 +269,13 @@ export class RendersService {
     }
   }
 
-  /** Retention: 7 days (open-decisions #10). Deletes files by mtime; no DB. */
-  async purgeOldArtifacts(retentionDays = 7, directory?: string): Promise<number> {
-    const dir = directory ?? this.artifactsDir();
-    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-    let entries;
+  /** Remove the rendered PNG once the publication is published and no retry
+   *  needs it. Missing files are a no-op; other errors propagate. */
+  async deleteArtifact(renderId: string): Promise<void> {
     try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return 0;
+      await fs.unlink(this.artifactPathFor(renderId));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
-    let removed = 0;
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith(".png")) continue;
-      const path = join(dir, entry.name);
-      try {
-        const stat = await fs.stat(path);
-        if (stat.mtimeMs < cutoff) {
-          await fs.unlink(path);
-          removed += 1;
-        }
-      } catch {
-        continue;
-      }
-    }
-    return removed;
   }
 }

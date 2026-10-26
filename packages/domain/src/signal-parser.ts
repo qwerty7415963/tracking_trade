@@ -14,7 +14,12 @@ const SUFFIXED_SYMBOL = /\b((?:XAU|XAG|BTC|ETH)USD(?:\.\w+)?|US30|NAS100|SPX500|
 const BARE_CRYPTO = /\b(BTC|ETH|SOL|XRP|DOGE)(USD|USDT)?\b/;
 const KNOWN_WORDS = /\b(GOLD|SILVER|OIL|WTI|BRENT|NASDAQ|DOW|SP500)\b/;
 
-const ENTRY_RE = /(?:ENTRY|ENTER|@)\s*[:\-]?\s*(\d+(?:\.\d+)?)(?:\s*[-–]\s*(\d+(?:\.\d+)?))?/i;
+// Entry can be a single price, a zone (`3000 - 2950`) or a ladder of levels
+// (`3000 2950 2900`, `3000, 2950`). Every number carries `(?![xX])` so a
+// leverage token right after it (`Entry 3000 5x`) ends the run instead of
+// being read as another level.
+const ENTRY_RE =
+  /(?:ENTRY|ENTER|@)\s*[:\-]?\s*(\d+(?:\.\d+)?(?![xX])(?:[-–,\s]+\d+(?:\.\d+)?(?![xX]))*)/i;
 const SL_RE = /(?:STOP\s?LOSS|\bSL\b)\s*[:\-]?\s*(\d+(?:\.\d+)?)/i;
 const TP_RE = /\bTP(\d)?\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\d)(?!\s*%)/gi;
 const LIMIT_RE = /\blimit\b/i;
@@ -162,6 +167,18 @@ function takeProfits(text: string): number[] {
   return out;
 }
 
+/** Split the matched entry run into levels: `1223 - 1154` / `3000 2950`. */
+function entryLevels(run: string | null | undefined): number[] {
+  if (!run) return [];
+  const out: number[] = [];
+  for (const token of run.split(/[-–,\s]+/)) {
+    if (!token) continue;
+    const n = parseNumber(token);
+    if (n !== null) out.push(n);
+  }
+  return out;
+}
+
 function takeProfitPercents(text: string): number[] {
   const out: number[] = [];
   TP_PCT_RE.lastIndex = 0;
@@ -184,8 +201,24 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
   const updateAction = detectUpdateAction(text);
 
   const entryMatch = text.match(ENTRY_RE);
-  const entry = parseNumber(entryMatch?.[1]);
-  const entryZoneHigh = parseNumber(entryMatch?.[2]);
+  const entryRun = entryMatch?.[1] ?? "";
+  const levels = entryLevels(entryRun);
+  // A dash between exactly two numbers is a zone (`1223 - 1154`): one entry
+  // plus a reference high. Anything else is a ladder of entry levels.
+  const isEntryZone = /[-–]/.test(entryRun) && levels.length === 2;
+  const entry = levels.length > 0 ? levels[0] : null;
+  const entryZoneHigh = isEntryZone ? levels[1] : null;
+  let entries = isEntryZone ? [levels[0]] : levels;
+  // DCA only works when the ladder points away from the entry: LONG falls to
+  // lower levels, SHORT climbs to higher ones. Anything else is noise.
+  const entriesWrongOrder =
+    !isEntryZone &&
+    entries.length > 1 &&
+    dir.direction !== null &&
+    !(dir.direction === "LONG"
+      ? entries.every((v, i) => i === 0 || v <= entries[i - 1])
+      : entries.every((v, i) => i === 0 || v >= entries[i - 1]));
+  if (entriesWrongOrder) entries = [entries[0]];
   const stopLoss = parseNumber(text.match(SL_RE)?.[1]);
   let tps = takeProfits(text);
   const levMatch = rawText.match(LEVERAGE_RE);
@@ -197,6 +230,7 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
   const ambiguities: string[] = [];
   if (!inst.instrument) missingFields.push("instrument");
   if (inst.ambiguous) ambiguities.push("unknown_symbol_no_fuzzy_match");
+  if (entriesWrongOrder) ambiguities.push("entries_wrong_order");
   if (!dir.direction) {
     if (dir.ambiguous) ambiguities.push("conflicting_directions");
     else missingFields.push("direction");
@@ -231,6 +265,7 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
     orderType,
     entry,
     entryZoneHigh,
+    entries,
     stopLoss,
     takeProfits: tps,
     leverage,

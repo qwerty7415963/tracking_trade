@@ -72,6 +72,8 @@ OPEN -> CANCELLED
 - SL đóng toàn bộ phần còn lại; SL thắng khi giá chạm cả 2 phía.
 - Mỗi lần đóng ghi realized PnL vào ledger; số dư chỉ đổi qua ledger.
 - Chạm TP/SL: **card đăng trước, lệnh đóng sau** (settle job, giá đóng băng lúc detect — xem [04-risk-execution/risk-engine.md](../04-risk-execution/risk-engine.md) §5). Vị thế vì thế hiển thị `OPEN` thêm tối đa 60s.
+- Khớp entry DCA: giá chạm level trong `pending_entries` → `size` tăng, `entry_price` chuyển thành **TB có trọng số** của các level đã khớp, level rời khỏi `pending_entries`; có 1 card update (`status=entry`) nhưng **không qua settle** (không đổi ledger, không đóng lệnh).
+- Thao tác tay: TP một phần giảm `remaining_size`, giữ nguyên `filled_tps` và status (card `tp` hiện phần còn lại OPEN); TP all hoặc `/close` đóng phần còn lại; dời SL chỉ đổi `stop_loss` (không card). Không chuyển vị thế sang state khác ngoài `CLOSED` khi đóng hết.
 
 ## 4. Publication lifecycle
 

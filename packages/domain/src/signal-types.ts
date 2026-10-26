@@ -17,6 +17,9 @@ export interface NormalizedSignal {
   orderType: string | null;
   entry: number | null;
   entryZoneHigh: number | null;
+  /** All entry levels as written (first one = `entry`). Zone forms collapse to
+   *  a single level; a ladder out of order falls back to the first level. */
+  entries: number[];
   stopLoss: number | null;
   takeProfits: number[];
   leverage: number | null;

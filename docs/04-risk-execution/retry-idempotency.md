@@ -13,9 +13,10 @@
 | Market data lỗi | Bỏ qua chu kỳ poll, không tác động vị thế |
 | Telegram timeout | Publication UNKNOWN; xử lý thận trọng để tránh bài trùng |
 | Update đến trước bài gốc | Giữ chờ retryable 5 phút (`ORIGINAL_NOT_PUBLISHED_YET`), đổi sang `RETRY_PENDING` trong lúc chờ, rồi đăng lẻ + audit `publication.orphaned` |
-| Send job | 10 attempts, fixed backoff **60s** (~10 phút) — phải vượt hold 5 phút, nếu không card TP/SL bắn sớm chết vĩnh viễn |
+| Send job | 10 attempts, **exponential backoff 5s** (5s, 10s, 20s… — lần đầu nhanh, đuôi ~42 phút vượt hold 5 phút) |
 | Send job hết attempts | Consumer `failed` ở lần cuối → `FINAL_FAILURE` (trước đây im lặng, row kẹt `PENDING` mãi) |
 | Settle job (TP/SL) | 5 attempts × 30s, jobId dedupe `settle-<positionId>-TP-<i>` / `-SL`; **card trước, đóng sau** với giá đóng băng |
+| Khớp entry DCA | Áp **inline trong poll** (idempotent theo `pending_entries` — level đã khớp → bỏ qua); card publish qua `requestPositionPublish`, lỗi chỉ audit `publication.skipped` |
 | Chọn kind card lúc dialog | Quét mọi publication `PENDING/RETRY_PENDING` của position, chỉ promote job **có `delayMs`** (đang delayed) — job TP/SL không delay không được chọn |
 | BullMQ jobId | Custom job id **không được chứa `:`** (BullMQ ném lỗi) — prefix `render-`/`send-`/`settle-` |
 | Lỗi tạm thời | Exponential backoff + jitter, max attempts, DLQ |

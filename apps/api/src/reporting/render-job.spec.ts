@@ -53,8 +53,8 @@ describe("processRenderJob", () => {
       expect.objectContaining({
         jobId: "send-pub1",
         attempts: 10,
-        // Must outlive the 5-minute reply hold: 10 x 60s covers it.
-        backoff: { type: "fixed", delay: 60_000 },
+        // Fast first retries; the tail still outlives the 5-minute reply hold.
+        backoff: { type: "exponential", delay: 5_000 },
       }),
     );
     expect(result).toEqual({ artifactPath: "/data/artifacts/r1.png" });
@@ -189,6 +189,59 @@ describe("processRenderJob", () => {
         cardKind: "position-stats",
       },
       "job7",
+    );
+    expect(deps.renderer.render).toHaveBeenCalledWith(
+      { id: "snap" },
+      expect.any(Date),
+      "position-stats",
+    );
+  });
+
+  it("forwards the TP ordinal so the caption can mark that level as hit", async () => {
+    const deps = setup({
+      prisma: {
+        virtualPosition: { findUnique: jest.fn().mockResolvedValue({ coin: "ETH" }) },
+        telegramPublication: { update: jest.fn().mockResolvedValue({}) },
+      } as unknown as RenderRunnerDeps["prisma"],
+    });
+    await processRenderJob(
+      deps,
+      {
+        virtualPositionId: "pos1",
+        publicationId: "pub9",
+        status: "tp",
+        markPrice: 2600,
+        tpIndex: 1,
+      },
+      "job9",
+    );
+    const payload = (deps.sendQueue.add as unknown as jest.Mock).mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(payload).toMatchObject({ publicationId: "pub9", status: "tp", tpIndex: 1 });
+  });
+
+  it("treats a DCA fill card as an update (live kind from the position)", async () => {
+    const deps = setup({
+      prisma: {
+        virtualPosition: {
+          findUnique: jest.fn().mockResolvedValue({ coin: "ETH", cardKind: "position-stats" }),
+        },
+        telegramPublication: { update: jest.fn().mockResolvedValue({}) },
+      } as unknown as RenderRunnerDeps["prisma"],
+    });
+
+    await processRenderJob(
+      deps,
+      {
+        virtualPositionId: "pos1",
+        publicationId: "pub8",
+        status: "entry",
+        markPrice: 2600,
+        cardKind: "pnl-strip",
+      },
+      "job8",
     );
     expect(deps.renderer.render).toHaveBeenCalledWith(
       { id: "snap" },

@@ -59,6 +59,7 @@ export async function processRenderJob(
     const card = await deps.publications.buildSnapshot(data.virtualPositionId, markPrice, {
       status: data.status,
       volume: data.volume,
+      open: data.open,
     });
     // Open card: the kind the /pos dialog froze into the job. Update card:
     // whatever the position holds right now (chosen style wins over the
@@ -79,6 +80,7 @@ export async function processRenderJob(
           positionId: data.virtualPositionId,
           status: data.status ?? "filled",
           markPrice,
+          ...(data.tpIndex !== undefined ? { tpIndex: data.tpIndex } : {}),
           destinationChatId: data.destinationChatId ?? "",
           replyToMessageId: data.replyToMessageId,
           artifactPath,
@@ -87,10 +89,11 @@ export async function processRenderJob(
         {
           jobId: `${SEND_JOB_ID_PREFIX}${data.publicationId}`,
           attempts: 10,
-          // Must outlive ORIGINAL_HOLD_MS (5 min): a TP/SL card rendered
-          // while the original card is still delayed retries until the
-          // original is published (60s x 10 = 10 min of coverage).
-          backoff: { type: "fixed", delay: 60_000 },
+          // Must outlive ORIGINAL_HOLD_MS (5 min) — an update card rendered
+          // while the original is still delayed retries until it publishes —
+          // but the first retries come fast (5s, 10s, 20s…) so a TP/SL/entry
+          // card never sits for a minute once the original is up.
+          backoff: { type: "exponential", delay: 5_000 },
           removeOnComplete: 100,
           removeOnFail: 200,
         },

@@ -45,7 +45,7 @@
 - `POST /api/v1/positions/:positionId/render-card` enqueue job `card-render` (worker render PNG vào volume `artifacts` chung).
 - `GET /api/v1/renders/:renderId` đọc trạng thái job BullMQ + kiểm tra file `<renderId>.png` (không dùng DB artifact).
 - `POST /api/v1/publications/position` tạo `TelegramPublication` PENDING rồi enqueue `card-render`; worker render xong enqueue `telegram-send`; API đọc PNG, dựng caption, gửi Telegram.
-- Không lưu metadata ảnh trong DB; retention 7 ngày quét theo mtime.
+- Không lưu metadata ảnh trong DB; file PNG bị xóa ngay sau khi publication `PUBLISHED`.
 
 ## 3. Quy tắc
 

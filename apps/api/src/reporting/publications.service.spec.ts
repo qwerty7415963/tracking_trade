@@ -53,7 +53,7 @@ function service(overrides: Record<string, unknown> = {}) {
     (overrides.sender ?? {}) as never,
     (overrides.config ?? {}) as never,
     (overrides.renders ??
-      { readArtifact: jest.fn(async () => Buffer.from("png-bytes")) }) as never,
+      { readArtifact: jest.fn(async () => Buffer.from("png-bytes")), deleteArtifact: jest.fn(async () => undefined) }) as never,
     (overrides.marketData ??
       { getAllMids: jest.fn(async () => ({} as Record<string, number>)) }) as never,
   );
@@ -108,6 +108,7 @@ describe("PublicationsService.sendPublication", () => {
     };
     const renders = {
       readArtifact: jest.fn(async () => Buffer.from("png-bytes")),
+      deleteArtifact: jest.fn(async () => undefined),
     };
     return { prisma, sender, renders };
   }
@@ -134,6 +135,7 @@ describe("PublicationsService.sendPublication", () => {
       telegramMessageId: string;
     };
     expect(setup.renders.readArtifact).toHaveBeenCalledWith("pub1");
+    expect(setup.renders.deleteArtifact).toHaveBeenCalledWith("pub1");
     expect(result.publicationStatus).toBe("PUBLISHED");
     expect(result.telegramMessageId).toBe("777");
     const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
@@ -166,6 +168,7 @@ describe("PublicationsService.sendPublication", () => {
       status: string;
     };
     expect(result.status).toBe("UNKNOWN");
+    expect(setup.renders.deleteArtifact).not.toHaveBeenCalled();
   });
 
   it("skips already-published publications without resending", async () => {
@@ -180,6 +183,7 @@ describe("PublicationsService.sendPublication", () => {
       publicationStatus: "PUBLISHED",
     });
     expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
+    expect(setup.renders.deleteArtifact).toHaveBeenCalledWith("pub1");
   });
 
   it("requires a destination chat", async () => {
@@ -189,7 +193,6 @@ describe("PublicationsService.sendPublication", () => {
       svc.requestPositionPublish("pos1", "filled", { markPrice: 2550 }, "alice"),
     ).rejects.toThrow(/no destination chat/);
   });
-
   it("holds an update while the original is fresh and records the wait", async () => {
     const setup = okSetup();
     const svc = service(setup);
@@ -202,6 +205,7 @@ describe("PublicationsService.sendPublication", () => {
       where: { id: "pub1" },
       data: { publicationStatus: "RETRY_PENDING" },
     });
+    expect(setup.renders.deleteArtifact).not.toHaveBeenCalled();
   });
 
   it("keeps an already-held row at RETRY_PENDING", async () => {
@@ -279,6 +283,7 @@ describe("PublicationsService.sendPublication", () => {
     const svc = service(setup);
     await expect(svc.sendPublication("pub1", sendInput())).rejects.toThrow(/missing required source_url/);
     expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
+    expect(setup.renders.deleteArtifact).not.toHaveBeenCalled();
   });
 
   it("allows operator MANUAL signals without any URL", async () => {
@@ -339,6 +344,142 @@ describe("PublicationsService.sendPublication", () => {
     await svc.requestPositionPublish("pos1", "filled", {}, "alice");
     const data = (requestRender as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
     expect(data).not.toHaveProperty("markPrice");
+  });
+
+  it("notes the entry ladder on a DCA fill card and reads the status as filled", async () => {
+    const setup = okSetup();
+    (setup.prisma.virtualPosition.findUnique as jest.Mock).mockResolvedValue({
+      ...POSITION,
+      entries: [
+        { price: 2500, notional: 100000 },
+        { price: 2450, notional: 50000 },
+      ],
+      pendingEntries: [{ price: 2450, notional: 50000 }],
+    });
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput({ status: "entry" }));
+    const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    const caption = String(sendArgs.caption);
+    expect(caption).toContain("- Entry: 2500 (đã khớp 1/2 lệnh)");
+    // Template vocabulary stays limit/filled/tp/sl/close.
+    expect(caption).toContain("Long ETH - filled");
+    expect(caption).not.toContain("Long ETH - entry");
+  });
+
+  it("keeps a single-entry caption clean", async () => {
+    const setup = okSetup();
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput());
+    const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(String(sendArgs.caption)).toContain("- Entry: 2500\n");
+    expect(String(sendArgs.caption)).not.toContain("đã khớp");
+  });
+
+  it("renders an entry-fill snapshot as open", async () => {
+    const setup = okSetup();
+    const svc = service(setup);
+    const { snapshot } = await svc.buildSnapshot("pos1", 2550, { status: "entry" });
+    expect(snapshot.status).toBe("OPEN");
+  });
+
+  function tpSetup(filledTps: number[]) {
+    const setup = okSetup();
+    (setup.prisma.virtualPosition.findUnique as jest.Mock).mockResolvedValue({
+      ...POSITION,
+      filledTps,
+      signal: {
+        ...POSITION.signal,
+        versions: [
+          {
+            direction: "LONG",
+            takeProfits: [2600, 2700],
+            normalizedPayloadJson: { sourceMessageId: "m1" },
+          },
+        ],
+      },
+    });
+    return setup;
+  }
+
+  function captionOf(setup: ReturnType<typeof okSetup>): string {
+    const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    return String(sendArgs.caption);
+  }
+
+  it("lists every TP on a card where nothing hit yet", async () => {
+    const setup = tpSetup([]);
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput());
+    const caption = captionOf(setup);
+    expect(caption).toContain("- TP: 2600, 2700");
+    expect(caption).not.toContain("đã khớp TP");
+  });
+
+  it("marks the TP that already hit inside the list", async () => {
+    const setup = tpSetup([2600]);
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput({ status: "tp" }));
+    expect(captionOf(setup)).toContain("- TP: 2600 (đã khớp TP1), 2700");
+  });
+
+  it("marks every TP that hit when several are filled", async () => {
+    const setup = tpSetup([2600, 2700]);
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput({ status: "tp" }));
+    expect(captionOf(setup)).toContain("- TP: 2600 (đã khớp TP1), 2700 (đã khớp TP2)");
+  });
+
+  it("marks the TP a tp card is about even though the slice closes after the send", async () => {
+    // Settle publishes before it closes the slice: filledTps is still empty
+    // at send time, the ordinal comes from the job instead.
+    const setup = tpSetup([]);
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput({ status: "tp", tpIndex: 0 }));
+    expect(captionOf(setup)).toContain("- TP: 2600 (đã khớp TP1), 2700");
+  });
+
+  it("marks by ordinal so duplicate TP prices never cross-annotate", async () => {
+    const setup = okSetup();
+    (setup.prisma.virtualPosition.findUnique as jest.Mock).mockResolvedValue({
+      ...POSITION,
+      filledTps: [2600],
+      signal: {
+        ...POSITION.signal,
+        versions: [
+          {
+            direction: "LONG",
+            takeProfits: [2600, 2600],
+            normalizedPayloadJson: { sourceMessageId: "m1" },
+          },
+        ],
+      },
+    });
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput({ status: "entry" }));
+    // Only the first level is annotated — a value match would tag both.
+    expect(captionOf(setup)).toContain("- TP: 2600 (đã khớp TP1), 2600");
+    expect(captionOf(setup)).not.toContain("2600 (đã khớp TP2)");
+  });
+
+  it("forwards volume/open overrides for manual exit cards", async () => {
+    const setup = okSetup();
+    const requestRender = jest.fn(async () => ({ id: "render-pub1" }));
+    const svc = service({
+      ...setup,
+      config: { reportDestinationChatId: "@chan" },
+      renders: { ...setup.renders, requestRender },
+    });
+    await svc.requestPositionPublish(
+      "pos1",
+      "tp",
+      { markPrice: 2600, volume: 12.5, open: true },
+      "alice",
+    );
+    expect(requestRender).toHaveBeenCalledWith(
+      expect.objectContaining({ volume: 12.5, open: true, status: "tp" }),
+      "alice",
+      "render-pub1",
+    );
   });
 
   it("enqueues a render job instead of publishing inline", async () => {
@@ -597,6 +738,23 @@ describe("PublicationsService.buildSnapshot stats extras", () => {
     expect(snapshot.status).toBe("CLOSED");
     expect(snapshot.volume).toBe(5);
   });
+
+  it("keeps a partial manual exit snapshot OPEN when asked", async () => {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({ ...POSITION, size: 5, remainingSize: 3 })),
+      },
+      sourceMessage: { findUnique: jest.fn(async () => null) },
+    };
+    const svc = service({ prisma });
+    const { snapshot } = await svc.buildSnapshot("pos1", 2600, {
+      status: "tp",
+      volume: 3,
+      open: true,
+    });
+    expect(snapshot.status).toBe("OPEN");
+    expect(snapshot.volume).toBe(3);
+  });
 });
 
 describe("PublicationsService.listRecentFailures", () => {
@@ -637,7 +795,7 @@ describe("PublicationsService.chooseCardStyle", () => {
     const svc = service({
       prisma,
       config: { reportDestinationChatId: "@chan" },
-      renders: { promoteFirstDelayed, readArtifact: jest.fn() },
+      renders: { promoteFirstDelayed, readArtifact: jest.fn(), deleteArtifact: jest.fn(async () => undefined) },
     });
     return { svc, prisma, promoteFirstDelayed };
   }
@@ -722,7 +880,7 @@ describe("PublicationsService.styleDialogRemainingMs", () => {
       telegramPublication: { findMany: jest.fn(async () => rows) },
     };
     const dialogRemainingMs = jest.fn(async () => remaining);
-    const svc = service({ prisma, renders: { dialogRemainingMs, readArtifact: jest.fn() } });
+    const svc = service({ prisma, renders: { dialogRemainingMs, readArtifact: jest.fn(), deleteArtifact: jest.fn(async () => undefined) } });
     return { svc, prisma, dialogRemainingMs };
   }
 

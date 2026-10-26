@@ -74,20 +74,30 @@ describe("RendersService", () => {
     }
   });
 
-  it("purges png files older than retention without a database", async () => {
+  it("deletes an artifact by render id", async () => {
     const dir = await tempDir();
-    const oldPath = join(dir, "old.png");
-    const freshPath = join(dir, "fresh.png");
-    await fs.writeFile(oldPath, "old");
-    await fs.writeFile(freshPath, "fresh");
-    await fs.writeFile(join(dir, "notes.txt"), "keep");
-    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
-    await fs.utimes(oldPath, eightDaysAgo, eightDaysAgo);
+    const restore = useArtifactsDir(dir);
+    try {
+      const svc = service();
+      await svc.writeArtifact("pub1", Buffer.from("png-bytes"));
+      await svc.deleteArtifact("pub1");
+      await expect(svc.readArtifact("pub1")).rejects.toThrow();
+    } finally {
+      restore();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
 
-    const svc = service();
-    await expect(svc.purgeOldArtifacts(7, dir)).resolves.toBe(1);
-    await expect(fs.stat(oldPath)).rejects.toThrow();
-    await expect(fs.stat(freshPath)).resolves.toBeTruthy();
+  it("ignores a missing artifact when deleting", async () => {
+    const dir = await tempDir();
+    const restore = useArtifactsDir(dir);
+    try {
+      const svc = service();
+      await expect(svc.deleteArtifact("missing")).resolves.toBeUndefined();
+    } finally {
+      restore();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   describe("promoteRender", () => {

@@ -40,7 +40,8 @@ Parser chuyển nội dung thô thành **normalized signal** với các trườn
 - Ticker có marker (`$ETH`, `#ZEC`, `ZEC/USDT`) luôn được tách; từ thường chỉ nhận nếu nằm trong coin list.
 - Coin trích được đối chiếu **coin list do operator quản lý** (`tradable_coins`): không có → giữ tên thật + gắn `unmapped_symbol_<X>` → `NEEDS_REVIEW`. Không bao giờ đoán coin.
 - Leverage `30x` được trích vào payload (sizing vẫn theo account, dùng sau).
-- Entry dạng vùng `1223 - 1154` → `entry=1223`, `entryZoneHigh=1154`.
+- Entry dạng vùng `1223 - 1154` → `entry=1223`, `entryZoneHigh=1154`, `entries=[1223]` (vùng = 1 lệnh duy nhất).
+- **Nhiều entry (DCA)**: `Entry: 3000 2950 2900` hoặc `Entry: 3000, 2950` → `entries=[3000,2950,2900]` với `entry` = phần tử đầu. Số liền sau bởi `x` (leverage `5x`) **không** bị đọc thành entry. Thứ tự phải cùng chiều với hướng lệnh: **LONG giảm dần, SHORT tăng dần** — sai thứ tự → chỉ lấy entry đầu + gắn ambiguity `entries_wrong_order`.
 - TP phần trăm (`Tp: 20% 40% 60%`): có entry thì quy đổi ra giá theo hướng (LONG `entry*(1+p/100)`, SHORT ngược lại) + gắn `tp_percent_converted`; thiếu entry thì review. Giả định TP% = biên giá, không phải % vị thế.
 - Bài chỉ có ảnh (số nằm trong chart) → thiếu field → `NEEDS_REVIEW`, chờ OCR/vision giai đoạn sau.
 
