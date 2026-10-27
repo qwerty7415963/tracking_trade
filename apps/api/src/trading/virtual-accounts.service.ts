@@ -198,7 +198,7 @@ export class VirtualAccountsService {
     if (!(balance >= 0)) throw new BadRequestException("balance must be >= 0");
     await this.get(id);
     const open = await this.prisma.virtualPosition.findMany({
-      where: { accountId: id, status: { in: ["OPEN", "TP_HIT"] } },
+      where: { accountId: id, status: { in: ["PENDING_ENTRY", "OPEN", "TP_HIT"] } },
       select: { id: true },
     });
     for (const p of open) {

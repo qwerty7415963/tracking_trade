@@ -14,6 +14,20 @@ export interface AppConfig {
   defaultAccountId: string;
   reportDestinationChatId: string;
   marketPollMs: number;
+  /** /pos entry-market: wait before taking the execution mid. */
+  posMarketEntryDelayMs: number;
+  /** /pos entry-market: card cannot render before entry + this age. */
+  posMarketCardMinAgeMs: number;
+  /** Google service account JSON path for the daily report sheet. */
+  googleServiceAccountJson: string;
+  dailySheetSpreadsheetId: string;
+  dailySheetTemplateTab: string;
+  dailySheetAccountId: string;
+  dailySheetTimezone: string;
+  dailySheetSyncMs: number;
+  dailySheetMorningAt: string;
+  /** Optional YYYY-MM-DD override; otherwise first boot's local date is stored. */
+  dailySheetStartDate: string;
   /** How long a TP/SL settle waits for its card before closing anyway. */
   settlePublishTimeoutMs: number;
   signalMaxAgeHours: number;
@@ -41,6 +55,12 @@ function parseNumber(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** /pos market delays: clamp to a safe, human-scale window. */
+function parseDelayMs(raw: string | undefined, fallback: number): number {
+  const n = parseNumber(raw, fallback);
+  return Math.min(30_000, Math.max(0, Math.floor(n)));
+}
+
 export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     operatorUsernames: parseUsernames(env.OPERATOR_USERNAMES),
@@ -58,6 +78,16 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     defaultAccountId: env.VIRTUAL_DEFAULT_ACCOUNT_ID ?? "",
     reportDestinationChatId: env.REPORT_DESTINATION_CHAT_ID ?? "",
     marketPollMs: parseNumber(env.MARKET_POLL_MS, 5000),
+    posMarketEntryDelayMs: parseDelayMs(env.POS_MARKET_ENTRY_DELAY_MS, 3000),
+    posMarketCardMinAgeMs: parseDelayMs(env.POS_MARKET_CARD_MIN_AGE_MS, 3000),
+    googleServiceAccountJson: env.GOOGLE_SERVICE_ACCOUNT_JSON ?? "",
+    dailySheetSpreadsheetId: env.DAILY_SHEET_SPREADSHEET_ID ?? "",
+    dailySheetTemplateTab: env.DAILY_SHEET_TEMPLATE_TAB ?? "TEMPLATE",
+    dailySheetAccountId: env.DAILY_SHEET_ACCOUNT_ID ?? "",
+    dailySheetTimezone: env.DAILY_SHEET_TIMEZONE ?? "Asia/Ho_Chi_Minh",
+    dailySheetSyncMs: Math.max(60_000, parseNumber(env.DAILY_SHEET_SYNC_MS, 300_000)),
+    dailySheetMorningAt: env.DAILY_SHEET_MORNING_AT ?? "08:00",
+    dailySheetStartDate: env.DAILY_SHEET_START_DATE ?? "",
     settlePublishTimeoutMs: parseNumber(env.SETTLE_PUBLISH_TIMEOUT_MS, 60_000),
     signalMaxAgeHours: Number(env.SIGNAL_MAX_AGE_HOURS ?? 24),
   };

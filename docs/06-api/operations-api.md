@@ -81,10 +81,10 @@
 | Lệnh | Tác dụng |
 |---|---|
 | `/approve <id>` | Duyệt + mở vị thế ảo (đúng version) |
-| `/pos <signal text + post link> [src=".."] [chat=..] [acc=..]` | Tạo signal + duyệt + mở + hỏi chọn card (2 nút, 5 phút — không bấm dùng card PnL); link dán vào text là tự nhận diện. Card mở render từ snapshot đông cứng lúc gọi nên vẫn đăng dù position đóng trong 5 phút chờ; đăng lỗi → bot DM "❌ Không đăng được card …" |
+| `/pos <signal text + post link> [src=".."] [chat=..] [acc=..]` | Tạo signal + duyệt + mở + hỏi chọn card (2 nút, **1 phút** — không bấm dùng card PnL); link dán vào text là tự nhận diện. Limit entry (`entry 3000 2950`) tạo `PENDING_ENTRY` chờ giá khớp, chưa đăng card; `entry market 2950 2900` báo đang chờ 3s, sau đó mới lấy mid để vào lệnh + DCA phần còn lại; card không render trước entry + 3s. REST `/signals/manual` không delay. Card mở render từ snapshot đông cứng lúc gọi nên vẫn đăng dù position đóng trong 1 phút chờ; đăng lỗi → bot DM "❌ Không đăng được card …" |
 | `/reject <id> [lý do]` | Từ chối tín hiệu |
 | `/open <signalId> [accountId]` | Mở lại cho signal đã approve |
-| `/close <positionId>` | Đóng toàn bộ remaining theo giá thị trường + đăng card `close` |
+| `/close <positionId>` | Đóng toàn bộ remaining theo giá thị trường + đăng card `close`; nếu position `PENDING_ENTRY` thì hủy lệnh chờ (không card/PnL) |
 | `/tp <positionId> [size\|percent\|all]` | Chốt lời tay tại mid; mặc định all. `25%`/`0.5` = một phần (giữ position OPEN, đăng card `tp`), không truyền = đóng hết. Không đụng `filled_tps` |
 | `/sl <positionId> <price>` | Dời SL; chặn nếu mức mới đã vượt mark hiện tại. Không đăng card |
 | `/positions [status]` | Danh sách vị thế ảo (in **id đầy đủ** để dán vào `/close`) |

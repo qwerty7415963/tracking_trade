@@ -320,6 +320,9 @@ export class PositionsController {
   @UseGuards(OperatorGuard)
   async close(@Param("id") id: string, @Req() req: OperatorRequest) {
     const result = await this.trading.closePosition(id, this.actor(req));
+    if ("cancelled" in result && result.cancelled) {
+      return result;
+    }
     const raw = result.position.closePrice === null ? null : Number(result.position.closePrice);
     const card = await this.publishManualCard(
       id,

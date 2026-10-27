@@ -42,6 +42,7 @@ export interface OperatorSignalResult {
   status: string;
   instrument: string;
   direction: string;
+  entryMarket: boolean;
 }
 
 /** Caption/source name when nothing else resolves. */
@@ -550,6 +551,7 @@ export class SignalsService {
       status: signal.status,
       instrument: version.instrument,
       direction: version.direction,
+      entryMarket: parsed.entryMarket,
     };
   }
 
@@ -758,9 +760,11 @@ export class SignalsService {
       // Approving an unopenable version can never lead to a position:
       // refuse early with a clear reason instead of failing at open.
       const unopenable: string[] = [];
+      const payload = latest.normalizedPayloadJson as { entryMarket?: unknown } | null;
+      const entryMarket = payload?.entryMarket === true;
       if (!latest.instrument || latest.instrument === "UNKNOWN") unopenable.push("instrument");
       if (!latest.direction || latest.direction === "UNKNOWN") unopenable.push("direction");
-      if (latest.entry === null) unopenable.push("entry");
+      if (!entryMarket && latest.entry === null) unopenable.push("entry");
       if (latest.stopLoss === null) unopenable.push("stop_loss");
       const latestTps = Array.isArray(latest.takeProfits) ? latest.takeProfits : [];
       if (latestTps.length === 0) unopenable.push("take_profits");

@@ -17,8 +17,11 @@ export interface NormalizedSignal {
   orderType: string | null;
   entry: number | null;
   entryZoneHigh: number | null;
+  /** True when the ENTRY block says `market` (`entry market 2950 2900`). */
+  entryMarket: boolean;
   /** All entry levels as written (first one = `entry`). Zone forms collapse to
-   *  a single level; a ladder out of order falls back to the first level. */
+   *  a single level; a ladder out of order falls back to the first level. For
+   *  `entry market`, this holds only the DCA levels after the market fill. */
   entries: number[];
   stopLoss: number | null;
   takeProfits: number[];

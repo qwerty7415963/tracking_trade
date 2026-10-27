@@ -58,6 +58,9 @@ Các trạng thái nhánh lỗi:
 ## 3. Virtual position lifecycle
 
 ```text
+PENDING_ENTRY
+  -> OPEN (entry đầu khớp)
+  -> CANCELLED (/close khi chưa khớp)
 OPEN
   -> TP_HIT (chạm TP nhưng còn size)
   -> CLOSED (chạm TP cuối / đóng tay)
@@ -67,7 +70,8 @@ OPEN -> CANCELLED
 
 ### Quy tắc
 
-- Cùng signal+version đang mở → trả vị thế hiện có, **không mở trùng**.
+- Cùng signal+version đang mở/chờ entry → trả vị thế hiện có, **không mở trùng**.
+- Limit entry mới ở `PENDING_ENTRY`: `size=0`, mọi entry nằm trong `pending_entries`; giá chạm level (LONG `≤`, SHORT `≥`) → khớp, entry đầu chuyển `OPEN`; chưa khớp thì không có card, không margin, `/tp` `/sl` bị từ chối, `/close` hủy (`CANCELLED`) không PnL.
 - TP1 đóng 50%, các TP còn lại chia đều; TP duy nhất đóng 100%.
 - SL đóng toàn bộ phần còn lại; SL thắng khi giá chạm cả 2 phía.
 - Mỗi lần đóng ghi realized PnL vào ledger; số dư chỉ đổi qua ledger.
@@ -91,7 +95,7 @@ Nhánh khác:
 
 ### Quy tắc
 
-- `PENDING` = row mới tạo, render job chưa chạy (dialog `/pos` giữ row ở trạng thái này tối đa 5 phút).
+- `PENDING` = row mới tạo, render job chưa chạy (dialog `/pos` giữ row ở trạng thái này tối đa **1 phút**).
 - **Publication lỗi không được mở/đóng vị thế.**
 - Publication `UNKNOWN` phải xử lý thận trọng để tránh bài trùng (xem retry/idempotency).
 

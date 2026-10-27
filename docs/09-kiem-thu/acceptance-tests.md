@@ -8,13 +8,13 @@
 - Edit/revision được **lưu đúng**.
 - Message **edit nối version mới** vào signal gốc (`eventType: EDIT`), không tạo signal trùng; approval cũ mất hiệu lực.
 - Ingest lại **đúng row cũ** trả signal đã có (idempotent), không tạo mới, không đổi trạng thái.
-- Approve version thiếu coin/hướng/entry/SL/TP bị **từ chối kèm lý do**; nút Approve hiện luôn lý do open-failed.
+- Approve version thiếu coin/hướng/entry (trừ `entry market`)/SL/TP bị **từ chối kèm lý do**; nút Approve hiện luôn lý do open-failed.
 - Payload version lưu row id bài gốc ở key **camelCase `sourceMessageId`** (đọc cả snake_case cũ để tương thích); review/matching đều resolve qua key này.
 - Coin parse được phải có trong **coin list** (`tradable_coins`); coin lạ giữ tên thật + gắn `unmapped_symbol_<X>` → review, không đoán.
 - CRUD coin qua API/bot đều có audit; trùng symbol → `409`; xóa coin là xóa hẳn.
 - 3 bài mẫu (CoinCodeCap/Alwayswin/MegaLodon) là golden test chống regress parser.
 - Signal `FINAL` bị edit giữ nguyên trạng thái.
-- Thiếu entry/SL/TP chuyển sang **review**.
+- Thiếu entry (trừ `entry market`)/SL/TP chuyển sang **review**.
 - Nhiều hướng giao dịch **mâu thuẫn** chuyển sang review.
 - Raw message và parser version được lưu.
 - Hai channel khác nhau đăng nội dung gần giống nhau tạo **2 signal riêng** (không tính trùng); vượt **max positions per symbol** bị chặn.
@@ -41,10 +41,14 @@
 - TP1 đóng **50%**, các TP còn lại chia đều; TP duy nhất đóng 100%.
 - SL đóng **toàn bộ** phần còn lại; SL thắng khi chạm cả 2 phía.
 - Mỗi lần đóng ghi realized PnL vào **ledger**; số dư chỉ đổi qua ledger.
+- Limit entry tạo `PENDING_ENTRY` size 0, **không card/không margin**; giá chạm entry[0] → `OPEN`; `/tp` `/sl` bị từ chối, `/close` hủy không PnL/card.
+- `/pos entry market 2950 2900`: bot báo chờ 3s, sau đó mới lấy mid; khớp full notional tại giá đó, các level số còn lại DCA khi chạm giá; card không render trước entry + 3s.
+- DCA: mọi level chờ khớp; entry[0] full notional, level sau notional/N; card `entry` reply dưới card gốc.
 
 ## 4. Reporting
 
-- Card `filled` chỉ sau khi vị thế đã mở (không báo trước).
+- Card `filled` chỉ sau khi vị thế đã mở (không báo trước). Limit entry chưa khớp **không đăng card**; entry đầu khớp mới đăng.
+- Dialog chọn style **1 phút**: chọn trước khi limit khớp → lưu style, đăng ngay khi khớp; không chọn → fallback `pnl-strip` sau 1 phút; khớp khi đã quá 1 phút → fallback ngay. Market `/pos` chọn style sớm vẫn chờ đủ 3s sau entry mới render.
 - Worker chỉ render PNG; API gửi Telegram — render lỗi **không mở/đóng vị thế**.
 - Telegram retry **không làm thay đổi vị thế**.
 - Bài TP/SL/close **reply đúng bài gốc**; update đến trước thì giữ chờ tối đa 5 phút, quá hạn đăng lẻ + audit (không mất bài).

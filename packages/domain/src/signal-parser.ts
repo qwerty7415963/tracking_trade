@@ -20,6 +20,9 @@ const KNOWN_WORDS = /\b(GOLD|SILVER|OIL|WTI|BRENT|NASDAQ|DOW|SP500)\b/;
 // being read as another level.
 const ENTRY_RE =
   /(?:ENTRY|ENTER|@)\s*[:\-]?\s*(\d+(?:\.\d+)?(?![xX])(?:[-–,\s]+\d+(?:\.\d+)?(?![xX]))*)/i;
+/** `entry market` (optionally followed by DCA levels): `entry market 2950 2900`. */
+const ENTRY_MARKET_RE =
+  /(?:ENTRY|ENTER|@)\s*[:\-]?\s*(?:market|mkt)\b\s*((?:\d+(?:\.\d+)?(?![xX])(?:[-–,\s]+\d+(?:\.\d+)?(?![xX]))*)?)/i;
 const SL_RE = /(?:STOP\s?LOSS|\bSL\b)\s*[:\-]?\s*(\d+(?:\.\d+)?)/i;
 const TP_RE = /\bTP(\d)?\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\d)(?!\s*%)/gi;
 const LIMIT_RE = /\blimit\b/i;
@@ -200,13 +203,15 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
   const inst = detectInstrument(upper, ticker, opts.coinUniverse, opts.profile);
   const updateAction = detectUpdateAction(text);
 
+  const marketMatch = text.match(ENTRY_MARKET_RE);
+  const entryMarket = marketMatch !== null;
   const entryMatch = text.match(ENTRY_RE);
-  const entryRun = entryMatch?.[1] ?? "";
+  const entryRun = entryMarket ? (marketMatch?.[1] ?? "") : (entryMatch?.[1] ?? "");
   const levels = entryLevels(entryRun);
   // A dash between exactly two numbers is a zone (`1223 - 1154`): one entry
   // plus a reference high. Anything else is a ladder of entry levels.
-  const isEntryZone = /[-–]/.test(entryRun) && levels.length === 2;
-  const entry = levels.length > 0 ? levels[0] : null;
+  const isEntryZone = !entryMarket && /[-–]/.test(entryRun) && levels.length === 2;
+  const entry = entryMarket ? null : levels.length > 0 ? levels[0] : null;
   const entryZoneHigh = isEntryZone ? levels[1] : null;
   let entries = isEntryZone ? [levels[0]] : levels;
   // DCA only works when the ladder points away from the entry: LONG falls to
@@ -224,7 +229,13 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
   const levMatch = rawText.match(LEVERAGE_RE);
   const leverage = parseNumber(levMatch?.[1] ?? undefined);
 
-  const orderType = LIMIT_RE.test(text) ? "LIMIT" : MARKET_RE.test(text) ? "MARKET" : null;
+  const orderType = entryMarket
+    ? "MARKET"
+    : LIMIT_RE.test(text)
+      ? "LIMIT"
+      : MARKET_RE.test(text)
+        ? "MARKET"
+        : null;
 
   const missingFields: string[] = [];
   const ambiguities: string[] = [];
@@ -236,7 +247,7 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
     else missingFields.push("direction");
   }
   if (updateAction === "NONE") {
-    if (entry === null) missingFields.push("entry");
+    if (!entryMarket && entry === null) missingFields.push("entry");
     if (stopLoss === null) missingFields.push("stop_loss");
     if (tps.length === 0) {
       // Percent-style TPs ("Tp: 20% 40%") convert to prices when entry exists.
@@ -265,6 +276,7 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
     orderType,
     entry,
     entryZoneHigh,
+    entryMarket,
     entries,
     stopLoss,
     takeProfits: tps,
@@ -289,7 +301,7 @@ export function missingRequiredFields(parsed: NormalizedSignal): string[] {
   const required: Array<[keyof NormalizedSignal, string]> = [
     ["instrument", "instrument"],
     ["direction", "direction"],
-    ["entry", "entry"],
+    ...(parsed.entryMarket ? [] : ([["entry", "entry"]] as Array<[keyof NormalizedSignal, string]>)),
     ["stopLoss", "stop_loss"],
   ];
   const missing = required

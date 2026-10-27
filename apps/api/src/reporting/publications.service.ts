@@ -16,14 +16,16 @@ import {
   effectiveMmrFor,
 } from "@tracking-auto/domain";
 import { MarketDataService } from "../market-data/market-data.service";
-
-/** Max wait for the original card before an update posts standalone. */
-export const ORIGINAL_HOLD_MS = 5 * 60 * 1000;
 import {
   RENDER_JOB_ID_PREFIX,
   RendersService,
   SendJobData,
 } from "./renders.service";
+
+/** Max wait for the original card before an update posts standalone. */
+export const ORIGINAL_HOLD_MS = 5 * 60 * 1000;
+/** /pos style dialog window (and pending-entry deferred style window). */
+export const CARD_STYLE_TIMEOUT_MS = 60 * 1000;
 
 export const TELEGRAM_SENDER = "TELEGRAM_SENDER";
 
@@ -190,8 +192,10 @@ export class PublicationsService {
       volume?: number;
       /** Override snapshot status (partial manual exit stays OPEN). */
       open?: boolean;
-      /** Hold the render job (the /pos style dialog waits 5 minutes). */
+      /** Hold the render job (the /pos style dialog waits 1 minute). */
       renderDelayMs?: number;
+      /** Earliest render time (epoch ms); style promotion cannot bypass it. */
+      minRenderAt?: number;
       /** TP ordinal for `tp` cards — the caption marks that level as hit. */
       tpIndex?: number;
     },
@@ -245,6 +249,7 @@ export class PublicationsService {
             : {}),
         ...(opts.open !== undefined ? { open: opts.open } : {}),
         ...(opts.renderDelayMs && opts.renderDelayMs > 0 ? { delayMs: opts.renderDelayMs } : {}),
+        ...(opts.minRenderAt ? { minRenderAt: opts.minRenderAt } : {}),
         ...(opts.tpIndex !== undefined ? { tpIndex: opts.tpIndex } : {}),
       },
       actor,
@@ -254,6 +259,7 @@ export class PublicationsService {
       publicationId: publication.id,
       cardKind,
       ...(opts.renderDelayMs ? { renderDelayMs: opts.renderDelayMs } : {}),
+      ...(opts.minRenderAt ? { minRenderAt: opts.minRenderAt } : {}),
     });
     return { publicationId: publication.id, status: "PENDING", cardKind };
   }
@@ -270,7 +276,28 @@ export class PublicationsService {
     positionId: string,
     cardKind: CardKind,
     actor: string,
-  ): Promise<"promoted" | "expired"> {
+  ): Promise<"promoted" | "scheduled" | "expired"> {
+    // Limit orders wait for the first entry before a card exists: the choice
+    // is only stored on the position (deadline = time since /pos).
+    const position = await this.prisma.virtualPosition.findUnique({
+      where: { id: positionId },
+      select: { status: true, openedAt: true },
+    });
+    if (position?.status === "PENDING_ENTRY") {
+      if (Date.now() - position.openedAt.getTime() > CARD_STYLE_TIMEOUT_MS) {
+        return "expired";
+      }
+      await this.prisma.virtualPosition.update({
+        where: { id: positionId },
+        data: { cardKind, styleChosen: true },
+      });
+      await this.audit.record(actor, "position.card_kind_scheduled", {
+        positionId,
+        cardKind,
+      });
+      return "scheduled";
+    }
+
     const publications = await this.prisma.telegramPublication.findMany({
       where: { virtualPositionId: positionId, publicationStatus: { in: ["PENDING", "RETRY_PENDING"] } },
       orderBy: { createdAt: "desc" },
@@ -285,10 +312,37 @@ export class PublicationsService {
     if (outcome === "promoted") {
       await this.prisma.virtualPosition.update({
         where: { id: positionId },
-        data: { cardKind },
+        data: { cardKind, styleChosen: true },
       });
     }
     return outcome;
+  }
+
+  /**
+   * Publish the open card for a pending-entry order at its first fill. If the
+   * operator already picked a style the card renders now; otherwise the render
+   * job waits out the rest of the /pos style window so the buttons can still
+   * choose it, falling back to the stored/default kind on timeout.
+   */
+  async publishFirstFill(positionId: string, markPrice: number, actor: string) {
+    const position = await this.prisma.virtualPosition.findUnique({
+      where: { id: positionId },
+      select: { openedAt: true, styleChosen: true },
+    });
+    let delayMs = 0;
+    if (position && !position.styleChosen) {
+      const left = CARD_STYLE_TIMEOUT_MS - (Date.now() - position.openedAt.getTime());
+      delayMs = Math.max(0, left);
+    }
+    return this.requestPositionPublish(
+      positionId,
+      "filled",
+      {
+        markPrice,
+        ...(delayMs > 0 ? { renderDelayMs: delayMs } : {}),
+      },
+      actor,
+    );
   }
 
   /**

@@ -147,7 +147,7 @@ describe("RendersService", () => {
       bullmqMock.__mock.job = {
         getState: async () => "waiting",
         remove: jest.fn(async () => undefined),
-        data: { virtualPositionId: "pos1", publicationId: "pub1", delayMs: 300_000 },
+        data: { virtualPositionId: "pos1", publicationId: "pub1", delayMs: 60_000 },
       };
       const svc = service();
       await expect(svc.promoteRender("pub1", "pnl-strip", "alice")).resolves.toBe("promoted");
@@ -174,7 +174,7 @@ describe("RendersService", () => {
           publicationId: "dialog-pub",
           virtualPositionId: "pos1",
           status: "filled",
-          delayMs: 300_000,
+          delayMs: 60_000,
         }),
       };
       const audit = { record: jest.fn() };
@@ -195,10 +195,44 @@ describe("RendersService", () => {
       expect(audit.record).not.toHaveBeenCalledWith("alice", "render.promotion_miss", expect.anything());
     });
 
+    it("honours minRenderAt when promoting the open card", async () => {
+      const minRenderAt = Date.now() + 2000;
+      bullmqMock.__mock.jobs = {
+        "render-dialog-pub": job("delayed", {
+          publicationId: "dialog-pub",
+          delayMs: 60_000,
+          minRenderAt,
+        }),
+      };
+      const svc = service();
+      await expect(
+        svc.promoteFirstDelayed(["dialog-pub"], "position-stats", "alice"),
+      ).resolves.toEqual({ publicationId: "dialog-pub", outcome: "promoted" });
+      const delay = Number(bullmqMock.__mock.added?.opts.delay ?? 0);
+      expect(delay).toBeGreaterThan(1000);
+      expect(delay).toBeLessThanOrEqual(2000);
+      expect(bullmqMock.__mock.added?.data).toMatchObject({ minRenderAt });
+    });
+
+    it("promotes immediately once minRenderAt has passed", async () => {
+      bullmqMock.__mock.jobs = {
+        "render-dialog-pub": job("delayed", {
+          publicationId: "dialog-pub",
+          delayMs: 60_000,
+          minRenderAt: Date.now() - 1,
+        }),
+      };
+      const svc = service();
+      await expect(
+        svc.promoteFirstDelayed(["dialog-pub"], "position-stats", "alice"),
+      ).resolves.toEqual({ publicationId: "dialog-pub", outcome: "promoted" });
+      expect(bullmqMock.__mock.added?.opts.delay).toBeUndefined();
+    });
+
     it("ignores an in-flight TP card whose job is waiting but undelayed", async () => {
       bullmqMock.__mock.jobs = {
         "render-tp-pub": job("waiting", { publicationId: "tp-pub" }),
-        "render-dialog-pub": job("delayed", { publicationId: "dialog-pub", delayMs: 300_000 }),
+        "render-dialog-pub": job("delayed", { publicationId: "dialog-pub", delayMs: 60_000 }),
       };
       const svc = service();
       await expect(
@@ -242,9 +276,9 @@ describe("RendersService", () => {
       return {
         getState: async () => state,
         remove: jest.fn(async () => undefined),
-        data: { delayMs: 300_000 },
-        opts: { delay: 300_000 },
-        timestamp: Date.now() - 60_000,
+        data: { delayMs: 60_000 },
+        opts: { delay: 60_000 },
+        timestamp: Date.now() - 20_000,
         ...overrides,
       };
     }
@@ -252,9 +286,9 @@ describe("RendersService", () => {
     it("reports the time left on a still-delayed dialog job", async () => {
       bullmqMock.__mock.jobs = { "render-pub1": dialogJob("delayed") };
       const left = await service().dialogRemainingMs(["pub1"]);
-      // 300s window, 60s already elapsed → ~240s left.
-      expect(left).toBeGreaterThan(200_000);
-      expect(left).toBeLessThanOrEqual(240_000);
+      // 60s window, 20s already elapsed → ~40s left.
+      expect(left).toBeGreaterThan(30_000);
+      expect(left).toBeLessThanOrEqual(40_000);
     });
 
     it("returns 0 when the dialog already ran, is absent, or lacks the marker", async () => {

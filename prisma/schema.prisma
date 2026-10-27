@@ -92,9 +92,9 @@ model Signal {
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
-  source    Source          @relation(fields: [sourceId], references: [id])
+  source    Source            @relation(fields: [sourceId], references: [id])
   versions  SignalVersion[]
-  updates   SignalUpdate[]  @relation("MatchedUpdates")
+  updates   SignalUpdate[]    @relation("MatchedUpdates")
   approvals Approval[]
   positions VirtualPosition[]
 
@@ -116,7 +116,7 @@ model SignalVersion {
   parserVersion         String?  @map("parser_version")
   createdAt             DateTime @default(now()) @map("created_at")
 
-  signal    Signal             @relation(fields: [signalId], references: [id])
+  signal    Signal            @relation(fields: [signalId], references: [id])
   approvals Approval[]
   positions VirtualPosition[]
 
@@ -193,18 +193,37 @@ model VirtualPosition {
   pendingEntries  Json      @default("[]") @map("pending_entries")
   status          String    @default("OPEN")
   openedAt        DateTime  @default(now()) @map("opened_at")
+  /**
+   * First actual entry fill. Limit orders keep opened_at as placement time.
+   */
+  filledAt        DateTime? @map("filled_at")
   closedAt        DateTime? @map("closed_at")
   closePrice      Decimal?  @map("close_price") @db.Decimal(30, 8)
   realizedPnl     Decimal?  @map("realized_pnl") @db.Decimal(30, 8)
   cardKind        String    @default("pnl-strip") @map("card_kind")
+  // Pending-entry /pos orders ask for the card style before the first fill;
+  // false means "not chosen yet" (fallback pnl-strip after the window).
+  styleChosen     Boolean   @default(true) @map("style_chosen")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
-  account      VirtualAccount       @relation(fields: [accountId], references: [id])
-  signal       Signal?              @relation(fields: [signalId], references: [id])
-  version      SignalVersion?       @relation(fields: [signalVersionId], references: [id])
+  account      VirtualAccount        @relation(fields: [accountId], references: [id])
+  signal       Signal?               @relation(fields: [signalId], references: [id])
+  version      SignalVersion?        @relation(fields: [signalVersionId], references: [id])
   publications TelegramPublication[]
 
   @@index([accountId, status])
   @@map("virtual_positions")
+}
+
+model DailySheetSetting {
+  id         String    @id @default("singleton")
+  startDate  DateTime  @map("start_date") @db.Date
+  lastSyncAt DateTime? @map("last_sync_at")
+  lastError  String?   @map("last_error")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@map("daily_sheet_settings")
 }
 
 model VirtualTransaction {

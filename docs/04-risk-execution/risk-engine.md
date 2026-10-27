@@ -26,11 +26,11 @@ size = notional / entryPrice
 
 - Notional lấy từ `tradable_coins.notional_usd`: BTC/ETH/SOL mặc định 100k, các coin khác 50k.
 - Đổi notional bằng `/vol <SYM> <amount|reset>` hoặc `PUT /api/v1/operations/notional/:symbol` (có audit).
-- Entry = `SignalVersion.entry` (fallback mid nếu signal không có entry) — không đoán.
+- Entry = `SignalVersion.entry` cho limit; position tạo `PENDING_ENTRY` (size 0) và chỉ mở khi giá chạm entry[0]. Market entry (`entryMarket`) dùng mid tại lúc mở — không đoán; `/pos` chờ **3s** rồi mới lấy mid, các luồng REST/AUTO/`/approve` không delay.
 - **Làm tròn size xuống** theo `sizeIncrement` từ `meta`.
 - Size tối thiểu từ `minSize`.
 - Nếu size < min → **reject lệnh** (`MIN_SIZE_EXCEEDS_NOTIONAL`).
-- **Nhiều entry (DCA)**: entry[0] vào **toàn bộ** notional (công thức trên); mỗi level i≥1 đóng băng **notional/N** lúc mở và chỉ cộng size khi giá chạm (`applyEntryFill`, giá TB có trọng số). Tổng notional tối đa = `notional × (1 + (N−1)/N)`. **Không chạy lại risk gate** cho các lần DCA — nếu `size×mark/leverage > balance` chỉ ghi audit `position.entry_over_margin`.
+- **Nhiều entry (DCA)**: toàn bộ level nằm trong `pending_entries` lúc mở; entry[0] full notional, mỗi level i≥1 đóng băng **notional/N** và chỉ cộng size khi giá chạm (`applyEntryFill`, giá TB có trọng số). Entry đầu khớp mới chuyển `OPEN` và bắt đầu tính margin. Tổng notional tối đa = `notional × (1 + (N−1)/N)`. **Không chạy lại risk gate** cho các lần DCA — nếu `size×mark/leverage > balance` chỉ ghi audit `position.entry_over_margin`.
 
 ## 3. Cross-margin account (MVP)
 

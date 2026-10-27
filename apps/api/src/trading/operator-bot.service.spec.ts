@@ -163,6 +163,8 @@ function bot(overrides: Record<string, unknown> = {}) {
       operatorUsernames: ["alice"],
       operatorChatIds: (overrides.chatIds ?? ["100"]) as string[],
       reportDestinationChatId: "",
+      posMarketEntryDelayMs: 3000,
+      posMarketCardMinAgeMs: 3000,
     } as never,
     { record: jest.fn() } as never,
     (overrides.signals ?? {}) as never,
@@ -538,7 +540,7 @@ describe("OperatorBotService /pos command", () => {
       "tg:alice",
       "a1",
       "-1001",
-      { renderDelayMs: 300_000 },
+      { renderDelayMs: 60_000 },
     );
     expect(replies[0].text).toContain("✅ LONG BTC");
     expect(replies[0].text).toContain("Chọn loại card");
@@ -550,6 +552,83 @@ describe("OperatorBotService /pos command", () => {
         ],
       ],
     });
+  });
+
+  it("announces and configures the 3s market-entry delay", async () => {
+    const createOperatorSignal = jest.fn(async () => ({
+      signalId: "sig2",
+      versionId: "v2",
+      status: "PENDING_APPROVAL",
+      instrument: "BTC",
+      direction: "LONG",
+      entryMarket: true,
+    }));
+    const approveSignal = jest.fn(async () => ({
+      approval: {},
+      position: { id: "pos-2" },
+      openError: null,
+      published: true,
+      awaitingEntry: false,
+    }));
+    const { svc } = bot({ signals: { createOperatorSignal }, flow: { approveSignal } });
+    const replies: Array<{ text: string; replyMarkup?: unknown }> = [];
+    await svc.dispatch(
+      { name: "pos", args: [] },
+      "tg:alice",
+      async (text: string, replyMarkup?: unknown) => {
+        replies.push({ text, replyMarkup });
+      },
+      "/pos LONG BTC entry market SL 98000 TP 105000",
+    );
+
+    expect(replies[0].text).toContain("Đang chờ 3s để lấy giá market");
+    expect(approveSignal).toHaveBeenCalledWith(
+      "sig2",
+      { signalVersionId: "v2" },
+      "tg:alice",
+      undefined,
+      undefined,
+      {
+        renderDelayMs: 60_000,
+        marketEntryDelayMs: 3000,
+        marketCardMinAgeMs: 3000,
+      },
+    );
+    expect(replies[1].text).toContain("✅ LONG BTC");
+    expect(replies[1].replyMarkup).toBeDefined();
+  });
+
+  it("asks for the card style when the order is waiting for its entry", async () => {
+    const createOperatorSignal = jest.fn(async () => ({
+      signalId: "sig1",
+      versionId: "v1",
+      status: "PENDING_APPROVAL",
+      instrument: "BTC",
+      direction: "LONG",
+    }));
+    const approveSignal = jest.fn(async () => ({
+      approval: {},
+      position: { id: "pos-1", status: "PENDING_ENTRY" },
+      openError: null,
+      published: false,
+      awaitingEntry: true,
+    }));
+    const { svc } = bot({ signals: { createOperatorSignal }, flow: { approveSignal } });
+    const replies: Array<{ text: string; replyMarkup?: unknown }> = [];
+    await svc.dispatch(
+      { name: "pos", args: [] },
+      "tg:alice",
+      async (text: string, replyMarkup?: unknown) => {
+        replies.push({ text, replyMarkup });
+      },
+      "/pos LONG BTC entry 100000 SL 98000 TP 105000",
+    );
+
+    expect(replies[0].text).toContain("lệnh chờ entry");
+    expect(replies[0].text).toContain("1 phút");
+    expect(replies[0].replyMarkup).toEqual(
+      expect.objectContaining({ inline_keyboard: expect.any(Array) }),
+    );
   });
 
   it("skips the style dialog when publication is skipped", async () => {
@@ -1161,6 +1240,26 @@ describe("OperatorBotService.handleCallback", () => {
     expect(edited[0].reply_markup).toEqual({ inline_keyboard: [] });
   });
 
+  it("announces a scheduled style for a pending-entry order", async () => {
+    const chooseCardStyle = jest.fn(async () => "scheduled");
+    const { svc } = cbSvc({ publications: { chooseCardStyle } });
+    const answered: string[] = [];
+    const edited: Array<Record<string, unknown>> = [];
+    (svc as unknown as { api: unknown }).api = async (method: string, params: Record<string, unknown>) => {
+      if (method === "answerCallbackQuery") answered.push(String((params as { text?: string }).text));
+      if (method === "editMessageText") edited.push(params);
+      return {};
+    };
+    await svc.handleCallback({
+      id: "cb1",
+      from: { id: 1, username: "alice" },
+      message: { message_id: 7, chat: { id: 100, type: "private" }, text: "Chọn card" },
+      data: "style:position-stats:pos-9",
+    });
+    expect(answered).toContain("Đã chọn card Thống kê — sẽ đăng khi entry khớp.");
+    expect(String(edited[0].text)).toContain("sẽ đăng khi entry khớp");
+  });
+
   it("answers expired when the style window already passed", async () => {
     const chooseCardStyle = jest.fn(async () => "expired");
     const { svc } = cbSvc({ publications: { chooseCardStyle } });
@@ -1176,7 +1275,7 @@ describe("OperatorBotService.handleCallback", () => {
       data: "style:pnl-strip:pos-9",
     });
     expect(chooseCardStyle).toHaveBeenCalledWith("pos-9", "pnl-strip", "tg:alice");
-    expect(answered).toContain("Hết thời gian chọn — card PnL đã được đăng.");
+    expect(answered).toContain("Hết thời gian chọn — dùng card PnL.");
   });
 
   it("rejects style callbacks from non-operators", async () => {

@@ -14,14 +14,20 @@ export interface ApproveOutcome {
   position: unknown | null;
   openError: string | null;
   published: boolean;
+  /** Limit order waits for its first entry before a card can be published. */
+  awaitingEntry: boolean;
 }
 
 /** Publish knobs for approve — /pos defers the render behind the style dialog. */
 export interface ApprovePublishOptions {
   /** Card image style persisted on the position (inheritance source). */
   cardKind?: CardKind;
-  /** Hold the render job this long (style dialog, 5 minutes). */
+  /** Hold the render job this long (style dialog, 1 minute). */
   renderDelayMs?: number;
+  /** /pos entry-market only: wait before taking the execution mid. */
+  marketEntryDelayMs?: number;
+  /** /pos entry-market only: open card cannot render before entry + this age. */
+  marketCardMinAgeMs?: number;
 }
 
 @Injectable()
@@ -65,16 +71,31 @@ export class ApprovalFlowService {
     const approval = await this.signals.approve(signalId, dto, actor);
     const account = await this.resolveAccount(accountId);
     try {
-      const { position, created } = await this.trading.openApproved(signalId, account.id, actor);
+      const { position, created, awaitingEntry } = await this.trading.openApproved(
+        signalId,
+        account.id,
+        actor,
+        {
+          ...(publishOpts.marketEntryDelayMs
+            ? { marketEntryDelayMs: publishOpts.marketEntryDelayMs }
+            : {}),
+        },
+      );
       let published = false;
-      if (created) {
+      if (awaitingEntry && publishOpts.cardKind) {
+        await this.prisma.virtualPosition.update({
+          where: { id: position.id },
+          data: { cardKind: publishOpts.cardKind, styleChosen: true },
+        });
+      }
+      if (created && !awaitingEntry) {
         published = await this.publishOpened(position.id, actor, destinationChatId, publishOpts);
       }
-      return { approval, position, openError: null, published };
+      return { approval, position, openError: null, published, awaitingEntry };
     } catch (err) {
       const openError = err instanceof Error ? err.message : "unknown open failure";
       await this.audit.record(actor, "position.open_failed", { signalId, openError });
-      return { approval, position: null, openError, published: false };
+      return { approval, position: null, openError, published: false, awaitingEntry: false };
     }
   }
 
@@ -86,11 +107,15 @@ export class ApprovalFlowService {
     destinationChatId?: string,
   ) {
     const account = await this.resolveAccount(accountId);
-    const { position, created } = await this.trading.openApproved(signalId, account.id, actor);
-    const published = created
+    const { position, created, awaitingEntry } = await this.trading.openApproved(
+      signalId,
+      account.id,
+      actor,
+    );
+    const published = created && !awaitingEntry
       ? await this.publishOpened(position.id, actor, destinationChatId)
       : false;
-    return { position, created, published };
+    return { position, created, published, awaitingEntry };
   }
 
   private async publishOpened(
@@ -108,6 +133,10 @@ export class ApprovalFlowService {
       return false;
     }
     try {
+      const minRenderAt =
+        publishOpts.marketCardMinAgeMs && publishOpts.marketCardMinAgeMs > 0
+          ? Date.now() + publishOpts.marketCardMinAgeMs
+          : undefined;
       await this.publications.requestPositionPublish(
         positionId,
         "filled",
@@ -115,6 +144,7 @@ export class ApprovalFlowService {
           destinationChatId: destination,
           ...(publishOpts.cardKind ? { cardKind: publishOpts.cardKind } : {}),
           ...(publishOpts.renderDelayMs ? { renderDelayMs: publishOpts.renderDelayMs } : {}),
+          ...(minRenderAt ? { minRenderAt } : {}),
         },
         actor,
       );

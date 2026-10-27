@@ -144,6 +144,62 @@ describe("MarketWatchService", () => {
     expect(queues[1].add).not.toHaveBeenCalled();
   });
 
+  it("publishes the first card through the style-window path on first fill", async () => {
+    (Queue as unknown as jest.Mock).mockImplementation(() => queueMock());
+    const requestPositionPublish = jest.fn(async () => ({}));
+    const publishFirstFill = jest.fn(async () => ({}));
+    const { processor } = await start(
+      {
+        pollMarketOnce: jest.fn(async () => [
+          {
+            positionId: "p1",
+            kind: "ENTRY",
+            markPrice: 2318,
+            entryPrice: 2320,
+            firstFill: true,
+          },
+        ]),
+      },
+      { requestPositionPublish, publishFirstFill },
+    );
+
+    await expect(processor()).resolves.toEqual({ hits: 1 });
+    expect(publishFirstFill).toHaveBeenCalledWith("p1", 2318, "worker");
+    expect(requestPositionPublish).not.toHaveBeenCalled();
+  });
+
+  it("coalesces several DCA fills in one poll into a single entry card", async () => {
+    (Queue as unknown as jest.Mock).mockImplementation(() => queueMock());
+    const requestPositionPublish = jest.fn(async () => ({}));
+    const publishFirstFill = jest.fn(async () => ({}));
+    const { processor } = await start(
+      {
+        pollMarketOnce: jest.fn(async () => [
+          {
+            positionId: "p1",
+            kind: "ENTRY",
+            markPrice: 2950,
+            entryPrice: 3000,
+            firstFill: true,
+          },
+          {
+            positionId: "p1",
+            kind: "ENTRY",
+            markPrice: 2950,
+            entryPrice: 2900,
+            firstFill: false,
+          },
+        ]),
+      },
+      { requestPositionPublish, publishFirstFill },
+    );
+
+    await expect(processor()).resolves.toEqual({ hits: 2 });
+    expect(publishFirstFill).toHaveBeenCalledTimes(1);
+    expect(publishFirstFill).toHaveBeenCalledWith("p1", 2950, "worker");
+    expect(requestPositionPublish).not.toHaveBeenCalled();
+  });
+
   it("audits a failed fill publish instead of breaking the poll loop", async () => {
     (Queue as unknown as jest.Mock).mockImplementation(() => queueMock());
     const requestPositionPublish = jest.fn(async () => {

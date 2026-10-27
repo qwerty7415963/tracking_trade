@@ -32,7 +32,9 @@ export interface RenderJobData {
   open?: boolean;
   /** Non-zero only for the /pos style dialog: marks the job being chosen. */
   delayMs?: number;
-  /** TP ordinal the card is about (`tp` cards) — caption marks it as hit. */
+  /** Earliest render time (epoch ms). Promotion cannot run the card sooner. */
+  minRenderAt?: number;
+  /** TP ordinal the card is about (`tp` cards) - caption marks it as hit. */
   tpIndex?: number;
 }
 
@@ -71,9 +73,11 @@ export interface RenderRequest {
   volume?: number;
   /** Snapshot status override: partial manual exits are still OPEN. */
   open?: boolean;
-  /** Hold the job this many ms (used by the /pos style dialog, 5 min). */
+  /** Hold the job this many ms (used by the /pos style dialog, 1 minute). */
   delayMs?: number;
-  /** TP ordinal this card is about (`tp` cards) — caption marks it as hit. */
+  /** Earliest render time (epoch ms). Promotion cannot run the card sooner. */
+  minRenderAt?: number;
+  /** TP ordinal this card is about (`tp` cards) - caption marks it as hit. */
   tpIndex?: number;
 }
 
@@ -174,12 +178,18 @@ export class RendersService {
         return { publicationId: null, outcome: "expired" };
       }
       const data = pick.job.data as RenderJobData;
+      const minRenderAt = Number(data.minRenderAt ?? 0);
+      const minDelay =
+        Number.isFinite(minRenderAt) && minRenderAt > Date.now()
+          ? minRenderAt - Date.now()
+          : 0;
       await pick.job.remove();
       await queue.add("render-card", { ...data, cardKind }, {
         attempts: 3,
         backoff: { type: "exponential", delay: 2000 },
         removeOnComplete: 100,
         removeOnFail: 200,
+        ...(minDelay > 0 ? { delay: minDelay } : {}),
         jobId: `${RENDER_JOB_ID_PREFIX}${pick.publicationId}`,
       });
       await this.audit.record(actor, "render.promoted", {

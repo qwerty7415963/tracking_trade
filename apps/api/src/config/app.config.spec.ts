@@ -46,6 +46,12 @@ describe("loadAppConfig", () => {
     const config = loadAppConfig({});
     expect(config.hyperliquidApiUrl).toBe("https://api.hyperliquid.xyz");
     expect(config.marketPollMs).toBe(5000);
+    expect(config.posMarketEntryDelayMs).toBe(3000);
+    expect(config.posMarketCardMinAgeMs).toBe(3000);
+    expect(config.dailySheetTemplateTab).toBe("TEMPLATE");
+    expect(config.dailySheetTimezone).toBe("Asia/Ho_Chi_Minh");
+    expect(config.dailySheetSyncMs).toBe(300_000);
+    expect(config.dailySheetMorningAt).toBe("08:00");
     expect(config.settlePublishTimeoutMs).toBe(60_000);
     expect(config.defaultAccountId).toBe("");
   });
@@ -54,10 +60,22 @@ describe("loadAppConfig", () => {
     const config = loadAppConfig({
       MARKET_POLL_MS: "10000",
       SETTLE_PUBLISH_TIMEOUT_MS: "30000",
+      POS_MARKET_ENTRY_DELAY_MS: "5000",
+      POS_MARKET_CARD_MIN_AGE_MS: "60000",
+      DAILY_SHEET_SPREADSHEET_ID: "sheet-1",
+      DAILY_SHEET_ACCOUNT_ID: "acc-1",
+      DAILY_SHEET_SYNC_MS: "60000",
+      GOOGLE_SERVICE_ACCOUNT_JSON: "C:/secrets/sa.json",
       VIRTUAL_DEFAULT_ACCOUNT_ID: "acc-1",
       REPORT_DESTINATION_CHAT_ID: "@chan",
     });
     expect(config.marketPollMs).toBe(10000);
+    expect(config.posMarketEntryDelayMs).toBe(5000);
+    expect(config.posMarketCardMinAgeMs).toBe(30000);
+    expect(config.dailySheetSpreadsheetId).toBe("sheet-1");
+    expect(config.dailySheetAccountId).toBe("acc-1");
+    expect(config.dailySheetSyncMs).toBe(60000);
+    expect(config.googleServiceAccountJson).toBe("C:/secrets/sa.json");
     expect(config.settlePublishTimeoutMs).toBe(30000);
     expect(config.defaultAccountId).toBe("acc-1");
     expect(config.reportDestinationChatId).toBe("@chan");

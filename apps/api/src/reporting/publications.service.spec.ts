@@ -1,4 +1,4 @@
-import { PublicationsService, buildOpenCaption } from "./publications.service";
+import { CARD_STYLE_TIMEOUT_MS, PublicationsService, buildOpenCaption } from "./publications.service";
 
 describe("buildOpenCaption (template #11)", () => {
   const base = {
@@ -579,11 +579,27 @@ describe("PublicationsService card styles", () => {
     await svc.requestPositionPublish(
       "pos1",
       "filled",
-      { markPrice: 2550, renderDelayMs: 300_000 },
+      { markPrice: 2550, renderDelayMs: 60_000 },
       "alice",
     );
     expect(requestRender).toHaveBeenCalledWith(
-      expect.objectContaining({ delayMs: 300_000 }),
+      expect.objectContaining({ delayMs: 60_000 }),
+      "alice",
+      "render-pub1",
+    );
+  });
+
+  it("passes the minimum render time onto the render job", async () => {
+    const { svc, requestRender } = styleSetup();
+    const minRenderAt = Date.now() + 3000;
+    await svc.requestPositionPublish(
+      "pos1",
+      "filled",
+      { markPrice: 2550, renderDelayMs: 60_000, minRenderAt },
+      "alice",
+    );
+    expect(requestRender).toHaveBeenCalledWith(
+      expect.objectContaining({ minRenderAt }),
       "alice",
       "render-pub1",
     );
@@ -782,7 +798,10 @@ describe("PublicationsService.listRecentFailures", () => {
 describe("PublicationsService.chooseCardStyle", () => {
   function dialogSetup(promoteOutcome: "promoted" | "expired", publications: Array<{ id: string }>) {
     const prisma = {
-      virtualPosition: { update: jest.fn(async (args: unknown) => args) },
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({ status: "OPEN", openedAt: new Date() })),
+        update: jest.fn(async (args: unknown) => args),
+      },
       telegramPublication: {
         findFirst: jest.fn(async () => null),
         findMany: jest.fn(async () => publications),
@@ -822,7 +841,7 @@ describe("PublicationsService.chooseCardStyle", () => {
     );
     expect(prisma.virtualPosition.update).toHaveBeenCalledWith({
       where: { id: "pos1" },
-      data: { cardKind: "position-stats" },
+      data: { cardKind: "position-stats", styleChosen: true },
     });
   });
 
@@ -837,6 +856,110 @@ describe("PublicationsService.chooseCardStyle", () => {
     const { svc, prisma } = dialogSetup("expired", [{ id: "tp-pub" }]);
     await expect(svc.chooseCardStyle("pos1", "position-stats", "alice")).resolves.toBe("expired");
     expect(prisma.virtualPosition.update).not.toHaveBeenCalled();
+  });
+
+  it("schedules the style on a pending-entry position without a publication", async () => {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({
+          status: "PENDING_ENTRY",
+          openedAt: new Date(),
+        })),
+        update: jest.fn(async (args: unknown) => args),
+      },
+      telegramPublication: { findMany: jest.fn(async () => []) },
+    };
+    const audit = { record: jest.fn(async () => ({})) };
+    const promoteFirstDelayed = jest.fn();
+    const svc = service({
+      prisma,
+      audit,
+      renders: { promoteFirstDelayed, readArtifact: jest.fn(), deleteArtifact: jest.fn() },
+    });
+
+    await expect(svc.chooseCardStyle("pos1", "position-stats", "alice")).resolves.toBe(
+      "scheduled",
+    );
+    expect(prisma.virtualPosition.update).toHaveBeenCalledWith({
+      where: { id: "pos1" },
+      data: { cardKind: "position-stats", styleChosen: true },
+    });
+    expect(prisma.telegramPublication.findMany).not.toHaveBeenCalled();
+    expect(promoteFirstDelayed).not.toHaveBeenCalled();
+    expect(audit.record).toHaveBeenCalledWith(
+      "alice",
+      "position.card_kind_scheduled",
+      expect.objectContaining({ positionId: "pos1" }),
+    );
+  });
+
+  it("expires a pending-entry style choice after the 1-minute window", async () => {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({
+          status: "PENDING_ENTRY",
+          openedAt: new Date(Date.now() - CARD_STYLE_TIMEOUT_MS - 1000),
+        })),
+        update: jest.fn(async (args: unknown) => args),
+      },
+      telegramPublication: { findMany: jest.fn(async () => []) },
+    };
+    const svc = service({ prisma, renders: { readArtifact: jest.fn() } });
+    await expect(svc.chooseCardStyle("pos1", "position-stats", "alice")).resolves.toBe(
+      "expired",
+    );
+    expect(prisma.virtualPosition.update).not.toHaveBeenCalled();
+  });
+
+  describe("publishFirstFill", () => {
+    function fillSetup(styleChosen: boolean, openedAt: Date) {
+      const prisma = {
+        virtualPosition: {
+          findUnique: jest.fn(async () => ({
+            openedAt,
+            styleChosen,
+            cardKind: "position-stats",
+            size: 10,
+          })),
+        },
+        telegramPublication: {
+          findFirst: jest.fn(async () => null),
+          create: jest.fn(async () => ({ id: "pub1" })),
+        },
+      };
+      const requestRender = jest.fn(async () => ({ id: "render-pub1" }));
+      const svc = service({
+        prisma,
+        config: { reportDestinationChatId: "@chan" },
+        renders: { requestRender, readArtifact: jest.fn(), deleteArtifact: jest.fn() },
+      });
+      return { svc, requestRender };
+    }
+
+    it("renders immediately when the style was already chosen", async () => {
+      const { svc, requestRender } = fillSetup(true, new Date());
+      await svc.publishFirstFill("pos1", 3000, "worker");
+      const data = (requestRender as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+      expect(data).not.toHaveProperty("delayMs");
+    });
+
+    it("waits only the remaining style window when no style was chosen", async () => {
+      const { svc, requestRender } = fillSetup(false, new Date(Date.now() - 20_000));
+      await svc.publishFirstFill("pos1", 3000, "worker");
+      const data = (requestRender as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+      expect(data.delayMs).toBeGreaterThan(30_000);
+      expect(data.delayMs).toBeLessThanOrEqual(CARD_STYLE_TIMEOUT_MS);
+    });
+
+    it("renders the fallback immediately when the window already elapsed", async () => {
+      const { svc, requestRender } = fillSetup(
+        false,
+        new Date(Date.now() - CARD_STYLE_TIMEOUT_MS - 5000),
+      );
+      await svc.publishFirstFill("pos1", 3000, "worker");
+      const data = (requestRender as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+      expect(data).not.toHaveProperty("delayMs");
+    });
   });
 });
 

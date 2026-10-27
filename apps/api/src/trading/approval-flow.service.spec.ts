@@ -39,6 +39,24 @@ describe("ApprovalFlowService.approveSignal", () => {
     expect(opts).not.toHaveProperty("markPrice");
   });
 
+  it("waits for the first entry fill before publishing a pending order", async () => {
+    const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
+    const trading = {
+      openApproved: jest.fn(async () => ({
+        position: { id: "pos1", status: "PENDING_ENTRY" },
+        created: true,
+        awaitingEntry: true,
+      })),
+    };
+    const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
+    const publications = { requestPositionPublish: jest.fn(async () => ({})) };
+    const svc = flow({ signals, trading, accounts, publications });
+    const out = await svc.approveSignal("s1", { signalVersionId: "v1" }, "alice", "acc1", "@chan");
+    expect(out.awaitingEntry).toBe(true);
+    expect(out.published).toBe(false);
+    expect(publications.requestPositionPublish).not.toHaveBeenCalled();
+  });
+
   it("keeps approval but reports open failure without throwing", async () => {
     const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
     const trading = {
@@ -81,7 +99,7 @@ describe("ApprovalFlowService.approveSignal", () => {
       "alice",
       "acc1",
       "@chan",
-      { renderDelayMs: 300_000, cardKind: "position-stats" },
+      { renderDelayMs: 60_000, cardKind: "position-stats" },
     );
     expect(out.published).toBe(true);
     expect(publications.requestPositionPublish).toHaveBeenCalledWith(
@@ -89,11 +107,38 @@ describe("ApprovalFlowService.approveSignal", () => {
       "filled",
       expect.objectContaining({
         destinationChatId: "@chan",
-        renderDelayMs: 300_000,
+        renderDelayMs: 60_000,
         cardKind: "position-stats",
       }),
       "alice",
     );
+  });
+
+  it("passes the market-entry delay and minimum card age", async () => {
+    const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
+    const trading = {
+      openApproved: jest.fn(async () => ({ position: { id: "pos1" }, created: true })),
+    };
+    const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
+    const publications = { requestPositionPublish: jest.fn(async () => ({})) };
+    const svc = flow({ signals, trading, accounts, publications });
+    const before = Date.now();
+    await svc.approveSignal(
+      "s1",
+      { signalVersionId: "v1" },
+      "alice",
+      "acc1",
+      "@chan",
+      { renderDelayMs: 60_000, marketEntryDelayMs: 3000, marketCardMinAgeMs: 3000 },
+    );
+    expect(trading.openApproved).toHaveBeenCalledWith("s1", "acc1", "alice", {
+      marketEntryDelayMs: 3000,
+    });
+    const opts = (publications.requestPositionPublish as jest.Mock).mock.calls[0][2] as {
+      minRenderAt?: number;
+    };
+    expect(opts.minRenderAt).toBeGreaterThanOrEqual(before + 3000);
+    expect(opts.minRenderAt).toBeLessThanOrEqual(Date.now() + 3000);
   });
 
   it("publishes immediately with no dialog opts by default", async () => {

@@ -11,6 +11,7 @@ import { AuditModule } from "./audit/audit.module";
 import { MarketDataModule } from "./market-data/market-data.module";
 import { ReportingModule } from "./reporting/reporting.module";
 import { ReportingConsumersModule } from "./reporting/reporting-consumers.module";
+import { DailySheetModule } from "./reporting/daily-sheet/daily-sheet.module";
 import { QueueModule } from "./queue/queue.module";
 import { SignalsModule } from "./signals/signals.module";
 import { SourcesModule } from "./sources/sources.module";
@@ -33,6 +34,7 @@ import { TradingModule } from "./trading/trading.module";
     TradingModule,
     ReportingModule,
     ReportingConsumersModule,
+    DailySheetModule,
   ],
   controllers: [HealthController],
 })

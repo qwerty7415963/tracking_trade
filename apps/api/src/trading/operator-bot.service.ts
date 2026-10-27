@@ -4,7 +4,7 @@ import { APP_CONFIG, AppConfig } from "../config/app.config";
 import { AuditService } from "../audit/audit.service";
 import { SignalUpdatesService } from "../signals/signal-updates.service";
 import { isCardKind } from "@tracking-auto/card-renderer";
-import { PublicationsService } from "../reporting/publications.service";
+import { CARD_STYLE_TIMEOUT_MS, PublicationsService } from "../reporting/publications.service";
 import { SignalsService, extractSourceUrl, payloadRowId } from "../signals/signals.service";
 import { ApprovalFlowService } from "./approval-flow.service";
 import { VirtualAccountsService } from "./virtual-accounts.service";
@@ -95,8 +95,6 @@ const HELP = [
 
 /** Manual-completion input waits 5 minutes for the operator's reply. */
 const FILL_TIMEOUT_MS = 5 * 60 * 1000;
-/** The /pos card-style dialog holds the render job for 5 minutes. */
-const CARD_STYLE_TIMEOUT_MS = 5 * 60 * 1000;
 /** Candidate-pick nonces live 15 minutes (callback_data 64-byte limit). */
 const PICK_TTL_MS = 15 * 60 * 1000;
 /** Max review items per /review side (5 signals + 5 updates). */
@@ -539,21 +537,42 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           const created = await this.signals.createOperatorSignal(flags.text, actor, {
             sourceName: flags.src,
           });
+          const marketEntryDelayMs = created.entryMarket
+            ? (this.config.posMarketEntryDelayMs ?? 0)
+            : 0;
+          const marketCardMinAgeMs = created.entryMarket
+            ? (this.config.posMarketCardMinAgeMs ?? 0)
+            : 0;
+          if (marketEntryDelayMs > 0) {
+            await reply(
+              `Đang chờ ${marketEntryDelayMs / 1000}s để lấy giá market…`,
+            );
+          }
           const out = await this.flow.approveSignal(
             created.signalId,
             { signalVersionId: created.versionId },
             actor,
             flags.acc ?? undefined,
             flags.chat ?? undefined,
-            { renderDelayMs: CARD_STYLE_TIMEOUT_MS },
+            {
+              renderDelayMs: CARD_STYLE_TIMEOUT_MS,
+              ...(marketEntryDelayMs > 0 ? { marketEntryDelayMs } : {}),
+              ...(marketCardMinAgeMs > 0 ? { marketCardMinAgeMs } : {}),
+            },
           );
           if (out.position) {
             const pos = out.position as { id: string };
             if (chatId !== undefined) this.publicationChat.set(pos.id, Number(chatId));
-            if (out.published) {
+            if (out.awaitingEntry) {
+              await reply(
+                `✅ ${created.direction} ${created.instrument} → lệnh chờ entry ${pos.id}\n` +
+                  `Chọn loại card khi entry khớp (1 phút, hết giờ dùng card PnL):`,
+                this.cardStyleKeyboard(pos.id),
+              );
+            } else if (out.published) {
               await reply(
                 `✅ ${created.direction} ${created.instrument} → position ${pos.id}\n` +
-                  `Chọn loại card đăng lên channel (5 phút, hết giờ dùng card PnL):`,
+                  `Chọn loại card đăng lên channel (1 phút, hết giờ dùng card PnL):`,
                 this.cardStyleKeyboard(pos.id),
               );
             } else {
@@ -620,8 +639,13 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         }
         const r = (await this.trading.closePosition(a, actor)) as unknown as {
           closedSize: number;
+          cancelled?: boolean;
           position: { closePrice: number | null };
         };
+        if (r.cancelled) {
+          await reply("Đã hủy lệnh chờ entry.");
+          return;
+        }
         const closePrice = Number(r.position.closePrice);
         const card = await this.publishManualCard(a, "close", {
           markPrice: Number.isFinite(closePrice) ? closePrice : undefined,
@@ -1254,11 +1278,15 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
         const suffix =
           outcome === "promoted"
             ? `\n\n[Card ${label} by @${cb.from.username}]`
-            : "\n\n[Hết thời gian chọn — card PnL]";
+            : outcome === "scheduled"
+              ? `\n\n[Card ${label} — sẽ đăng khi entry khớp]`
+              : "\n\n[Hết thời gian chọn — card PnL]";
         await answer(
           outcome === "promoted"
             ? `Đã chọn card ${label} — đang đăng…`
-            : "Hết thời gian chọn — card PnL đã được đăng.",
+            : outcome === "scheduled"
+              ? `Đã chọn card ${label} — sẽ đăng khi entry khớp.`
+              : "Hết thời gian chọn — dùng card PnL.",
         );
         if (cb.message) {
           await this.api("editMessageText", {

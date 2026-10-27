@@ -90,21 +90,31 @@ function service(
 }
 
 describe("VirtualTradingService.openApproved", () => {
-  it("opens a sized paper position from an approval", async () => {
+  it("creates a pending-entry limit position without size", async () => {
     const prisma = mockPrisma();
     const svc = service(prisma, mockMarketData(), mockAccounts());
-    const { position } = (await svc.openApproved("s1", "acc1", "alice")) as {
+    const { position, awaitingEntry } = (await svc.openApproved("s1", "acc1", "alice")) as {
       position: { status: string; coin: string };
+      awaitingEntry: boolean;
     };
-    expect(position.status).toBe("OPEN");
+    expect(awaitingEntry).toBe(true);
+    expect(position.status).toBe("PENDING_ENTRY");
     expect(position.coin).toBe("ETH");
-    // 100k notional / 3000 entry = 33.333 units, rounded down to 0.001
     expect(prisma.virtualPosition.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ size: 33.333 }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          size: 0,
+          remainingSize: 0,
+          status: "PENDING_ENTRY",
+          styleChosen: false,
+          entries: [{ price: 3000, notional: 100000 }],
+          pendingEntries: [{ price: 3000, notional: 100000 }],
+        }),
+      }),
     );
   });
 
-  it("opens at the signal entry when it differs from the mid", async () => {
+  it("keeps the signal entry as a pending level when it differs from mid", async () => {
     const prisma = mockPrisma({
       signal: {
         findUnique: jest.fn(async () => ({
@@ -116,19 +126,22 @@ describe("VirtualTradingService.openApproved", () => {
     const marketData = mockMarketData({ getMid: jest.fn(async () => 2412.75) });
     const svc = service(prisma, marketData, mockAccounts());
     const { position } = (await svc.openApproved("s1", "acc1", "alice")) as unknown as {
-      position: { entryPrice: number; size: number };
+      position: { entryPrice: number; size: number; status: string };
     };
     expect(position.entryPrice).toBe(2427.63);
-    // 100k notional / 2427.63 entry = 41.192..., rounded down to 0.001
-    expect(position.size).toBeCloseTo(41.192, 6);
+    expect(position.size).toBe(0);
+    expect(position.status).toBe("PENDING_ENTRY");
     expect(prisma.virtualPosition.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ entryPrice: 2427.63 }),
+        data: expect.objectContaining({
+          entryPrice: 2427.63,
+          pendingEntries: [{ price: 2427.63, notional: 100000 }],
+        }),
       }),
     );
   });
 
-  it("falls back to the mid when the signal has no entry", async () => {
+  it("falls back to mid as the pending entry when the signal has none", async () => {
     const prisma = mockPrisma({
       signal: {
         findUnique: jest.fn(async () => ({
@@ -139,9 +152,163 @@ describe("VirtualTradingService.openApproved", () => {
     });
     const svc = service(prisma, mockMarketData(), mockAccounts());
     const { position } = (await svc.openApproved("s1", "acc1", "alice")) as unknown as {
-      position: { entryPrice: number };
+      position: { entryPrice: number; size: number };
     };
     expect(position.entryPrice).toBe(3000);
+    expect(position.size).toBe(0);
+  });
+
+  it("opens market entry at mid and keeps numeric levels pending", async () => {
+    const prisma = mockPrisma({
+      signal: {
+        findUnique: jest.fn(async () => ({
+          ...SIGNAL,
+          versions: [
+            {
+              ...VERSION,
+              entry: null,
+              normalizedPayloadJson: {
+                sourceMessageId: "m1",
+                entryMarket: true,
+                entries: [2950, 2900],
+              },
+            },
+          ],
+        })),
+      },
+    });
+    const svc = service(prisma, mockMarketData({ getMid: jest.fn(async () => 3000) }), mockAccounts());
+    const { position, awaitingEntry } = (await svc.openApproved("s1", "acc1", "alice")) as unknown as {
+      position: { status: string; entryPrice: number; size: number };
+      awaitingEntry: boolean;
+    };
+    expect(awaitingEntry).toBe(false);
+    expect(position.status).toBe("OPEN");
+    expect(position.entryPrice).toBe(3000);
+    expect(position.size).toBeCloseTo(33.333, 6);
+    expect(prisma.virtualPosition.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "OPEN",
+          styleChosen: true,
+          entries: [
+            { price: 3000, notional: 100000 },
+            { price: 2950, notional: 100000 / 3 },
+            { price: 2900, notional: 100000 / 3 },
+          ],
+          pendingEntries: [
+            { price: 2950, notional: 100000 / 3 },
+            { price: 2900, notional: 100000 / 3 },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it("waits for the market-entry delay before taking the mark", async () => {
+    jest.useFakeTimers();
+    try {
+      const prisma = mockPrisma({
+        signal: {
+          findUnique: jest.fn(async () => ({
+            ...SIGNAL,
+            versions: [
+              {
+                ...VERSION,
+                entry: null,
+                normalizedPayloadJson: {
+                  sourceMessageId: "m1",
+                  entryMarket: true,
+                  entries: [],
+                },
+              },
+            ],
+          })),
+        },
+      });
+      const marketData = mockMarketData({ getMid: jest.fn(async () => 3005) });
+      const svc = service(prisma, marketData, mockAccounts());
+      const pending = svc.openApproved("s1", "acc1", "alice", {
+        marketEntryDelayMs: 3000,
+      });
+
+      await jest.advanceTimersByTimeAsync(2999);
+      expect(marketData.getMid).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      const out = (await pending) as unknown as {
+        position: { entryPrice: number; status: string };
+      };
+      expect(marketData.getMid).toHaveBeenCalledTimes(1);
+      expect(out.position.entryPrice).toBe(3005);
+      expect(out.position.status).toBe("OPEN");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("does not delay a limit entry even when the market option is present", async () => {
+    jest.useFakeTimers();
+    try {
+      const prisma = mockPrisma();
+      const svc = service(prisma, mockMarketData(), mockAccounts());
+      const pending = svc.openApproved("s1", "acc1", "alice", {
+        marketEntryDelayMs: 3000,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const out = (await pending) as { awaitingEntry: boolean };
+      expect(out.awaitingEntry).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("rejects a market entry when the kill switch changes during the delay", async () => {
+    jest.useFakeTimers();
+    try {
+      let mode: "OFF" | "STOP_NEW_TRADES" = "OFF";
+      const kill = {
+        getMode: () => mode,
+        setMode: jest.fn(),
+      };
+      const prisma = mockPrisma({
+        signal: {
+          findUnique: jest.fn(async () => ({
+            ...SIGNAL,
+            versions: [
+              {
+                ...VERSION,
+                entry: null,
+                normalizedPayloadJson: {
+                  sourceMessageId: "m1",
+                  entryMarket: true,
+                  entries: [],
+                },
+              },
+            ],
+          })),
+        },
+      });
+      const svc = new VirtualTradingService(
+        prisma as never,
+        { record: jest.fn() } as never,
+        mockMarketData() as never,
+        mockAccounts() as never,
+        mockCoins() as never,
+        kill as never,
+        CONFIG,
+      );
+      const pending = svc.openApproved("s1", "acc1", "alice", {
+        marketEntryDelayMs: 3000,
+      });
+      const assertion = expect(pending).rejects.toThrow(/kill switch STOP_NEW_TRADES/);
+      await jest.advanceTimersByTimeAsync(1000);
+      mode = "STOP_NEW_TRADES";
+      await jest.advanceTimersByTimeAsync(2000);
+      await assertion;
+      expect(prisma.virtualPosition.create).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("rejects a non-positive signal entry instead of guessing", async () => {
@@ -157,7 +324,7 @@ describe("VirtualTradingService.openApproved", () => {
     await expect(svc.openApproved("s1", "acc1", "alice")).rejects.toThrow(/INVALID_ENTRY/);
   });
 
-  it("stores a DCA ladder with per-level notionals frozen at open", async () => {
+  it("stores a limit DCA ladder with every level pending", async () => {
     const prisma = mockPrisma({
       signal: {
         findUnique: jest.fn(async () => ({
@@ -173,18 +340,19 @@ describe("VirtualTradingService.openApproved", () => {
     });
     const svc = service(prisma, mockMarketData(), mockAccounts());
     await svc.openApproved("s1", "acc1", "alice");
-    // entry[0] keeps the full target notional; every later level 1/N of it.
     expect(prisma.virtualPosition.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           entryPrice: 3000,
-          size: 33.333,
+          size: 0,
+          status: "PENDING_ENTRY",
           entries: [
             { price: 3000, notional: 100000 },
             { price: 2950, notional: 100000 / 3 },
             { price: 2900, notional: 100000 / 3 },
           ],
           pendingEntries: [
+            { price: 3000, notional: 100000 },
             { price: 2950, notional: 100000 / 3 },
             { price: 2900, notional: 100000 / 3 },
           ],
@@ -213,13 +381,13 @@ describe("VirtualTradingService.openApproved", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           entries: [{ price: 3000, notional: 100000 }],
-          pendingEntries: [],
+          pendingEntries: [{ price: 3000, notional: 100000 }],
         }),
       }),
     );
   });
 
-  it("opens a single-level position when the payload carries no ladder", async () => {
+  it("keeps a single-level limit order pending until its price is touched", async () => {
     const prisma = mockPrisma();
     const svc = service(prisma, mockMarketData(), mockAccounts());
     await svc.openApproved("s1", "acc1", "alice");
@@ -227,7 +395,7 @@ describe("VirtualTradingService.openApproved", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           entries: [{ price: 3000, notional: 100000 }],
-          pendingEntries: [],
+          pendingEntries: [{ price: 3000, notional: 100000 }],
         }),
       }),
     );
@@ -425,6 +593,32 @@ describe("VirtualTradingService.applyEntryFill", () => {
     );
   });
 
+  it("activates a pending-entry position on its first fill", async () => {
+    const pendingPosition = {
+      ...ladderPosition,
+      status: "PENDING_ENTRY",
+      size: 0,
+      remainingSize: 0,
+      pendingEntries: [
+        { price: 3000, notional: 100000 },
+        { price: 2950, notional: 100000 / 3 },
+        { price: 2900, notional: 100000 / 3 },
+      ],
+    };
+    const { svc, prisma } = fillSetup(pendingPosition);
+    const result = await svc.applyEntryFill("pos1", 3000, 3000, "worker");
+    expect(result.applied).toBe(true);
+    expect(result.firstFill).toBe(true);
+    expect(result.size).toBeCloseTo(33.333, 6);
+    expect(result.entryPrice).toBeCloseTo(3000, 6);
+    const data = (prisma.virtualPosition.update as jest.Mock).mock.calls[0][0].data;
+    expect(data).toMatchObject({ status: "OPEN", entryPrice: 3000 });
+    expect(data.pendingEntries).toEqual([
+      { price: 2950, notional: 100000 / 3 },
+      { price: 2900, notional: 100000 / 3 },
+    ]);
+  });
+
   it("is a no-op when the level already filled", async () => {
     const { svc, prisma } = fillSetup({
       ...ladderPosition,
@@ -609,6 +803,34 @@ describe("VirtualTradingService.pollMarketOnce", () => {
     );
     // TP/SL half of the cycle stays read-only (settle closes afterwards).
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("fills a pending-entry order and flags the first fill", async () => {
+    const position = dcaPosition({
+      status: "PENDING_ENTRY",
+      size: 0,
+      remainingSize: 0,
+      entryPrice: 3000,
+      pendingEntries: [
+        { price: 3000, notional: 100000 },
+        { price: 2950, notional: 100000 / 3 },
+      ],
+    });
+    const { svc, prisma } = dcaService(position, 3000);
+    const events = await svc.pollMarketOnce();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      positionId: "p-dca",
+      kind: "ENTRY",
+      firstFill: true,
+      entryPrice: 3000,
+    });
+    expect(prisma.virtualPosition.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "p-dca" },
+        data: expect.objectContaining({ status: "OPEN" }),
+      }),
+    );
   });
 
   it("reports the fill first, then the TP hit, in one cycle", async () => {
@@ -799,6 +1021,34 @@ describe("VirtualTradingService manual exits", () => {
     await expect(short.svc.updateStopLoss("pos1", 3050, "alice")).rejects.toThrow(
       /SL_ALREADY_TRIGGERED/,
     );
+  });
+
+  it("cancels a pending-entry order with no ledger impact", async () => {
+    const { svc, prisma, audit, accounts } = manualSetup({
+      position: { ...position, status: "PENDING_ENTRY", size: 0, remainingSize: 0 },
+    });
+    const result = await svc.closePosition("pos1", "alice");
+    expect(result).toMatchObject({ cancelled: true, closedSize: 0, realized: 0 });
+    expect(prisma.virtualPosition.update).toHaveBeenCalledWith({
+      where: { id: "pos1" },
+      data: { status: "CANCELLED", closedAt: expect.any(Date) },
+    });
+    expect(accounts.applyRealizedPnl).not.toHaveBeenCalled();
+    expect(audit.record).toHaveBeenCalledWith(
+      "alice",
+      "position.cancel",
+      expect.objectContaining({ positionId: "pos1", reason: "ENTRY_CANCELLED" }),
+    );
+  });
+
+  it("rejects manual TP and SL while the entry is still pending", async () => {
+    const { svc } = manualSetup({
+      position: { ...position, status: "PENDING_ENTRY", size: 0, remainingSize: 0 },
+    });
+    await expect(svc.takeProfitManual("pos1", { percent: 50 }, "alice")).rejects.toThrow(
+      ConflictException,
+    );
+    await expect(svc.updateStopLoss("pos1", 2700, "alice")).rejects.toThrow(ConflictException);
   });
 
   it("rejects an invalid stop loss and a closed position", async () => {

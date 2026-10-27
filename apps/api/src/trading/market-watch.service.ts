@@ -35,27 +35,51 @@ export class MarketWatchService implements OnModuleInit, OnModuleDestroy {
       MARKET_WATCH_QUEUE_NAME,
       async () => {
         const events = await this.trading.pollMarketOnce();
+        // Several DCA levels can fill in one poll. Publish a single entry card
+        // with the final row, and keep the first-fill flag if any level was the
+        // pending order's activation; otherwise the delayed open card can be
+        // overtaken by later DCA cards.
+        const entryEvents = new Map<string, MarketHitEvent>();
+        const settleEvents: MarketHitEvent[] = [];
         for (const ev of events) {
-          if (ev.kind === "ENTRY") {
-            // DCA fill: the row is already updated, so the card renders the
-            // new size/average straight away (no settle — nothing to close).
-            try {
+          if (ev.kind !== "ENTRY") {
+            settleEvents.push(ev);
+            continue;
+          }
+          const prior = entryEvents.get(ev.positionId);
+          entryEvents.set(ev.positionId, {
+            ...ev,
+            firstFill: ev.firstFill === true || prior?.firstFill === true,
+          });
+        }
+        for (const ev of entryEvents.values()) {
+          // DCA fill: the row is already updated, so the card renders the
+          // new size/average straight away (no settle — nothing to close).
+          try {
+            if (ev.firstFill) {
+              // PENDING_ENTRY just became OPEN: this is the first card, and
+              // it may wait out the remaining /pos style window.
+              await this.publications.publishFirstFill(
+                ev.positionId,
+                ev.markPrice,
+                "worker",
+              );
+            } else {
               await this.publications.requestPositionPublish(
                 ev.positionId,
                 "entry",
                 { markPrice: ev.markPrice },
                 "worker",
               );
-            } catch (err) {
-              await this.audit.record("worker", "publication.skipped", {
-                positionId: ev.positionId,
-                reason: err instanceof Error ? err.message.split(":")[0] : "unknown",
-              });
             }
-            continue;
+          } catch (err) {
+            await this.audit.record("worker", "publication.skipped", {
+              positionId: ev.positionId,
+              reason: err instanceof Error ? err.message.split(":")[0] : "unknown",
+            });
           }
-          await this.enqueueSettle(ev);
         }
+        for (const ev of settleEvents) await this.enqueueSettle(ev);
         return { hits: events.length };
       },
       { connection: this.redis },

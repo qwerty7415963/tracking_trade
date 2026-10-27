@@ -178,6 +178,35 @@ describe("parseSignal", () => {
     expect(parsed.entryZoneHigh).toBeNull();
   });
 
+  it("parses entry market with optional DCA levels", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry market 2950 2900 SL 2800 TP 3100" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.entryMarket).toBe(true);
+    expect(parsed.entry).toBeNull();
+    expect(parsed.entries).toEqual([2950, 2900]);
+    expect(parsed.orderType).toBe("MARKET");
+    expect(missingRequiredFields(parsed)).toEqual([]);
+  });
+
+  it("allows entry market without DCA levels and keeps entry mandatory otherwise", () => {
+    const market = parseSignal(
+      { ...base, text: "LONG ETH entry market SL 2800 TP 3100" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(market.entryMarket).toBe(true);
+    expect(market.entries).toEqual([]);
+    expect(missingRequiredFields(market)).toEqual([]);
+
+    const noEntry = parseSignal(
+      { ...base, text: "LONG ETH SL 2800 TP 3100" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(noEntry.entryMarket).toBe(false);
+    expect(missingRequiredFields(noEntry)).toContain("entry");
+  });
+
   it("applies channel profile aliases over the built-in map", () => {
     const parsed = parseSignal(
       { ...base, text: "BUY PAWS Entry 1 SL 0.9 TP 1.1" },

@@ -487,6 +487,7 @@ describe("SignalsService.createOperatorSignal", () => {
       status: "PENDING_APPROVAL",
       instrument: "BTC",
       direction: "LONG",
+      entryMarket: false,
     });
     expect(prisma.source.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -530,6 +531,15 @@ describe("SignalsService.createOperatorSignal", () => {
     await expect(svc.createOperatorSignal("   ", "tg:alice")).rejects.toThrow(/empty signal text/);
     expect(prisma.sourceMessage.create).not.toHaveBeenCalled();
     expect(prisma.source.upsert).not.toHaveBeenCalled();
+  });
+
+  it("marks an operator market entry so /pos can delay it", async () => {
+    const { svc } = opService();
+    const out = await svc.createOperatorSignal(
+      "LONG BTC entry market SL 98000 TP 105000",
+      "tg:alice",
+    );
+    expect(out.entryMarket).toBe(true);
   });
 
   it("auto-detects a pasted link in the text", async () => {
@@ -757,6 +767,41 @@ describe("SignalsService.approve (stale version)", () => {
       /missing instrument, direction, entry, stop_loss, take_profits/,
     );
     expect(tx.approval.create).not.toHaveBeenCalled();
+  });
+
+  it("allows a market entry to be approved without a fixed entry price", async () => {
+    const tx = {
+      signal: {
+        findUnique: async () => ({
+          id: "s1",
+          status: "NEEDS_REVIEW",
+          versions: [
+            {
+              id: "v1",
+              instrument: "ETH",
+              direction: "LONG",
+              entry: null,
+              stopLoss: 2200,
+              takeProfits: [2400],
+              normalizedPayloadJson: { entryMarket: true, entries: [] },
+            },
+          ],
+        }),
+        update: jest.fn(async (args: unknown) => args),
+      },
+      approval: { create: jest.fn(async () => ({ id: "ap1" })) },
+    };
+    const prisma = { $transaction: async (fn: (t: unknown) => unknown) => fn(tx) };
+    const svc = new SignalsService(
+      prisma as never,
+      { record: jest.fn() } as never,
+      { enabledSymbols: jest.fn(async () => [] as string[]) } as never,
+      { getProfile: jest.fn(async () => null) } as never,
+    );
+    await expect(
+      svc.approve("s1", { signalVersionId: "v1" }, "alice"),
+    ).resolves.toBeTruthy();
+    expect(tx.approval.create).toHaveBeenCalled();
   });
 
   it("still allows approving complete versions with unlisted coins", async () => {
