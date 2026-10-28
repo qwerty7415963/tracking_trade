@@ -4,6 +4,11 @@ import { AppModule } from "../app.module";
 import { PrismaService } from "../database/prisma.service";
 import { OUTBOX_QUEUE } from "../queue/queue.module";
 import { REDIS_CLIENT } from "../queue/redis.provider";
+import { MarketWatchService } from "../trading/market-watch.service";
+import { RenderConsumer } from "../reporting/render.consumer";
+import { PublishSendConsumer } from "../reporting/publish-send.consumer";
+import { SettleConsumer } from "../trading/settle.consumer";
+import { DailySheetService } from "../reporting/daily-sheet/daily-sheet.service";
 
 function buildModule(prisma: unknown, redis: unknown) {
   return Test.createTestingModule({ imports: [AppModule] })
@@ -13,6 +18,16 @@ function buildModule(prisma: unknown, redis: unknown) {
     .useValue(redis)
     .overrideProvider(OUTBOX_QUEUE)
     .useValue({ close: async () => {} })
+    .overrideProvider(MarketWatchService)
+    .useValue({ onModuleInit: async () => {}, onModuleDestroy: async () => {} })
+    .overrideProvider(RenderConsumer)
+    .useValue({ onModuleInit: () => {}, onModuleDestroy: async () => {} })
+    .overrideProvider(PublishSendConsumer)
+    .useValue({ onModuleInit: () => {}, onModuleDestroy: async () => {} })
+    .overrideProvider(SettleConsumer)
+    .useValue({ onModuleInit: () => {}, onModuleDestroy: async () => {} })
+    .overrideProvider(DailySheetService)
+    .useValue({ onModuleInit: () => {}, onModuleDestroy: () => {}, status: async () => ({}) })
     .compile();
 }
 
