@@ -39,6 +39,8 @@ services:
       # Bind mount (repo-root ./artifacts) so rendered PNGs are visible on the
       # host and survive container restarts. Do NOT use a named volume.
       - ../artifacts:/data/artifacts
+      # Read-only service-account JSON for the daily Google Sheet report.
+      - ../secrets:/opt/tracking_trade/secrets:ro
     ports:
       - "3000:3000"
     depends_on:
