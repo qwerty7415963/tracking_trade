@@ -6,6 +6,43 @@
 
 Mọi tín hiệu **mở lệnh mới** cần được **duyệt thủ công**. Hệ thống không được tự động mở lệnh mới khi chưa có approval hợp lệ.
 
+## 1.1 Switch toàn cục `open_mode`
+
+- Hai mode: `MANUAL` (mặc định, fail-safe) và `AUTO`, đổi runtime qua `POST /v1/operations/open-mode` hoặc `/openmode` (ghi audit).
+- `MANUAL`: mọi bài đều chờ duyệt tay, kể cả ví đang `AUTO`.
+- `AUTO`: giữ logic hiện tại — ví nào `AUTO` thì signal sạch (`PENDING_APPROVAL`) tự mở dưới tên `system:auto`; ví `APPROVE` vẫn chờ.
+- `NEEDS_REVIEW` không bao giờ tự mở ở mode nào.
+- Thứ tự ưu tiên: global `MANUAL` > mode từng ví.
+
+## 1.1 Điều kiện duyệt (chặn approve mù)
+
+`approve()` từ chối version thiếu field mà chắc chắn mở lỗi: coin/hướng `UNKNOWN`, thiếu entry (trừ `entry market`)/SL/TP — kèm lý do rõ để operator Bổ sung trước. Coin có tên thật nhưng chưa trong list vẫn được duyệt (thêm coin vào list là mở được). Nút Approve hiển thị luôn lý do open-failed thay vì cụt lủn.
+
+## 1.2 Vị thế chủ động `/pos` (operator tự ra lệnh)
+
+Khi **chính operator** là người ra tín hiệu (không phải channel bên ngoài), không cần bước review:
+
+```
+/pos LONG BTC @100000 SL 98000 TP 105000 lev 5 https://t.me/x/1 src="Kaka trades" chat=<id> acc=<accountId>
+```
+
+- **Link bài gốc tự nhận diện** (`extractSourceUrl`): dán link vào bất kỳ đâu trong text — `https://t.me/…`, bare `t.me/…`, kể cả kiểu cũ `url=https://…` — hệ thống tự tách link ra khỏi text (parser không thấy link) và lưu làm `sourceUrl`. Link đầu tiên được lấy; toàn bộ link bị strip khỏi text. Không có cờ `url=` nữa. Link-only (không có signal text) → báo `empty signal text`.
+- **Tạo signal** (`createOperatorSignal`): nguồn ảo `MANUAL/<key>`, version `eventType=MANUAL`, status `PENDING_APPROVAL` (hoặc `NEEDS_REVIEW` nếu có ambiguity). Thiếu field bắt buộc hoặc coin lạ → báo đúng lỗi, không tạo gì.
+- **Tên channel trên caption** (theo thứ tự ưu tiên):
+  1. `src="Tên channel"` — **fallback ẩn**: gõ tay khi auto-resolve không đọc được tên (link private mà bot chưa vào channel), có space được, thắng mọi nguồn khác.
+  2. Tra DB theo link đã detect — nếu link đã ingest thì lấy `displayName` của channel đã track (không network).
+  3. Gọi Bot API `getChat` theo link: `t.me/<username>/...` → `@username`, `t.me/c/<id>/...` → `-100<id>` — **link public luôn đọc được; link private `/c/` chỉ đọc được khi bot đã vào channel đó**. Timeout 5s, mọi lỗi → bước kế.
+  4. Fallback: `Operator (manual)` (nguồn ảo `MANUAL/operator`).
+  - Mỗi tên resolve được tạo 1 Source row riêng (`platform=MANUAL`, `externalSourceId= tên thường`, `sourceKind=MANUAL`) → hiện trong `/sources`, stats tách theo nguồn; guard `isOperatorSource` vẫn pass nên URL vẫn optional.
+- **Tự duyệt + mở + đăng**: `flow.approveSignal` chạy liền sau khi tạo — không qua card review (operator ra lệnh = tự duyệt). Vẫn giữ toàn bộ guard: kill switch, symbol map + quote (mid), risk gate, approval ≤ 24h.
+- **Chọn loại card (dialog 1 phút)**: Market entry (`/pos ... entry market 2950 2900 ...`): bot gửi `Đang chờ 3s để lấy giá market…`, sau **3s** mới lấy mid và mở; publication tạo sau đó với render job **delayed 1 phút**, card không render trước **entry + 3s** kể cả khi bấm style sớm; bot reply kèm 2 nút `① Card PnL` / `② Card Thống kê`. Limit entry (`entry 3000 2950 ...`, kể cả 1 entry): position tạo với status `PENDING_ENTRY`, size 0, **mọi entry nằm trong `pending_entries`**, chưa có card/publication; bot vẫn hỏi style (1 phút) và chỉ lưu `virtual_positions.card_kind` + `style_chosen=true`. Bấm nút → `chooseCardStyle` xử lý: `PENDING_ENTRY` còn hạn → `scheduled` (chưa đăng); có publication delayed → quét **mọi** publication `PENDING/RETRY_PENDING` và promote job còn **delayed** (marker `delayMs`) → đăng ngay. Khi entry đầu khớp: đã chọn style thì đăng card mở ngay; chưa chọn thì tạo card job delay **đúng phần còn lại của 1 phút** (bấm nút trong lúc chờ vẫn promote được), hết giờ fallback `pnl-strip`; khớp sau 1 phút thì fallback ngay. Kind lưu trên position nên **mọi card TP/SL sau đó kế thừa**; ingest/luồng AUTO không dialog (mặc định `pnl-strip`). Kind của card TP/SL **đọc lúc render** và render consumer **hold card update tới khi dialog kết thúc** nên TP/SL nổ giữa dialog vẫn ra đúng kind vừa chọn.
+- **Card mở render từ snapshot đông cứng lúc `/pos`**: volume = `size` (không phải `remaining_size` sống) + `status = OPEN`, nên card vẫn đăng được nếu position đóng (vd SL) trong 1 phút chờ. Card TP/SL/close render `status = CLOSED`. Nếu render hay **send job hết 10 lần retry** kết thúc `FINAL_FAILURE`, bot DM operator báo "❌ Không đăng được card …" (30s/lần, không lặp).
+- **Caption**: hiện tên nguồn (resolve từ `src=`/link) + URL bài gốc đã detect (không bịa link — không có link thì chỉ hiện tên).
+- **Không phụ thuộc `open_mode`**: lệnh chủ động đi thẳng `approveSignal`, như `/approve` tay.
+- **Entry lấy từ signal**: limit entry tạo `PENDING_ENTRY` và **chờ giá chạm entry[0]** rồi mới mở tại đúng giá đó; chưa khớp thì không có card/margin. Market entry (`entry market 2950 2900`) chỉ áp dụng cho `/pos`: bot chờ **3s** rồi mới lấy mid, khớp full notional tại giá đó; các level số còn lại chờ. REST/AUTO/`/approve` không delay. `SL`/`TP` là mức tuyệt đối — nếu đặt sai phía so với entry (ví dụ LONG `SL >= entry`), position chạm SL ngay lần poll đầu sau khi khớp. Size = `notional / giá khớp`, nên entry lệch mid đổi size/PNL ngay khi khớp; PNL/ROI trên card so với mark live lúc render. Operator tự chịu entry/SL; hệ thống không sửa hay suy đoán.
+- **Nhiều entry (DCA)**: `/pos LONG ETH entry 3000 2950 2900 …` → position `PENDING_ENTRY`, **mọi level** nằm trong `pending_entries`; entry[0] full notional, các level sau **notional/N** đóng băng lúc mở. Poll 5s chạm giá (LONG `mark ≤ price`, SHORT `mark ≥ price`) → `applyEntryFill`: `size` tăng, `entry_price` = TB có trọng số, ghi audit `position.entry_fill` + **đăng 1 card update** (`status=entry`, hiển thị `filled` trong caption, reply dưới card gốc, kế thừa kind card). Entry đầu khớp chuyển `OPEN` và mới đăng card mở. Caption in `- Entry: <TB> (đã khớp 2/3 lệnh)`. Level dưới min size → loại khỏi `pending_entries` + audit `position.entry_fill_skipped`. Ladder sai thứ tự → parser đã thu về entry đầu (`entries_wrong_order`), `openApproved` cũng tự vệ bằng cách chỉ lấy level đầu.
+- REST parity: `POST /v1/signals/manual` — cùng one-shot flow. `sourceName?` = `src=`, `sourceUrl?` = override (hiếm — text cũng tự detect link), `cardKind?` = chọn kind card thẳng (không dialog; không truyền → `pnl-strip`).
+
 ## 2. Nội dung bắt buộc của approval
 
 Approval phải lưu:

@@ -92,10 +92,11 @@ model Signal {
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
-  source    Source          @relation(fields: [sourceId], references: [id])
+  source    Source            @relation(fields: [sourceId], references: [id])
   versions  SignalVersion[]
-  updates   SignalUpdate[]  @relation("MatchedUpdates")
+  updates   SignalUpdate[]    @relation("MatchedUpdates")
   approvals Approval[]
+  positions VirtualPosition[]
 
   @@map("signals")
 }
@@ -115,9 +116,9 @@ model SignalVersion {
   parserVersion         String?  @map("parser_version")
   createdAt             DateTime @default(now()) @map("created_at")
 
-  signal    Signal             @relation(fields: [signalId], references: [id])
+  signal    Signal            @relation(fields: [signalId], references: [id])
   approvals Approval[]
-  commands  ExecutionCommand[]
+  positions VirtualPosition[]
 
   @@unique([signalId, versionNumber])
   @@map("signal_versions")
@@ -155,44 +156,88 @@ model Approval {
   @@map("approvals")
 }
 
-model ExecutionCommand {
+model VirtualAccount {
+  id         String   @id @default(uuid())
+  name       String
+  balance    Decimal  @db.Decimal(30, 8)
+  leverage   Int      @default(10)
+  mode       String   @default("APPROVE")
+  marginType String   @default("CROSS") @map("margin_type")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  positions    VirtualPosition[]
+  transactions VirtualTransaction[]
+
+  @@map("virtual_accounts")
+}
+
+model VirtualPosition {
   id              String    @id @default(uuid())
-  idempotencyKey  String    @unique @map("idempotency_key")
   accountId       String    @map("account_id")
   signalId        String?   @map("signal_id")
   signalVersionId String?   @map("signal_version_id")
-  commandType     String    @map("command_type")
-  payloadJson     Json?     @map("payload_json")
-  status          String    @default("CREATED")
-  correlationId   String?   @map("correlation_id")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  expiresAt       DateTime? @map("expires_at")
+  coin            String
+  direction       String
+  size            Decimal   @db.Decimal(30, 8)
+  entryPrice      Decimal   @map("entry_price") @db.Decimal(30, 8)
+  stopLoss        Decimal?  @map("stop_loss") @db.Decimal(30, 8)
+  takeProfits     Json      @map("take_profits")
+  leverage        Int
+  remainingSize   Decimal   @map("remaining_size") @db.Decimal(30, 8)
+  filledTps       Json      @default("[]") @map("filled_tps")
+  // Multi-entry (DCA): every level with the notional frozen at open, plus the
+  // subset that has not filled yet. `entryPrice` is the average of the levels
+  // that actually filled.
+  entries         Json      @default("[]")
+  pendingEntries  Json      @default("[]") @map("pending_entries")
+  status          String    @default("OPEN")
+  openedAt        DateTime  @default(now()) @map("opened_at")
+  /**
+   * First actual entry fill. Limit orders keep opened_at as placement time.
+   */
+  filledAt        DateTime? @map("filled_at")
+  closedAt        DateTime? @map("closed_at")
+  closePrice      Decimal?  @map("close_price") @db.Decimal(30, 8)
+  realizedPnl     Decimal?  @map("realized_pnl") @db.Decimal(30, 8)
+  cardKind        String    @default("pnl-strip") @map("card_kind")
+  // Pending-entry /pos orders ask for the card style before the first fill;
+  // false means "not chosen yet" (fallback pnl-strip after the window).
+  styleChosen     Boolean   @default(true) @map("style_chosen")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
-  version    SignalVersion? @relation(fields: [signalVersionId], references: [id])
-  executions Execution[]
-
-  @@map("execution_commands")
-}
-
-model Execution {
-  id                 String    @id @default(uuid())
-  executionCommandId String    @map("execution_command_id")
-  brokerOrderId      String?   @map("broker_order_id")
-  brokerDealId       String?   @map("broker_deal_id")
-  brokerPositionId   String?   @map("broker_position_id")
-  requestedVolume    Decimal?  @map("requested_volume") @db.Decimal(30, 8)
-  filledVolume       Decimal?  @map("filled_volume") @db.Decimal(30, 8)
-  fillPrice          Decimal?  @map("fill_price") @db.Decimal(30, 8)
-  actualSl           Decimal?  @map("actual_sl") @db.Decimal(30, 8)
-  actualTp           Decimal?  @map("actual_tp") @db.Decimal(30, 8)
-  executionStatus    String    @default("PENDING") @map("execution_status")
-  openedAt           DateTime? @map("opened_at")
-  closedAt           DateTime? @map("closed_at")
-
-  command      ExecutionCommand      @relation(fields: [executionCommandId], references: [id])
+  account      VirtualAccount        @relation(fields: [accountId], references: [id])
+  signal       Signal?               @relation(fields: [signalId], references: [id])
+  version      SignalVersion?        @relation(fields: [signalVersionId], references: [id])
   publications TelegramPublication[]
 
-  @@map("executions")
+  @@index([accountId, status])
+  @@map("virtual_positions")
+}
+
+model DailySheetSetting {
+  id         String    @id @default("singleton")
+  startDate  DateTime  @map("start_date") @db.Date
+  lastSyncAt DateTime? @map("last_sync_at")
+  lastError  String?   @map("last_error")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@map("daily_sheet_settings")
+}
+
+model VirtualTransaction {
+  id        String   @id @default(uuid())
+  accountId String   @map("account_id")
+  type      String
+  amount    Decimal  @db.Decimal(30, 8)
+  reference String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  account VirtualAccount @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, createdAt])
+  @@map("virtual_transactions")
 }
 
 model RiskEvent {
@@ -270,7 +315,7 @@ model ReportingRoute {
 
 model TelegramPublication {
   id                     String    @id @default(uuid())
-  executionId            String?   @map("execution_id")
+  virtualPositionId      String?   @map("virtual_position_id")
   senderAccountId        String?   @map("sender_account_id")
   destinationId          String?   @map("destination_id")
   templateId             String?   @map("template_id")
@@ -287,7 +332,7 @@ model TelegramPublication {
   createdAt              DateTime  @default(now()) @map("created_at")
   publishedAt            DateTime? @map("published_at")
 
-  execution   Execution?             @relation(fields: [executionId], references: [id])
+  position    VirtualPosition?       @relation(fields: [virtualPositionId], references: [id])
   sender      TelegramSenderAccount? @relation(fields: [senderAccountId], references: [id])
   destination TelegramDestination?   @relation(fields: [destinationId], references: [id])
   template    ReportingTemplate?     @relation(fields: [templateId], references: [id])
@@ -295,23 +340,42 @@ model TelegramPublication {
   @@map("telegram_publications")
 }
 
-model RenderArtifact {
-  id             String   @id @default(uuid())
-  renderId       String   @unique @map("render_id")
-  snapshotId     String   @map("snapshot_id")
-  accountId      String   @map("account_id")
-  positionId     String   @map("position_id")
-  executionId    String?  @map("execution_id")
-  artifactPath   String   @map("artifact_path")
-  contentHash    String   @map("content_hash")
-  width          Int
-  height         Int
-  mimeType       String   @default("image/png") @map("mime_type")
-  templateVersion Int     @default(1) @map("template_version")
-  createdAt      DateTime @default(now()) @map("created_at")
+model ParserProfile {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  coinAliases Json?    @map("coin_aliases")
+  notes       String?
+  createdBy   String?  @map("created_by")
+  updatedBy   String?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
-  @@index([positionId, createdAt])
-  @@map("render_artifacts")
+  @@map("parser_profiles")
+}
+
+model TradableCoin {
+  id          String   @id @default(uuid())
+  symbol      String   @unique
+  enabled     Boolean  @default(true)
+  notionalUsd Decimal  @default(50000) @map("notional_usd") @db.Decimal(30, 8)
+  notes       String?
+  createdBy   String?  @map("created_by")
+  updatedBy   String?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("tradable_coins")
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  updatedBy String?  @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
 }
 
 model AuditLog {
@@ -325,18 +389,6 @@ model AuditLog {
 
   @@index([entity, entityId])
   @@map("audit_logs")
-}
-
-model BridgeHeartbeat {
-  id         String   @id @default(uuid())
-  accountId  String   @map("account_id")
-  terminal   String?
-  status     String
-  details    Json?
-  receivedAt DateTime @default(now()) @map("received_at")
-
-  @@index([accountId, receivedAt])
-  @@map("bridge_heartbeats")
 }
 
 model OutboxEvent {

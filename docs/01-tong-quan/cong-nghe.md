@@ -12,14 +12,14 @@
 | IngestionService | Lưu raw messages, deduplicate |
 | SignalParser | Parse nội dung thành dữ liệu có cấu trúc |
 | SignalMatcher | Ghép update với tín hiệu gốc |
-| ApprovalService | Duyệt hoặc từ chối tín hiệu |
-| RiskEngine | Kiểm tra giới hạn rủi ro |
-| ExecutionService | Tạo và theo dõi execution commands |
-| MT5BridgeAdapter | Giao tiếp với MT5 EA/bridge |
-| PositionManager | Quản lý SL, TP, partial close và close |
-| ReconciliationService | Đối chiếu DB với trạng thái broker |
-| ScreenshotWorker | Chụp ảnh giao dịch |
-| TelegramPublisher | Render template, gửi báo cáo và reply |
+| ApprovalFlowService | Duyệt = mở lệnh (2 mode AUTO/APPROVE) |
+| VirtualTradingService | Mở/đóng vị thế giấy, multi-TP split, TP/SL detector |
+| VirtualAccountsService | Quản trị tài khoản ảo (nạp/rút/reset/mode/leverage) |
+| MarketDataService | Giá Hyperliquid (meta/allMids, mapping data-driven) |
+| OperatorBotService | Lệnh operator + nút Approve/Reject trên Telegram |
+| RiskEngine | Kiểm tra giới hạn rủi ro (virtual, thích ứng từ bản MT5) |
+| ScreenshotWorker | Chỉ render card PNG (Chromium) theo yêu cầu từ queue `card-render` |
+| TelegramPublisher | API gửi báo cáo (caption ở API) + market-watch poll (queue `telegram-send`, `market-watch`) |
 | AuditService | Lưu lịch sử thao tác |
 | OperationsAPI | API vận hành và quản trị |
 
@@ -39,14 +39,14 @@
 | Queue | Redis + BullMQ |
 | Telegram collection | teleproto (MTProto client cho Node.js/TypeScript, USER_SESSION + StringSession) — xem ADR-0014 |
 | X connector | Playwright (browser automation, tách biệt pipeline chính) |
-| MT5 | MQL5 EA/bridge |
+| Market data | Hyperliquid public info API (`meta`/`allMids`, không cần key) |
+| Paper trading | Virtual account cross-margin (mặc định x10), engine PnL/margin/liquidation nội bộ |
 | Orchestration | Docker Compose |
 | CI/CD | GitHub Actions |
 | Container registry | GitHub Container Registry (GHCR) |
 
 ## 3. Cân nhắc kiến trúc liên quan
 
-- **MT5 Docker spike** bắt buộc trước khi phụ thuộc mô hình chạy MT5 trong Linux Docker (xem [08-deploy/mt5-docker-spike.md](../08-deploy/mt5-docker-spike.md)).
 - **X connector** không dùng X API trả phí; phải thử nghiệm tính khả thi trước (xem [05-connectors/x-connector.md](../05-connectors/x-connector.md)).
 - Quyết định kiến trúc được lưu trong [ADR](../adr/README.md).
 - Mọi dependency tuân thủ **quy trình khóa version và cập nhật package** (xem [08-deploy/docker-cicd.md](../08-deploy/docker-cicd.md)).

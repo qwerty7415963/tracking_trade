@@ -9,11 +9,19 @@ Thu thập Telegram messages và metadata phục vụ ingestion, đồng thời 
 ## 2. Collection
 
 - Theo dõi các channel/group **bên thứ ba** được cấu hình trong `sources`.
+- **Chỉ đọc bài mới realtime** qua event `newChannelMessage` — không đọc lịch sử cũ (quyết định vận hành 2026-10-15).
 - Lưu raw message kèm metadata: author, thread, reply, quote, timestamp.
-- Hỗ trợ message **edit/revision** — lưu revision mới, không ghi đè lịch sử.
+- Hỗ trợ message **edit/revision** — lưu revision mới, không ghi đè lịch sử; edit nối **version mới** vào signal gốc thay vì tạo signal trùng (xem signal-parsing-matching).
 - Deduplicate dựa trên source + external message ID + revision/hash.
-- **Backfill history**: khi thêm nguồn mới, USER_SESSION có thể đọc lịch sử cũ của channel để dựng ngữ cảnh; backfill không được tạo signal trùng (dedupe như message thường).
 - Channel **private** cần invite link, lưu trong `collection_config_json` của nguồn.
+
+## 2.1 IngestionService (vòng đọc bài)
+
+- `IngestionService` (API) subscribe mọi source Telegram `enabled` lúc boot qua `USER_SESSION`.
+- Nguồn thêm/bật sau đó được tự phát hiện qua resync 60s — không cần restart sau `/source_add`.
+- Bài mới → `ingestMessage` → chưa trùng → `signals.ingestSourceMessage` (parse ngay).
+- Bài sửa → `ingestEdit` (revision+1) → parse → version mới.
+- Một nguồn lỗi (session chết, flood, chưa join) chỉ warn + bỏ qua — pipeline các nguồn khác vẫn chạy.
 
 ## 3. Phương thức truy cập — ĐÃ CHỐT (xem ADR-0013)
 

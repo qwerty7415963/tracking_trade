@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import { Prisma, Source } from "@prisma/client";
 import { TelegramClient } from "teleproto";
 import { StringSession } from "teleproto/sessions";
-import { NewMessage } from "teleproto/events";
+import { EditedMessage, NewMessage } from "teleproto/events";
 import {
   ChannelInvalidError,
   ChannelPrivateError,
@@ -37,6 +37,7 @@ export interface TelegramPort {
   disconnect(): Promise<void>;
   fetchLatest(channel: string, limit: number): Promise<TelegramMessageInput[]>;
   subscribe(channel: string, handler: (msg: TelegramMessageInput) => Promise<void>): void;
+  subscribeEdits(channel: string, handler: (msg: TelegramMessageInput) => Promise<void>): void;
 }
 
 export type TelegramPortFactory = (apiId: number, apiHash: string, session: string) => TelegramPort;
@@ -69,6 +70,14 @@ export function defaultPortFactory(apiId: number, apiHash: string, session: stri
           await handler(mapMessage(event.message as unknown as Parameters<typeof mapMessage>[0]));
         },
         new NewMessage({ chats: [channel] }),
+      );
+    },
+    subscribeEdits(channel: string, handler: (msg: TelegramMessageInput) => Promise<void>): void {
+      client.addEventHandler(
+        async (event) => {
+          await handler(mapMessage(event.message as unknown as Parameters<typeof mapMessage>[0]));
+        },
+        new EditedMessage({ chats: [channel] }),
       );
     },
   };
@@ -197,7 +206,7 @@ export class TelegramCollectorService implements OnModuleDestroy {
         },
       });
       return { deduplicated: false, id: row.id };
-    } catch (err) {
+      } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === "P2002"
@@ -206,6 +215,24 @@ export class TelegramCollectorService implements OnModuleDestroy {
       }
       throw err;
     }
+  }
+
+  /**
+   * Ingest an edited message as a new revision of the same
+   * (sourceId, externalMessageId). Never overwrites history.
+   * Falls back to revision 1 when the original was never seen.
+   */
+  async ingestEdit(
+    sourceId: string,
+    input: TelegramMessageInput,
+  ): Promise<IngestResult & { revision: number }> {
+    const latest = await this.prisma.sourceMessage.findFirst({
+      where: { sourceId, externalMessageId: input.id },
+      orderBy: { revision: "desc" },
+    });
+    const revision = (latest?.revision ?? 0) + 1;
+    const result = await this.ingestMessage(sourceId, input, revision);
+    return { ...result, revision };
   }
 
   async backfill(
@@ -232,6 +259,15 @@ export class TelegramCollectorService implements OnModuleDestroy {
     const port = await this.ensurePort();
     if (!port) throw new Error("MISSING_CREDENTIALS");
     port.subscribe(channel, handler);
+  }
+
+  async subscribeEditMessages(
+    channel: string,
+    handler: (msg: TelegramMessageInput) => Promise<void>,
+  ): Promise<void> {
+    const port = await this.ensurePort();
+    if (!port) throw new Error("MISSING_CREDENTIALS");
+    port.subscribeEdits(channel, handler);
   }
 
   private resetPort(): void {

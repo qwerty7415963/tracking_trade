@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from "@nestjs/common";
-import { IsOptional, IsString } from "class-validator";
+import { IsNumber, IsOptional, IsString } from "class-validator";
 import { OperatorGuard } from "../auth/operator.guard";
+import { CardStatus } from "./publications.service";
 import { RendersService } from "./renders.service";
 import { PublicationsService } from "./publications.service";
 
@@ -9,20 +10,24 @@ interface OperatorRequest {
 }
 
 class RenderCardDto {
-  @IsString()
-  accountId!: string;
-
   @IsOptional()
-  @IsString()
-  executionId?: string;
+  @IsNumber()
+  markPrice?: number;
 }
 
 class PublishDto {
   @IsString()
-  executionId!: string;
+  positionId!: string;
 
   @IsString()
-  destinationChatId!: string;
+  status!: CardStatus;
+
+  @IsNumber()
+  markPrice!: number;
+
+  @IsOptional()
+  @IsString()
+  destinationChatId?: string;
 
   @IsOptional()
   @IsString()
@@ -44,10 +49,7 @@ export class PositionRendersController {
     @Body() dto: RenderCardDto,
     @Req() req: OperatorRequest,
   ) {
-    return this.renders.requestRender(
-      { accountId: dto.accountId, positionId, executionId: dto.executionId },
-      this.actor(req),
-    );
+    return this.renders.requestRender({ virtualPositionId: positionId }, this.actor(req));
   }
 }
 
@@ -69,10 +71,19 @@ export class PublicationsController {
     return req.operatorUsername ?? "unknown";
   }
 
-  @Post("execution")
+  @Post("position")
   @UseGuards(OperatorGuard)
   publish(@Body() dto: PublishDto, @Req() req: OperatorRequest) {
-    return this.publications.requestPublish(dto, this.actor(req));
+    return this.publications.requestPositionPublish(
+      dto.positionId,
+      dto.status,
+      {
+        markPrice: dto.markPrice,
+        destinationChatId: dto.destinationChatId,
+        replyToMessageId: dto.replyToMessageId,
+      },
+      this.actor(req),
+    );
   }
 
   @Get(":id")

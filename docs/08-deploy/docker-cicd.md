@@ -6,20 +6,17 @@
 
 ```text
 apps/
-  api/
-  worker/
-  screenshot-worker/
+  api/                # HTTP + bot + card render consumer (Chromium)
+  worker/             # stub
+  screenshot-worker/  # legacy/rollback, không còn trong compose
 
 packages/
   domain/
   database/
   connectors/
-  mt5-bridge-contract/
+  market-data/
   reporting/
   shared/
-
-mt5/
-  bridge-ea/
 
 deploy/
   docker-compose.yml
@@ -59,7 +56,7 @@ GHCR dời lại sau. Hiện tại: push `main` → CI gate → Actions SSH vào
 
 1. Merge vào `main` (chỉ qua PR đã CI xanh; commit chỉ-docs không deploy).
 2. Job `gate`: typecheck + test + audit + prisma validate. Fail thì dừng.
-3. Job `deploy` (serialize qua `concurrency`): SSH bằng deploy key (secret `VPS_SSH_KEY`) → `git pull main` → `compose build api worker` → `migrate deploy` một lần → `up -d` → health check.
+3. Job `deploy` (serialize qua `concurrency`): SSH bằng deploy key (secret `VPS_SSH_KEY`) → `git pull main` → `compose build api` → `migrate deploy` một lần → `up -d` → health check.
 4. Health fail → rollback tự động (checkout SHA trước đó + build + up).
 5. Báo Telegram (non-blocking; cần secrets `TELEGRAM_BOT_TOKEN` + `ALERT_CHAT_ID`).
 
@@ -83,9 +80,14 @@ Mục tiêu: chống supply-chain attack (package bị chiếm quyền, chèn m�
 - File mẫu **`.env.example` nằm ở thư mục gốc dự án**; copy thành `.env` rồi điền giá trị thật.
 - **Không commit `.env`** (đưa vào `.gitignore` khi scaffold repo); file `.env` trên VPS đặt quyền `600`.
 - Không điền secret thật vào `.env.example`; không bake secret vào Docker image — truyền qua environment khi chạy container.
-- `MT5_SERVER` mặc định `vantagemarkets-demo` (broker Vantage Markets, môi trường demo).
-- `OPERATOR_USERNAMES`: danh sách username duy nhất có quyền approve/kill switch (comma-separated).
-- Xoay (rotate) secret định kỳ: Telegram session, bot token, MT5 password.
+- `HYPERLIQUID_API_URL` mặc định `https://api.hyperliquid.xyz` (public, không key).
+- **Node.js runtime:** **24.22.1 LTS** cho local + CI (`setup-node`), image dùng `node:24-slim` pin digest (`sha256:55fb5f5a...`); `package.json` có `engines.node` chặn version ngoài khoảng `>=24.22.1 <25`.
+- Notional mỗi coin lưu trong `tradable_coins` (BTC/ETH/SOL 100k, còn lại 50k); đổi bằng `/vol` hoặc API notional, không cần env.
+- `OPERATOR_USERNAMES`: danh sách username duy nhất có quyền approve/kill switch/quản trị (comma-separated).
+- `OPERATOR_BOT_ENABLED`: chỉ bật ở **service api** (bot chạy chung backend); replica phụ đặt `false` để tránh 2 poller Telegram trên cùng token.
+- `RENDER_WORKER_ENABLED`: mặc định `true` — API render card bằng Chromium trong process; đặt `false` trên replica chỉ phục vụ HTTP (khi scale nhiều API).
+- `ARTIFACTS_DIR=/data/artifacts` cho **service `api`** (API vừa render vừa đọc PNG để gửi; volume `artifacts` bind từ host).
+- Xoay (rotate) secret định kỳ: Telegram session, bot token.
 
 ## 6. Quy tắc production
 
@@ -102,17 +104,16 @@ Mục tiêu: chống supply-chain attack (package bị chiếm quyền, chèn m�
 
 ## 7. Local deploy đã kiểm chứng (13/10/2026)
 
-- `tracking-trade-api:local` — `sha256:b76bf4248d3562907380156fb96db3e0a2b6f648881799149d36ebe2093f9c4e` (804MB), health `ok`.
-- `tracking-trade-worker:local` — `sha256:9c1ec9af43cdf3f944aa8bb39cebfa0c403ba99d1efddf9d61e65a50ce403baa` (3.42GB — nặng do Chromium + dev deps, tối ưu sau).
+- `tracking-trade-api:local` — API image giờ gồm Chromium/Playwright (render card trong process), nặng hơn bản Alpine cũ; health `ok`.
+- `tracking-trade-worker:local` — legacy (không còn dùng trong compose); giữ để rollback tạm thời.
 - Bài học: workspace symlinks gãy nếu runner thiếu `packages/*/dist` — đã fix bằng COPY tường minh từng package.
 
 ## 8. Backup
 
 Backup mã hóa offsite về máy operator theo mô hình pull (restic, retention 7 ngày, drill restore hàng tháng). Chi tiết đầy đủ: [backup-restore.md](backup-restore.md).
 
-## 8. Liên kết tài liệu
+## 9. Liên kết tài liệu
 
-- MT5 Docker spike: [mt5-docker-spike.md](mt5-docker-spike.md)
 - Recovery sau restart: [recovery.md](recovery.md)
 - Backup & restore: [backup-restore.md](backup-restore.md)
 - Security: [10-chuan/security-checklist.md](../10-chuan/security-checklist.md)

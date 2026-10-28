@@ -6,18 +6,19 @@ Hệ thống được coi là **hoàn thành** khi đạt tất cả các điề
 
 - Có CRUD cho nguồn Telegram và X.
 - Có health check và trạng thái connector.
-- Tín hiệu mới **luôn cần manual approval theo version**.
-- Update được **xác minh và ghép duy nhất** trước khi tác động vị thế.
-- MT5 bridge có **journal, idempotency và reconciliation**.
+- Mode `APPROVE`: tín hiệu mới **luôn cần manual approval theo version** (approve = mở lệnh).
+- Update được **xác minh và ghép duy nhất**; mơ hồ thì hỏi operator kèm nút reject nhanh.
+- Tài khoản ảo cross-margin với **ledger đầy đủ** (nạp/rút/chốt lãi-lỗ).
+- Mở lệnh **idempotent** theo signal+version; sizing từ notional cố định theo ticker; multi-TP đúng tỉ lệ.
+- TP/SL hit theo **giá Hyperliquid thật**; thiếu quote thì từ chối, không đoán.
 - Có **risk engine và kill switch**.
 - Có **sender/destination/template/route** configuration.
-- Báo cáo có fill details thực tế, screenshot, source URL khi cần, nguồn Telegram nếu có và destination channel name.
-- Update **reply đúng bài gốc**.
+- Báo cáo có card ảnh gen từ dữ liệu thật, source URL khi cần; bài TP/SL/close **reply đúng bài gốc**.
 - Docker Compose deploy được lên VPS.
 - GitHub Actions CI/CD có **health checks và rollback**.
 - **Backup/restore, restart recovery và audit** được kiểm thử.
-- **Demo E2E pass**.
-- **Live trading mặc định disabled** sau restart/deploy.
+- **Demo E2E pass** (mở → TP1 → TP2 → báo cáo).
+- Hệ thống chỉ giao dịch giấy — **không có live trading**.
 
 ## Liên kết tài liệu
 

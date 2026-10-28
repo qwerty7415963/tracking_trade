@@ -1,8 +1,8 @@
 import { Module } from "@nestjs/common";
 import { AppConfigModule } from "../config/config.module";
-import { ExecutionModule } from "../execution/execution.module";
+import { MarketDataModule } from "../market-data/market-data.module";
 import { QueueModule } from "../queue/queue.module";
-import { BotApiSender, CARD_RENDERER, TELEGRAM_SENDER, createDefaultRenderer } from "./publications.service";
+import { BotApiSender, TELEGRAM_SENDER } from "./publications.service";
 import {
   PositionRendersController,
   PublicationsController,
@@ -12,15 +12,11 @@ import { RendersService } from "./renders.service";
 import { PublicationsService } from "./publications.service";
 
 @Module({
-  imports: [AppConfigModule, ExecutionModule, QueueModule],
-  controllers: [PositionRendersController, RendersController, PublicationsController],
+  imports: [AppConfigModule, MarketDataModule, QueueModule],
+  controllers: [PositionRendersController, PublicationsController, RendersController],
   providers: [
     RendersService,
     PublicationsService,
-    {
-      provide: CARD_RENDERER,
-      useFactory: () => createDefaultRenderer(),
-    },
     {
       provide: TELEGRAM_SENDER,
       useFactory: () => new BotApiSender(process.env.TELEGRAM_BOT_TOKEN ?? ""),

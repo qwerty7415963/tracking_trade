@@ -32,7 +32,26 @@ Parser chuyển nội dung thô thành **normalized signal** với các trườn
 
 - **Không tự điền các trường còn thiếu.**
 - Mapping symbol phải rõ ràng, ví dụ: `GOLD → XAUUSD.a`.
-- **Không fuzzy-match symbol broker.**
+- **Không fuzzy-match symbol sàn** (chỉ map data-driven từ universe Hyperliquid).
+
+### Chuẩn hoá text và coin (2026-10-16)
+
+- Parser chuẩn hoá trước regex: bỏ `$`/`#` đầu ticker, cắt `/USDT`/`/USD`/`/PERP`, xoá dấu phẩy ngăn nghìn (`1,223` → `1223`, quy ước format Mỹ).
+- Ticker có marker (`$ETH`, `#ZEC`, `ZEC/USDT`) luôn được tách; từ thường chỉ nhận nếu nằm trong coin list.
+- Coin trích được đối chiếu **coin list do operator quản lý** (`tradable_coins`): không có → giữ tên thật + gắn `unmapped_symbol_<X>` → `NEEDS_REVIEW`. Không bao giờ đoán coin.
+- Leverage `30x` được trích vào payload (sizing vẫn theo account, dùng sau).
+- Entry dạng vùng `1223 - 1154` → `entry=1223`, `entryZoneHigh=1154`, `entries=[1223]` (vùng = 1 lệnh duy nhất).
+- **Nhiều entry (DCA)**: `Entry: 3000 2950 2900` hoặc `Entry: 3000, 2950` → `entries=[3000,2950,2900]` với `entry` = phần tử đầu. Số liền sau bởi `x` (leverage `5x`) **không** bị đọc thành entry. Thứ tự phải cùng chiều với hướng lệnh: **LONG giảm dần, SHORT tăng dần** — sai thứ tự → chỉ lấy entry đầu + gắn ambiguity `entries_wrong_order`. Mọi entry (kể cả entry đầu) **chờ giá chạm mới khớp**; entry đầu khớp mới chuyển position sang `OPEN`.
+- **Entry market**: `Entry: market 2950 2900` → `entryMarket=true`, `entries=[2950,2900]`; `entry` không còn bắt buộc (`entry market` đơn lẻ hợp lệ). Market khớp ngay tại mid với full notional; các level số còn lại chờ như DCA. Thiếu `entry` mà không có `market` vẫn bị chặn ở bước duyệt.
+- TP phần trăm (`Tp: 20% 40% 60%`): có entry thì quy đổi ra giá theo hướng (LONG `entry*(1+p/100)`, SHORT ngược lại) + gắn `tp_percent_converted`; thiếu entry thì review. Giả định TP% = biên giá, không phải % vị thế.
+- Bài chỉ có ảnh (số nằm trong chart) → thiếu field → `NEEDS_REVIEW`, chờ OCR/vision giai đoạn sau.
+
+### Parser profile theo nguồn
+
+- Mỗi nguồn có thể gán `parserProfileId` (bảng `parser_profiles`).
+- Profile chứa `coinAliases` (ví dụ `{"PAWS": "BTC"}`), đè lên map mặc định khi parse bài của nguồn đó.
+- Flow vận hành: channel format lạ → `NEEDS_REVIEW` → operator xác nhận mapping **1 lần** → `PATCH /v1/sources/:id {parserProfileId}` → các bài sau tự động.
+- Coin sau alias vẫn phải qua coin list (`unmapped_symbol_<X>` nếu không có).
 
 ## 2. Matching update với tín hiệu gốc
 
@@ -53,6 +72,13 @@ Thứ tự ưu tiên khi khớp update với tín hiệu gốc:
 - Nội dung **gần giống nhau từ 2 channel khác nhau không tính là trùng**: mỗi bên tạo signal riêng, đi qua approval và risk riêng.
 - Hệ quả: nhiều channel cùng hô 1 lệnh có thể mở nhiều vị thế cùng chiều cùng symbol → RiskEngine chặn bằng **max positions / max positions per symbol**.
 
+### Message edit → version mới (không tạo signal trùng)
+
+- Chủ channel **sửa bài** (edit) → hệ thống lưu **revision mới** của cùng `(sourceId, externalMessageId)`, không ghi đè lịch sử.
+- Revision > 1 parse ra NEW sẽ **nối version mới** (`eventType: EDIT`) vào signal đã sinh từ revision cũ, thay vì tạo signal trùng.
+- Version mới làm **approval cũ mất hiệu lực** (approve bắt đúng version id mới nhất); signal `FINAL` (REJECTED/CLOSED/...) giữ nguyên trạng thái.
+- Không tìm được signal gốc (ví dụ bản gốc chưa từng thấy) → fallback tạo signal mới như thường.
+
 ## 3. Quy tắc update
 
 | Hành động | Quy tắc |
@@ -67,7 +93,7 @@ Thứ tự ưu tiên khi khớp update với tín hiệu gốc:
 ### Quy tắc chung
 
 - Mọi update tự động phải qua **risk checks** và **action allowlist**.
-- Update mơ hồ / không xác thực → không tác động MT5, đưa review.
+- Update mơ hồ / không xác thực → không mở/đóng vị thế, đưa review (hỏi operator).
 - Update đồng thời phải được **serialize theo signal/position**.
 
 ## 4. Liên kết tài liệu

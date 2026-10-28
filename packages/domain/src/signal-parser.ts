@@ -14,11 +14,70 @@ const SUFFIXED_SYMBOL = /\b((?:XAU|XAG|BTC|ETH)USD(?:\.\w+)?|US30|NAS100|SPX500|
 const BARE_CRYPTO = /\b(BTC|ETH|SOL|XRP|DOGE)(USD|USDT)?\b/;
 const KNOWN_WORDS = /\b(GOLD|SILVER|OIL|WTI|BRENT|NASDAQ|DOW|SP500)\b/;
 
-const ENTRY_RE = /(?:ENTRY|ENTER|@)\s*[:\-]?\s*(\d+(?:\.\d+)?)(?:\s*[-–]\s*(\d+(?:\.\d+)?))?/i;
+// Entry can be a single price, a zone (`3000 - 2950`) or a ladder of levels
+// (`3000 2950 2900`, `3000, 2950`). Every number carries `(?![xX])` so a
+// leverage token right after it (`Entry 3000 5x`) ends the run instead of
+// being read as another level.
+const ENTRY_RE =
+  /(?:ENTRY|ENTER|@)\s*[:\-]?\s*(\d+(?:\.\d+)?(?![xX])(?:[-–,\s]+\d+(?:\.\d+)?(?![xX]))*)/i;
+/** `entry market` (optionally followed by DCA levels): `entry market 2950 2900`. */
+const ENTRY_MARKET_RE =
+  /(?:ENTRY|ENTER|@)\s*[:\-]?\s*(?:market|mkt)\b\s*((?:\d+(?:\.\d+)?(?![xX])(?:[-–,\s]+\d+(?:\.\d+)?(?![xX]))*)?)/i;
 const SL_RE = /(?:STOP\s?LOSS|\bSL\b)\s*[:\-]?\s*(\d+(?:\.\d+)?)/i;
-const TP_RE = /\bTP\s?(\d)?\s*[:\-]?\s*(\d+(?:\.\d+)?)/gi;
+const TP_RE = /\bTP(\d)?\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\d)(?!\s*%)/gi;
 const LIMIT_RE = /\blimit\b/i;
 const MARKET_RE = /\bmarket\b/i;
+const LEVERAGE_RE = /(\d+)\s?[xX](?![A-Za-z])/;
+const TICKER_RE = /[$#]([A-Za-z]{2,12})\b|\b([A-Za-z]{2,12})\/(?:USDT|USD)\b|\b([A-Za-z]{2,12})(?:USDT|USD)\b/;
+const TP_PCT_RE = /(\d+(?:\.\d+)?)\s*%/g;
+
+export interface CoinProfile {
+  /** Channel-specific nicknames, e.g. { "PAWS": "BTC" }. Overrides SYMBOL_MAP. */
+  coinAliases?: Record<string, string>;
+}
+
+export interface ParseOptions {
+  /**
+   * Uppercase tradable symbols (operator coin list) used to confirm
+   * plain-word tickers. Marker-prefixed tickers ($/#//USDT) are extracted
+   * regardless; membership is gated by the caller (coin list).
+   */
+  coinUniverse?: string[];
+  profile?: CoinProfile | null;
+}
+
+/** US-style thousand separators: "1,223" -> "1223". */
+function normalizeNumbers(text: string): string {
+  let out = text;
+  let prev = "";
+  while (out !== prev) {
+    prev = out;
+    out = out.replace(/(\d),(\d)/g, "$1$2");
+  }
+  return out;
+}
+
+/** Strip pair quote suffixes: "BTC/USDT" -> "BTC". */
+function stripPairSuffix(text: string): string {
+  return text.replace(/\/(USDT|USD|PERP)\b/gi, "");
+}
+
+/** Ticker with an explicit marker: $ETH, #ZEC, ZEC/USDT, ZECUSDT. */
+function detectTickerCandidate(text: string): string | null {
+  const m = text.match(TICKER_RE);
+  if (!m) return null;
+  const raw = (m[1] ?? m[2] ?? m[3] ?? "").toUpperCase();
+  return raw.length > 0 ? raw : null;
+}
+
+function countDecimals(value: number): number {
+  const dot = String(value).indexOf(".");
+  return dot < 0 ? 0 : String(value).length - dot - 1;
+}
+
+function roundTo(value: number, decimals: number): number {
+  return Number(value.toFixed(decimals));
+}
 
 const ACTION_PATTERNS: Array<[UpdateAction, RegExp]> = [
   ["MODIFY_SL", /(?:modif\w*|move|update|change|adjust)\s+(?:the\s+)?s\s?l\b/i],
@@ -48,13 +107,32 @@ function normalizeSymbol(raw: string): string {
   return SYMBOL_MAP[raw] ?? raw;
 }
 
-function detectInstrument(upper: string): { instrument: string | null; ambiguous: boolean } {
+/** Profile aliases override the built-in map (per-channel nicknames). */
+function resolveAlias(raw: string, profile?: CoinProfile | null): string {
+  const override = profile?.coinAliases?.[raw.toUpperCase()];
+  if (override) return override;
+  return normalizeSymbol(raw);
+}
+
+function detectInstrument(
+  upper: string,
+  ticker: string | null,
+  coinUniverse?: string[],
+  profile?: CoinProfile | null,
+): { instrument: string | null; ambiguous: boolean } {
   const suffixed = upper.match(SUFFIXED_SYMBOL);
-  if (suffixed) return { instrument: normalizeSymbol(suffixed[1]), ambiguous: false };
+  if (suffixed) return { instrument: resolveAlias(suffixed[1], profile), ambiguous: false };
   const bare = upper.match(BARE_CRYPTO);
   if (bare) {
     const mapped = SYMBOL_MAP[bare[1]];
     if (mapped) return { instrument: mapped, ambiguous: false };
+  }
+  if (ticker) return { instrument: resolveAlias(ticker, profile), ambiguous: false };
+  if (profile?.coinAliases) {
+    const words = upper.match(/\b([A-Z]{2,12})\b/g) ?? [];
+    for (const w of words) {
+      if (profile.coinAliases[w]) return { instrument: profile.coinAliases[w], ambiguous: false };
+    }
   }
   const known = upper.match(KNOWN_WORDS);
   if (known) {
@@ -63,7 +141,14 @@ function detectInstrument(upper: string): { instrument: string | null; ambiguous
     return { instrument: null, ambiguous: true };
   }
   const pair = upper.match(FOREX_PAIR);
-  if (pair) return { instrument: normalizeSymbol(pair[1]), ambiguous: false };
+  if (pair) return { instrument: resolveAlias(pair[1], profile), ambiguous: false };
+  if (coinUniverse) {
+    const allowed = new Set(coinUniverse.map((c) => c.toUpperCase()));
+    const words = upper.match(/\b([A-Z]{2,12})\b/g) ?? [];
+    for (const w of words) {
+      if (allowed.has(w)) return { instrument: resolveAlias(w, profile), ambiguous: false };
+    }
+  }
   return { instrument: null, ambiguous: false };
 }
 
@@ -85,34 +170,98 @@ function takeProfits(text: string): number[] {
   return out;
 }
 
-export function parseSignal(input: ParserInput): NormalizedSignal {
-  const text = input.text ?? "";
+/** Split the matched entry run into levels: `1223 - 1154` / `3000 2950`. */
+function entryLevels(run: string | null | undefined): number[] {
+  if (!run) return [];
+  const out: number[] = [];
+  for (const token of run.split(/[-–,\s]+/)) {
+    if (!token) continue;
+    const n = parseNumber(token);
+    if (n !== null) out.push(n);
+  }
+  return out;
+}
+
+function takeProfitPercents(text: string): number[] {
+  const out: number[] = [];
+  TP_PCT_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = TP_PCT_RE.exec(text)) !== null) {
+    const n = parseNumber(m[1]);
+    if (n !== null) out.push(n);
+  }
+  return out;
+}
+
+export function parseSignal(input: ParserInput, opts: ParseOptions = {}): NormalizedSignal {
+  const rawText = input.text ?? "";
+  const ticker = detectTickerCandidate(rawText);
+  const text = stripPairSuffix(normalizeNumbers(rawText));
   const upper = text.toUpperCase();
 
   const dir = detectDirection(upper);
-  const inst = detectInstrument(upper);
+  const inst = detectInstrument(upper, ticker, opts.coinUniverse, opts.profile);
   const updateAction = detectUpdateAction(text);
 
+  const marketMatch = text.match(ENTRY_MARKET_RE);
+  const entryMarket = marketMatch !== null;
   const entryMatch = text.match(ENTRY_RE);
-  const entry = parseNumber(entryMatch?.[1]);
-  const entryZoneHigh = parseNumber(entryMatch?.[2]);
+  const entryRun = entryMarket ? (marketMatch?.[1] ?? "") : (entryMatch?.[1] ?? "");
+  const levels = entryLevels(entryRun);
+  // A dash between exactly two numbers is a zone (`1223 - 1154`): one entry
+  // plus a reference high. Anything else is a ladder of entry levels.
+  const isEntryZone = !entryMarket && /[-–]/.test(entryRun) && levels.length === 2;
+  const entry = entryMarket ? null : levels.length > 0 ? levels[0] : null;
+  const entryZoneHigh = isEntryZone ? levels[1] : null;
+  let entries = isEntryZone ? [levels[0]] : levels;
+  // DCA only works when the ladder points away from the entry: LONG falls to
+  // lower levels, SHORT climbs to higher ones. Anything else is noise.
+  const entriesWrongOrder =
+    !isEntryZone &&
+    entries.length > 1 &&
+    dir.direction !== null &&
+    !(dir.direction === "LONG"
+      ? entries.every((v, i) => i === 0 || v <= entries[i - 1])
+      : entries.every((v, i) => i === 0 || v >= entries[i - 1]));
+  if (entriesWrongOrder) entries = [entries[0]];
   const stopLoss = parseNumber(text.match(SL_RE)?.[1]);
-  const tps = takeProfits(text);
+  let tps = takeProfits(text);
+  const levMatch = rawText.match(LEVERAGE_RE);
+  const leverage = parseNumber(levMatch?.[1] ?? undefined);
 
-  const orderType = LIMIT_RE.test(text) ? "LIMIT" : MARKET_RE.test(text) ? "MARKET" : null;
+  const orderType = entryMarket
+    ? "MARKET"
+    : LIMIT_RE.test(text)
+      ? "LIMIT"
+      : MARKET_RE.test(text)
+        ? "MARKET"
+        : null;
 
   const missingFields: string[] = [];
   const ambiguities: string[] = [];
   if (!inst.instrument) missingFields.push("instrument");
   if (inst.ambiguous) ambiguities.push("unknown_symbol_no_fuzzy_match");
+  if (entriesWrongOrder) ambiguities.push("entries_wrong_order");
   if (!dir.direction) {
     if (dir.ambiguous) ambiguities.push("conflicting_directions");
     else missingFields.push("direction");
   }
   if (updateAction === "NONE") {
-    if (entry === null) missingFields.push("entry");
+    if (!entryMarket && entry === null) missingFields.push("entry");
     if (stopLoss === null) missingFields.push("stop_loss");
-    if (tps.length === 0) missingFields.push("take_profits");
+    if (tps.length === 0) {
+      // Percent-style TPs ("Tp: 20% 40%") convert to prices when entry exists.
+      // Assumption: % means price move from entry, not position-close share.
+      const pcts = /\bTP\b/i.test(text) ? takeProfitPercents(text) : [];
+      if (pcts.length > 0 && entry !== null && dir.direction) {
+        const sign = dir.direction === "LONG" ? 1 : -1;
+        const decimals = countDecimals(entry);
+        tps = pcts.map((p) => roundTo(entry * (1 + (sign * p) / 100), decimals));
+        ambiguities.push("tp_percent_converted");
+      } else {
+        missingFields.push("take_profits");
+      }
+    }
   }
 
   const confidence = Math.max(
@@ -127,8 +276,11 @@ export function parseSignal(input: ParserInput): NormalizedSignal {
     orderType,
     entry,
     entryZoneHigh,
+    entryMarket,
+    entries,
     stopLoss,
     takeProfits: tps,
+    leverage,
     updateAction,
     sourceMessageId: input.sourceMessageId,
     sourcePlatform: input.sourcePlatform,
@@ -149,7 +301,7 @@ export function missingRequiredFields(parsed: NormalizedSignal): string[] {
   const required: Array<[keyof NormalizedSignal, string]> = [
     ["instrument", "instrument"],
     ["direction", "direction"],
-    ["entry", "entry"],
+    ...(parsed.entryMarket ? [] : ([["entry", "entry"]] as Array<[keyof NormalizedSignal, string]>)),
     ["stopLoss", "stop_loss"],
   ];
   const missing = required

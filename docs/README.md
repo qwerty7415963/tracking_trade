@@ -1,8 +1,8 @@
 # Trading Signal Automation — Tài liệu lập trình
 
-Tài liệu kỹ thuật cho hệ thống tự động hóa tín hiệu giao dịch:
+Tài liệu kỹ thuật cho hệ thống theo dõi tín hiệu giao dịch bằng **tài khoản ảo** (paper trading):
 
-**Luồng hệ thống:** Telegram + X → Phân tích tín hiệu → Duyệt thủ công → MT5 → Screenshot → Telegram reporting.
+**Luồng hệ thống:** Telegram + X → Phân tích tín hiệu → Duyệt/mở (AUTO/APPROVE) → Vị thế giấy theo giá Hyperliquid → TP/SL → Ảnh card → Telegram reporting.
 
 Bộ tài liệu này được biên soạn từ bản *Technical Design & AI Coding Implementation Plan v1.0 (12/10/2026)*. Nội dung chỉ tổng hợp từ plan gốc; các quyết định chưa được chốt được liệt kê tại [10-chuan/open-decisions.md](10-chuan/open-decisions.md).
 
@@ -37,19 +37,15 @@ Telegram Connector ---- X Connector
           +-------+-------+
                   |
                   v
-             Risk Engine
+         Virtual Trading Service
+         (sizing, risk gate, multi-TP)
                   |
                   v
-          Execution Service
+         Virtual Positions (giấy)
                   |
                   v
-             MT5 Bridge
-                  |
-                  v
-             MT5 / Broker
-                  |
-                  v
-          Reconciliation
+       Hyperliquid Market Data
+           TP/SL detector
                   |
           +-------+--------+
           |                |
@@ -66,11 +62,11 @@ Telegram Connector ---- X Connector
 | [`01-tong-quan`](01-tong-quan/kien-truc.md) | Mục tiêu, quy tắc bắt buộc, kiến trúc tổng thể, danh sách module và công nghệ |
 | [`02-du-lieu`](02-du-lieu/database-design.md) | Thiết kế database (toàn bộ bảng) và state machines |
 | [`03-nghiep-vu`](03-nghiep-vu/signal-parsing-matching.md) | Signal parsing, normalized signal, matching update và quy tắc update |
-| [`04-risk-execution`](04-risk-execution/risk-engine.md) | Risk engine, position sizing, kill switch, MT5 bridge/EA và retry/idempotency |
+| [`04-risk-execution`](04-risk-execution/risk-engine.md) | Risk engine, position sizing, kill switch và retry/idempotency |
 | [`05-connectors`](05-connectors/telegram-connector.md) | Connector Telegram và X (kèm ràng buộc truy cập) |
 | [`06-api`](06-api/source-management-api.md) | API quản lý nguồn, API vận hành và API reporting |
 | [`07-reporting`](07-reporting/telegram-reporting.md) | Sender, destination, template, publication rules |
-| [`08-deploy`](08-deploy/docker-cicd.md) | Docker Compose, GitHub Actions CI/CD, MT5 Docker spike, recovery |
+| [`08-deploy`](08-deploy/docker-cicd.md) | Docker Compose, GitHub Actions CI/CD, backup/restore, recovery |
 | [`09-kiem-thu`](09-kiem-thu/acceptance-tests.md) | Danh sách acceptance tests |
 | [`10-chuan`](10-chuan/definition-of-done.md) | Definition of Done, hướng dẫn AI coding agent, security checklist, quyết định chưa chốt |
 | [`adr`](adr/README.md) | Architecture Decision Records (12 ADR) |
@@ -88,15 +84,14 @@ Telegram Connector ---- X Connector
 
 ## Quy tắc bắt buộc (tóm tắt)
 
-1. Tín hiệu mở lệnh mới luôn cần manual approval.
+1. Mode `APPROVE`: tín hiệu mở vị thế mới luôn cần manual approval (approve = mở lệnh).
 2. Không tự điền dữ liệu tín hiệu còn thiếu.
-3. Update mơ hồ hoặc không xác thực được không được tác động MT5.
-4. Không retry lệnh OPEN một cách mù quáng sau timeout.
-5. Không báo lệnh đã khớp trước khi broker xác nhận.
-6. Không tự bật live trading sau deploy hoặc restart.
-7. Mọi thao tác tài chính phải có audit trail.
-8. X connector lỗi không được làm sập pipeline Telegram.
-9. Không tuyên bố hệ thống có exactly-once execution; sử dụng idempotency, journal và reconciliation.
+3. Update mơ hồ hoặc không xác thực được không được mở/đóng vị thế — đưa review.
+4. Không đoán giá: thiếu quote thì từ chối, không bịa entry/close price.
+5. Không báo TP/SL hit trước khi giá chạm thật trên feed.
+6. Mọi thao tác tài chính phải có audit trail (+ ledger).
+7. X connector lỗi không được làm sập pipeline Telegram.
+8. Market-data lỗi không được đoán — bỏ qua chu kỳ, không tác động vị thế.
 
 Chi tiết: [`01-tong-quan/kien-truc.md`](01-tong-quan/kien-truc.md).
 
@@ -104,4 +99,4 @@ Chi tiết: [`01-tong-quan/kien-truc.md`](01-tong-quan/kien-truc.md).
 
 ## Nguyên tắc triển khai cuối cùng
 
-Ưu tiên **correctness, traceability và recovery** trước automation tối đa. Chỉ cân nhắc live trading sau khi demo end-to-end, reconciliation, risk controls và recovery tests đều đạt.
+Ưu tiên **correctness, traceability và recovery** trước automation tối đa. Hệ thống chỉ giao dịch giấy — không có live trading.
