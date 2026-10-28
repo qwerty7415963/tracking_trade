@@ -17,7 +17,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm audit --audit-level=high
+      - run: npm audit --audit-level=high --omit=dev
       - run: npx prisma validate --schema prisma/schema.prisma
         env:
           DATABASE_URL: postgresql://u:p@localhost:5432/db

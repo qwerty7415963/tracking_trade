@@ -48,6 +48,7 @@
     "teleproto": "1.230.0"
   },
   "overrides": {
-    "deepmerge-ts": "8.0.2"
+    "deepmerge-ts": "8.0.2",
+    "multer": "2.5.0"
   }
 }
