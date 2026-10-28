@@ -103,6 +103,12 @@ export interface PositionPublishRequest {
   replyToMessageId?: string;
 }
 
+/** Shared hashtag tying together the original + update (SL/TP/close) posts. */
+export function positionHashtag(positionId: string): string {
+  const compact = positionId.replaceAll("-", "").toUpperCase();
+  return `#P${compact.slice(0, 8)}`;
+}
+
 /** Caption exactly per template #11 (docs/07-reporting). */
 export function buildOpenCaption(input: {
   direction: "LONG" | "SHORT";
@@ -113,6 +119,8 @@ export function buildOpenCaption(input: {
   takeProfit: string;
   sourceDisplayName: string;
   sourceUrl: string | null;
+  /** Shared hashtag for the original + all update (SL/TP/close) posts. */
+  hashtag: string;
 }): string {
   const direction = input.direction === "LONG" ? "Long" : "Short";
   const lines = [
@@ -128,6 +136,7 @@ export function buildOpenCaption(input: {
   if (input.sourceUrl) {
     lines.push("", escapeHtml(input.sourceUrl));
   }
+  lines.push("", escapeHtml(input.hashtag));
   return lines.join("\n");
 }
 
@@ -593,6 +602,7 @@ export class PublicationsService {
       tps.length,
       request.tpIndex !== undefined ? request.tpIndex + 1 : filledTps.length,
     );
+    const hashtag = positionHashtag(request.positionId);
     const caption = buildOpenCaption({
       direction: position.direction === "SHORT" ? "SHORT" : "LONG",
       instrument: snapshot.displaySymbol,
@@ -604,6 +614,7 @@ export class PublicationsService {
       takeProfit: takeProfitList(tps, hitCount),
       sourceDisplayName: signal?.source.displayName ?? "unknown source",
       sourceUrl,
+      hashtag,
     });
 
     const sent = await this.sender.sendPhoto({

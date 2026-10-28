@@ -19,7 +19,7 @@ export type RenderErrorCode =
  */
 export type CardKind = "pnl-strip" | "position-stats";
 
-export const DEFAULT_CARD_KIND: CardKind = "pnl-strip";
+export const DEFAULT_CARD_KIND: CardKind = "position-stats";
 
 /** Maintenance margin rate used for liquidation + margin-ratio display. */
 export const DEFAULT_MAINTENANCE_MARGIN_RATE = 0.005;

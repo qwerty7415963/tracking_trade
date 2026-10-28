@@ -75,6 +75,7 @@ describe("validateSnapshot", () => {
       snapshot({ floatingProfit: Number.NaN }),
       DEFAULT_CARD_THEME,
       NOW,
+      "pnl-strip",
     );
     expect(result).toEqual(expect.objectContaining({ code: "INVALID_PNL" }));
   });
@@ -83,7 +84,7 @@ describe("validateSnapshot", () => {
     const { floatingProfit: _dropped, ...rest } = snapshot();
     void _dropped;
     expect(validateSnapshot(rest, STATS_CARD_THEME, NOW, "position-stats").ok).toBe(true);
-    expect(validateSnapshot(rest, DEFAULT_CARD_THEME, NOW).ok).toBe(false);
+    expect(validateSnapshot(rest, DEFAULT_CARD_THEME, NOW, "pnl-strip").ok).toBe(false);
   });
 });
 

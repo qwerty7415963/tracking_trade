@@ -1344,13 +1344,14 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             ? `\n\n[Card ${label} by @${cb.from.username}]`
             : outcome === "scheduled"
               ? `\n\n[Card ${label} — sẽ đăng khi entry khớp]`
-              : "\n\n[Hết thời gian chọn — card PnL]";
+              : "\n\n[Hết thời gian chọn — card thống kê]";
         await answer(
           outcome === "promoted"
             ? `Đã chọn card ${label} — đang đăng…`
             : outcome === "scheduled"
               ? `Đã chọn card ${label} — sẽ đăng khi entry khớp.`
-              : "Hết thời gian chọn — dùng card PnL.",
+              : "Hết thời gian chọn — dùng card thống kê.",
+
         );
         if (cb.message) {
           await this.api("editMessageText", {

@@ -1,4 +1,4 @@
-import { CARD_STYLE_TIMEOUT_MS, PublicationsService, buildOpenCaption } from "./publications.service";
+import { CARD_STYLE_TIMEOUT_MS, PublicationsService, buildOpenCaption, positionHashtag } from "./publications.service";
 
 describe("buildOpenCaption (template #11)", () => {
   const base = {
@@ -10,11 +10,12 @@ describe("buildOpenCaption (template #11)", () => {
     takeProfit: "2499",
     sourceDisplayName: "Osho",
     sourceUrl: "https://t.me/traderosho/4375",
+    hashtag: "#P01234567",
   };
 
   it("renders the exact agreed layout", () => {
     expect(buildOpenCaption(base)).toBe(
-      ["Short ETH - limit", "", "- Entry: 2583.79", "- SL: 2597.17", "- TP: 2499", "", "Osho", "", "https://t.me/traderosho/4375"].join("\n"),
+      ["Short ETH - limit", "", "- Entry: 2583.79", "- SL: 2597.17", "- TP: 2499", "", "Osho", "", "https://t.me/traderosho/4375", "", "#P01234567"].join("\n"),
     );
   });
 
@@ -25,11 +26,17 @@ describe("buildOpenCaption (template #11)", () => {
   it("escapes html and omits the link line when no url", () => {
     expect(buildOpenCaption({ ...base, sourceDisplayName: "A<B" }).split("\n")[6]).toBe("A&lt;B");
     const noUrl = buildOpenCaption({ ...base, sourceUrl: null }).split("\n");
-    expect(noUrl).toHaveLength(7);
-    expect(noUrl[noUrl.length - 1]).toBe("Osho");
+    expect(noUrl).toHaveLength(9);
+    expect(noUrl[noUrl.length - 1]).toBe("#P01234567");
   });
 });
 
+describe("positionHashtag", () => {
+  it("derives a stable #P short code from the position id", () => {
+    expect(positionHashtag("007172f9-2fe4-4b71-83c1-5e661cda2ff0")).toBe("#P007172F9");
+    expect(positionHashtag("007172F92FE44B7183C15E661CDA2FF0")).toBe("#P007172F9");
+  });
+});
 function service(overrides: Record<string, unknown> = {}) {
   const prisma = {
     virtualPosition: { findUnique: jest.fn(), findMany: jest.fn(async () => []) },
@@ -491,7 +498,7 @@ describe("PublicationsService.sendPublication", () => {
       renders: { ...setup.renders, requestRender },
     });
     const result = await svc.requestPositionPublish("pos1", "filled", { markPrice: 2550 }, "alice");
-    expect(result).toEqual({ publicationId: "pub1", status: "PENDING", cardKind: "pnl-strip" });
+    expect(result).toEqual({ publicationId: "pub1", status: "PENDING", cardKind: "position-stats" });
     expect(requestRender).toHaveBeenCalledWith(
       expect.objectContaining({
         virtualPositionId: "pos1",
@@ -500,7 +507,7 @@ describe("PublicationsService.sendPublication", () => {
         status: "filled",
         destinationChatId: "@chan",
         actor: "alice",
-        cardKind: "pnl-strip",
+        cardKind: "position-stats",
       }),
       "alice",
       "render-pub1",
@@ -564,11 +571,11 @@ describe("PublicationsService card styles", () => {
     );
   });
 
-  it("falls back to the pnl-strip default for legacy rows", async () => {
+  it("falls back to the position-stats default for legacy rows", async () => {
     const { svc, requestRender } = styleSetup({ cardKind: undefined });
     await svc.requestPositionPublish("pos1", "filled", { markPrice: 2550 }, "alice");
     expect(requestRender).toHaveBeenCalledWith(
-      expect.objectContaining({ cardKind: "pnl-strip" }),
+      expect.objectContaining({ cardKind: "position-stats" }),
       "alice",
       "render-pub1",
     );

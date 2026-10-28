@@ -1444,7 +1444,7 @@ describe("OperatorBotService.handleCallback", () => {
       data: "style:pnl-strip:pos-9",
     });
     expect(chooseCardStyle).toHaveBeenCalledWith("pos-9", "pnl-strip", "tg:alice");
-    expect(answered).toContain("Hết thời gian chọn — dùng card PnL.");
+    expect(answered).toContain("Hết thời gian chọn — dùng card thống kê.");
   });
 
   it("rejects style callbacks from non-operators", async () => {

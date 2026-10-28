@@ -200,9 +200,9 @@ model VirtualPosition {
   closedAt        DateTime? @map("closed_at")
   closePrice      Decimal?  @map("close_price") @db.Decimal(30, 8)
   realizedPnl     Decimal?  @map("realized_pnl") @db.Decimal(30, 8)
-  cardKind        String    @default("pnl-strip") @map("card_kind")
+  cardKind        String    @default("position-stats") @map("card_kind")
   // Pending-entry /pos orders ask for the card style before the first fill;
-  // false means "not chosen yet" (fallback pnl-strip after the window).
+  // false means "not chosen yet" (fallback position-stats after the window).
   styleChosen     Boolean   @default(true) @map("style_chosen")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
