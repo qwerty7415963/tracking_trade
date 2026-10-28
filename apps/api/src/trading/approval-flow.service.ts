@@ -24,10 +24,18 @@ export interface ApprovePublishOptions {
   cardKind?: CardKind;
   /** Hold the render job this long (style dialog, 1 minute). */
   renderDelayMs?: number;
+  /** Optional per-command notional override for /pos. */
+  targetNotional?: number;
   /** /pos entry-market only: wait before taking the execution mid. */
   marketEntryDelayMs?: number;
+  /** /pos entry-market only: maximum wait for a price change before opening. */
+  marketEntryMaxWaitMs?: number;
   /** /pos entry-market only: open card cannot render before entry + this age. */
   marketCardMinAgeMs?: number;
+  /** /pos entry-market only: maximum wait for mark to differ from entry before publishing. */
+  marketCardPriceChangeMaxMs?: number;
+  /** Poll interval for the price-change wait. */
+  marketCardPriceChangePollMs?: number;
 }
 
 @Injectable()
@@ -78,6 +86,12 @@ export class ApprovalFlowService {
         {
           ...(publishOpts.marketEntryDelayMs
             ? { marketEntryDelayMs: publishOpts.marketEntryDelayMs }
+            : {}),
+          ...(publishOpts.marketEntryMaxWaitMs !== undefined
+            ? { marketEntryMaxWaitMs: publishOpts.marketEntryMaxWaitMs }
+            : {}),
+          ...(publishOpts.targetNotional !== undefined
+            ? { targetNotional: publishOpts.targetNotional }
             : {}),
         },
       );
@@ -137,6 +151,9 @@ export class ApprovalFlowService {
         publishOpts.marketCardMinAgeMs && publishOpts.marketCardMinAgeMs > 0
           ? Date.now() + publishOpts.marketCardMinAgeMs
           : undefined;
+      const priceChangeMaxMs = publishOpts.marketCardPriceChangeMaxMs ?? 0;
+      const priceChangeDeadline =
+        priceChangeMaxMs > 0 ? Date.now() + priceChangeMaxMs : undefined;
       await this.publications.requestPositionPublish(
         positionId,
         "filled",
@@ -145,6 +162,13 @@ export class ApprovalFlowService {
           ...(publishOpts.cardKind ? { cardKind: publishOpts.cardKind } : {}),
           ...(publishOpts.renderDelayMs ? { renderDelayMs: publishOpts.renderDelayMs } : {}),
           ...(minRenderAt ? { minRenderAt } : {}),
+          ...(priceChangeDeadline
+            ? {
+                awaitPriceChange: true,
+                priceChangeDeadline,
+                priceChangePollMs: publishOpts.marketCardPriceChangePollMs ?? 3000,
+              }
+            : {}),
         },
         actor,
       );

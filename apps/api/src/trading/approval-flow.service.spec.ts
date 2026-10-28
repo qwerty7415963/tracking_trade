@@ -141,6 +141,27 @@ describe("ApprovalFlowService.approveSignal", () => {
     expect(opts.minRenderAt).toBeLessThanOrEqual(Date.now() + 3000);
   });
 
+  it("passes a custom target notional to openApproved", async () => {
+    const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
+    const trading = {
+      openApproved: jest.fn(async () => ({ position: { id: "pos1" }, created: true })),
+    };
+    const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
+    const publications = { requestPositionPublish: jest.fn(async () => ({})) };
+    const svc = flow({ signals, trading, accounts, publications });
+    await svc.approveSignal(
+      "s1",
+      { signalVersionId: "v1" },
+      "alice",
+      "acc1",
+      "@chan",
+      { targetNotional: 50000 },
+    );
+    expect(trading.openApproved).toHaveBeenCalledWith("s1", "acc1", "alice", {
+      targetNotional: 50000,
+    });
+  });
+
   it("publishes immediately with no dialog opts by default", async () => {
     const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
     const trading = { openApproved: jest.fn(async () => ({ position: { id: "pos1" }, created: true })) };

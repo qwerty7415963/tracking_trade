@@ -34,6 +34,12 @@ export interface RenderJobData {
   delayMs?: number;
   /** Earliest render time (epoch ms). Promotion cannot run the card sooner. */
   minRenderAt?: number;
+  /** Wait for the live mark to differ from entry before rendering. */
+  awaitPriceChange?: boolean;
+  /** Deadline for the price-change wait. */
+  priceChangeDeadline?: number;
+  /** Poll interval for the price-change wait. */
+  priceChangePollMs?: number;
   /** TP ordinal the card is about (`tp` cards) - caption marks it as hit. */
   tpIndex?: number;
 }
@@ -77,6 +83,12 @@ export interface RenderRequest {
   delayMs?: number;
   /** Earliest render time (epoch ms). Promotion cannot run the card sooner. */
   minRenderAt?: number;
+  /** Wait for the live mark to differ from entry before rendering. */
+  awaitPriceChange?: boolean;
+  /** Deadline for the price-change wait. */
+  priceChangeDeadline?: number;
+  /** Poll interval for the price-change wait. */
+  priceChangePollMs?: number;
   /** TP ordinal this card is about (`tp` cards) - caption marks it as hit. */
   tpIndex?: number;
 }
@@ -183,13 +195,20 @@ export class RendersService {
         Number.isFinite(minRenderAt) && minRenderAt > Date.now()
           ? minRenderAt - Date.now()
           : 0;
+      const priceChangeDeadline = Number(data.priceChangeDeadline ?? 0);
+      const awaitPriceChange = data.awaitPriceChange === true;
+      const priceDelay =
+        awaitPriceChange && Number.isFinite(priceChangeDeadline) && priceChangeDeadline > Date.now()
+          ? priceChangeDeadline - Date.now()
+          : 0;
+      const delay = Math.max(minDelay, priceDelay);
       await pick.job.remove();
       await queue.add("render-card", { ...data, cardKind }, {
         attempts: 3,
         backoff: { type: "exponential", delay: 2000 },
         removeOnComplete: 100,
         removeOnFail: 200,
-        ...(minDelay > 0 ? { delay: minDelay } : {}),
+        ...(delay > 0 ? { delay } : {}),
         jobId: `${RENDER_JOB_ID_PREFIX}${pick.publicationId}`,
       });
       await this.audit.record(actor, "render.promoted", {

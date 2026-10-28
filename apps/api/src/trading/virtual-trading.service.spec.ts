@@ -205,6 +205,45 @@ describe("VirtualTradingService.openApproved", () => {
     );
   });
 
+  it("uses a custom notional for every entry level", async () => {
+    const prisma = mockPrisma({
+      signal: {
+        findUnique: jest.fn(async () => ({
+          ...SIGNAL,
+          versions: [
+            {
+              ...VERSION,
+              entry: 3000,
+              normalizedPayloadJson: {
+                sourceMessageId: "m1",
+                entries: [3000, 2950, 2900],
+              },
+            },
+          ],
+        })),
+      },
+    });
+    const svc = service(prisma, mockMarketData(), mockAccounts());
+    await svc.openApproved("s1", "acc1", "alice", { targetNotional: 50000 });
+    expect(prisma.virtualPosition.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "PENDING_ENTRY",
+          entries: [
+            { price: 3000, notional: 50000 },
+            { price: 2950, notional: 50000 },
+            { price: 2900, notional: 50000 },
+          ],
+          pendingEntries: [
+            { price: 3000, notional: 50000 },
+            { price: 2950, notional: 50000 },
+            { price: 2900, notional: 50000 },
+          ],
+        }),
+      }),
+    );
+  });
+
   it("waits for the market-entry delay before taking the mark", async () => {
     jest.useFakeTimers();
     try {
@@ -230,15 +269,16 @@ describe("VirtualTradingService.openApproved", () => {
       const svc = service(prisma, marketData, mockAccounts());
       const pending = svc.openApproved("s1", "acc1", "alice", {
         marketEntryDelayMs: 3000,
+        marketEntryMaxWaitMs: 3000,
       });
 
       await jest.advanceTimersByTimeAsync(2999);
-      expect(marketData.getMid).not.toHaveBeenCalled();
+      expect(marketData.getMid).toHaveBeenCalledTimes(1);
       await jest.advanceTimersByTimeAsync(1);
       const out = (await pending) as unknown as {
         position: { entryPrice: number; status: string };
       };
-      expect(marketData.getMid).toHaveBeenCalledTimes(1);
+      expect(marketData.getMid).toHaveBeenCalledTimes(2);
       expect(out.position.entryPrice).toBe(3005);
       expect(out.position.status).toBe("OPEN");
     } finally {
@@ -299,6 +339,7 @@ describe("VirtualTradingService.openApproved", () => {
       );
       const pending = svc.openApproved("s1", "acc1", "alice", {
         marketEntryDelayMs: 3000,
+        marketEntryMaxWaitMs: 3000,
       });
       const assertion = expect(pending).rejects.toThrow(/kill switch STOP_NEW_TRADES/);
       await jest.advanceTimersByTimeAsync(1000);

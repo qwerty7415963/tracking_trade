@@ -51,6 +51,45 @@ export class RenderConsumer implements OnModuleInit, OnModuleDestroy {
       RENDER_QUEUE_NAME,
       async (job: Job, token?: string) => {
         const data = job.data as RenderJobData;
+        // For a market open card, wait until the live mark differs from the
+        // entry price so the card does not show a zero PnL/ROI. Fall back to
+        // the deadline if the price never changes.
+        if (data.awaitPriceChange === true && data.status === "filled") {
+          const deadline = Number(data.priceChangeDeadline ?? 0);
+          if (Number.isFinite(deadline) && deadline > Date.now()) {
+            let position: { entryPrice: unknown } | null = null;
+            try {
+              position = await this.prisma.virtualPosition.findUnique({
+                where: { id: data.virtualPositionId },
+                select: { entryPrice: true },
+              });
+            } catch {
+              position = null;
+            }
+            const entry = position ? Number(position.entryPrice) : NaN;
+            if (Number.isFinite(entry)) {
+              let mark: number | null = null;
+              try {
+                mark = await this.marketData.getMid(
+                  (await this.prisma.virtualPosition.findUnique({
+                    where: { id: data.virtualPositionId },
+                    select: { coin: true },
+                  }))?.coin ?? "",
+                );
+              } catch {
+                mark = null;
+              }
+              if (mark !== null && mark === entry) {
+                const pollMs = Math.max(1000, Number(data.priceChangePollMs ?? 3000));
+                const remaining = deadline - Date.now();
+                if (remaining > 0 && token) {
+                  await job.moveToDelayed(Date.now() + Math.min(pollMs, remaining), token);
+                  throw new DelayedError();
+                }
+              }
+            }
+          }
+        }
         // A TP/SL/close card must show the style the operator picks, so it
         // waits out a pending /pos dialog (kind is read live at render time).
         // Re-checked every few seconds: the hold frees itself when the dialog

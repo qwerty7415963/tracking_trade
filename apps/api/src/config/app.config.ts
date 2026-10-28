@@ -16,8 +16,14 @@ export interface AppConfig {
   marketPollMs: number;
   /** /pos entry-market: wait before taking the execution mid. */
   posMarketEntryDelayMs: number;
+  /** /pos entry-market: poll interval while waiting for a price change. */
+  posMarketEntryPollMs: number;
+  /** /pos entry-market: maximum wait for a price change before opening. */
+  posMarketEntryMaxWaitMs: number;
   /** /pos entry-market: card cannot render before entry + this age. */
   posMarketCardMinAgeMs: number;
+  /** /pos entry-market: maximum wait for mark to differ from entry before publishing. */
+  posMarketCardPriceChangeMaxMs: number;
   /** Google service account JSON path for the daily report sheet. */
   googleServiceAccountJson: string;
   dailySheetSpreadsheetId: string;
@@ -79,7 +85,10 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     reportDestinationChatId: env.REPORT_DESTINATION_CHAT_ID ?? "",
     marketPollMs: parseNumber(env.MARKET_POLL_MS, 5000),
     posMarketEntryDelayMs: parseDelayMs(env.POS_MARKET_ENTRY_DELAY_MS, 3000),
+    posMarketEntryPollMs: parseDelayMs(env.POS_MARKET_ENTRY_POLL_MS ?? env.POS_MARKET_ENTRY_DELAY_MS, 3000),
+    posMarketEntryMaxWaitMs: parseDelayMs(env.POS_MARKET_ENTRY_MAX_WAIT_MS, 30000),
     posMarketCardMinAgeMs: parseDelayMs(env.POS_MARKET_CARD_MIN_AGE_MS, 3000),
+    posMarketCardPriceChangeMaxMs: parseDelayMs(env.POS_MARKET_CARD_PRICE_CHANGE_MAX_MS, 30000),
     googleServiceAccountJson: env.GOOGLE_SERVICE_ACCOUNT_JSON ?? "",
     dailySheetSpreadsheetId: env.DAILY_SHEET_SPREADSHEET_ID ?? "",
     dailySheetTemplateTab: env.DAILY_SHEET_TEMPLATE_TAB ?? "TEMPLATE",
