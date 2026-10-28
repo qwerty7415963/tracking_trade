@@ -62,7 +62,8 @@ export function isOperator(username: string | undefined, allowlist: string[]): b
 }
 
 const HELP = [
-  "/pos <signal text + post link> [src=\"..\"] [chat=..] [acc=..] - create + approve + pick card, publish",
+  "/pos <signal text + post link> [src=\"..\"] [chat=..] [acc=..] [vol=amount] - create + approve + pick card, publish",
+  "/account_create <name> <balance> [leverage] [mode] - create a virtual account",
   "/approve <signalId> - approve + open paper position",
   "/reject <signalId> [reason] - reject a signal",
   "/open <signalId> [accountId] - retry open for approved signal",
@@ -143,6 +144,7 @@ export function extractPosFlags(raw: string | undefined): {
   src: string | null;
   chat: string | null;
   acc: string | null;
+  vol: string | null;
 } {
   let text = raw ?? "";
   const pick = (key: string): string | null => {
@@ -160,9 +162,17 @@ export function extractPosFlags(raw: string | undefined): {
   const src = pick("src");
   const chat = pick("chat");
   const acc = pick("acc");
+  let vol = pick("vol") ?? pick("volume");
+  if (!vol) {
+    const match = text.match(/(^|\s)vol(?:ume)?\s+(\d+(?:\.\d+)?)(?=\s|$)/i);
+    if (match) {
+      vol = match[2];
+      text = text.replace(match[0], " ");
+    }
+  }
   // Strip the /pos command token itself (first token of the first line).
   text = text.replace(/(^|\s)\/[a-z_]+(@\w+)?/i, " ");
-  return { text: text.replace(/\s+/g, " ").trim(), src, chat, acc };
+  return { text: text.replace(/\s+/g, " ").trim(), src, chat, acc, vol };
 }
 
 /** Shorten long original posts for review cards (Telegram 4096-char limit). */
@@ -537,16 +547,31 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           const created = await this.signals.createOperatorSignal(flags.text, actor, {
             sourceName: flags.src,
           });
-          const marketEntryDelayMs = created.entryMarket
-            ? (this.config.posMarketEntryDelayMs ?? 0)
+          const marketEntryPollMs = created.entryMarket
+            ? (this.config.posMarketEntryPollMs ?? 0)
+            : 0;
+          const marketEntryMaxWaitMs = created.entryMarket
+            ? (this.config.posMarketEntryMaxWaitMs ?? 0)
             : 0;
           const marketCardMinAgeMs = created.entryMarket
             ? (this.config.posMarketCardMinAgeMs ?? 0)
             : 0;
-          if (marketEntryDelayMs > 0) {
+          const marketCardPriceChangeMaxMs = created.entryMarket
+            ? (this.config.posMarketCardPriceChangeMaxMs ?? 0)
+            : 0;
+          if (marketEntryMaxWaitMs > 0) {
             await reply(
-              `Đang chờ ${marketEntryDelayMs / 1000}s để lấy giá market…`,
+              `Đang chờ giá thay đổi (tối đa ${marketEntryMaxWaitMs / 1000}s)…`,
             );
+          }
+          let targetNotional: number | undefined;
+          if (flags.vol) {
+            const parsedVol = Number(flags.vol);
+            if (!Number.isFinite(parsedVol) || parsedVol <= 0) {
+              await reply("vol must be a number > 0");
+              return;
+            }
+            targetNotional = parsedVol;
           }
           const out = await this.flow.approveSignal(
             created.signalId,
@@ -556,8 +581,11 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             flags.chat ?? undefined,
             {
               renderDelayMs: CARD_STYLE_TIMEOUT_MS,
-              ...(marketEntryDelayMs > 0 ? { marketEntryDelayMs } : {}),
+              ...(marketEntryPollMs > 0 ? { marketEntryDelayMs: marketEntryPollMs } : {}),
+              ...(marketEntryMaxWaitMs > 0 ? { marketEntryMaxWaitMs } : {}),
               ...(marketCardMinAgeMs > 0 ? { marketCardMinAgeMs } : {}),
+              ...(marketCardPriceChangeMaxMs > 0 ? { marketCardPriceChangeMaxMs } : {}),
+              ...(targetNotional !== undefined ? { targetNotional } : {}),
             },
           );
           if (out.position) {
@@ -720,6 +748,42 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             )
             .join("\n"),
         );
+        return;
+      }
+      case "account_create": {
+        const tokens = commandLineTokens(rawText);
+        const [name, balanceRaw, leverageRaw, modeRaw] =
+          tokens.length > 0 ? tokens : parsed.args;
+        if (!name || !balanceRaw) {
+          await reply("Usage: /account_create <name> <balance> [leverage] [mode]");
+          return;
+        }
+        const balance = Number(balanceRaw);
+        if (!Number.isFinite(balance) || balance < 0) {
+          await reply("balance must be a number >= 0");
+          return;
+        }
+        const leverage = leverageRaw ? Number(leverageRaw) : 10;
+        if (!Number.isInteger(leverage) || leverage < 1 || leverage > 50) {
+          await reply("leverage must be an integer between 1 and 50");
+          return;
+        }
+        const mode = (modeRaw ?? "APPROVE").toUpperCase();
+        if (mode !== "APPROVE" && mode !== "AUTO") {
+          await reply("mode must be APPROVE or AUTO");
+          return;
+        }
+        try {
+          const account = await this.accounts.create(
+            { name, balance, leverage, mode },
+            actor,
+          );
+          await reply(
+            `Created account ${account.id}\n${account.name} [${account.mode} ${account.leverage}x] bal=${String(account.balance)}`,
+          );
+        } catch (err) {
+          await reply(`Failed: ${err instanceof Error ? err.message.split(":")[0] : "error"}`);
+        }
         return;
       }
       case "accounts": {

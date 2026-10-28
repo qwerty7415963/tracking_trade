@@ -196,6 +196,12 @@ export class PublicationsService {
       renderDelayMs?: number;
       /** Earliest render time (epoch ms); style promotion cannot bypass it. */
       minRenderAt?: number;
+      /** Wait for the live mark to differ from entry before rendering. */
+      awaitPriceChange?: boolean;
+      /** Deadline for the price-change wait. */
+      priceChangeDeadline?: number;
+      /** Poll interval for the price-change wait. */
+      priceChangePollMs?: number;
       /** TP ordinal for `tp` cards — the caption marks that level as hit. */
       tpIndex?: number;
     },
@@ -250,6 +256,9 @@ export class PublicationsService {
         ...(opts.open !== undefined ? { open: opts.open } : {}),
         ...(opts.renderDelayMs && opts.renderDelayMs > 0 ? { delayMs: opts.renderDelayMs } : {}),
         ...(opts.minRenderAt ? { minRenderAt: opts.minRenderAt } : {}),
+        ...(opts.awaitPriceChange ? { awaitPriceChange: opts.awaitPriceChange } : {}),
+        ...(opts.priceChangeDeadline ? { priceChangeDeadline: opts.priceChangeDeadline } : {}),
+        ...(opts.priceChangePollMs ? { priceChangePollMs: opts.priceChangePollMs } : {}),
         ...(opts.tpIndex !== undefined ? { tpIndex: opts.tpIndex } : {}),
       },
       actor,

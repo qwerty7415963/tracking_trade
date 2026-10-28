@@ -122,7 +122,7 @@ export class VirtualTradingService {
     signalId: string,
     accountId: string,
     actor: string,
-    opts: { marketEntryDelayMs?: number } = {},
+    opts: { marketEntryDelayMs?: number; marketEntryMaxWaitMs?: number; targetNotional?: number } = {},
   ) {
     const signal = await this.prisma.signal.findUnique({
       where: { id: signalId },
@@ -172,20 +172,36 @@ export class VirtualTradingService {
     const payloadLevels = readPayloadEntries(version.normalizedPayloadJson);
     const coin = await this.marketData.resolveCoin(version.instrument);
     if (!coin) throw new ConflictException(`NO_SYMBOL_MAP: ${version.instrument} not on Hyperliquid`);
+    const initialMid = await this.marketData.getMid(coin);
+    if (initialMid === null) throw new ConflictException(`NO_QUOTE for ${coin}: refusing to open without a mark`);
     const requestedDelay = Number(opts.marketEntryDelayMs ?? 0);
     const marketEntryDelayMs =
       entryMarket && Number.isFinite(requestedDelay) && requestedDelay > 0
         ? Math.min(30_000, Math.floor(requestedDelay))
         : 0;
-    if (marketEntryDelayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, marketEntryDelayMs));
-      const afterMode = this.killSwitch.getMode();
-      if (afterMode !== "OFF") {
-        throw new ForbiddenException(`kill switch ${afterMode} blocks new positions`);
+    const maxWaitMs =
+      entryMarket && marketEntryDelayMs > 0
+        ? Math.min(30_000, Math.max(0, Math.floor(opts.marketEntryMaxWaitMs ?? this.config.posMarketEntryMaxWaitMs)))
+        : 0;
+    let openedMid = initialMid;
+    const entryWaitStartedAt = Date.now();
+    if (entryMarket && marketEntryDelayMs > 0 && maxWaitMs > 0) {
+      const started = Date.now();
+      while (openedMid === initialMid && Date.now() - started < maxWaitMs) {
+        await new Promise((resolve) => setTimeout(resolve, marketEntryDelayMs));
+        const afterMode = this.killSwitch.getMode();
+        if (afterMode !== "OFF") {
+          throw new ForbiddenException(`kill switch ${afterMode} blocks new positions`);
+        }
+        const nextMid = await this.marketData.getMid(coin);
+        if (nextMid !== null) {
+          openedMid = nextMid;
+          if (openedMid !== initialMid) break;
+        }
       }
     }
 
-    const mid = await this.marketData.getMid(coin);
+    const mid = openedMid;
     if (mid === null) throw new ConflictException(`NO_QUOTE for ${coin}: refusing to open without a mark`);
 
     const signalEntry = version.entry == null ? null : asNumber(version.entry);
@@ -200,7 +216,11 @@ export class VirtualTradingService {
 
     const spec = await this.marketData.assetSpec(coin);
     if (!spec) throw new ConflictException(`NO_SYMBOL_MAP: no spec for ${coin}`);
-    const targetNotional = await this.coins.notionalFor(coin);
+    const requestedNotional = Number(opts.targetNotional);
+    const hasCustomNotional = Number.isFinite(requestedNotional) && requestedNotional > 0;
+    const targetNotional = hasCustomNotional
+      ? requestedNotional
+      : await this.coins.notionalFor(coin);
     const sizing = calcPerpSizeByNotional({
       notional: targetNotional,
       entryPrice: entry,
@@ -228,19 +248,19 @@ export class VirtualTradingService {
       : ladderOrdered(version.direction, orderedLevels)
         ? orderedLevels
         : [orderedLevels[0]];
-    const sliceNotional = targetNotional / effectiveLevels.length;
+    const sliceNotional = hasCustomNotional ? targetNotional : targetNotional / effectiveLevels.length;
     const entriesJson = effectiveLevels.map((price, i) => ({
       price,
-      notional: i === 0 ? targetNotional : sliceNotional,
+      notional: hasCustomNotional ? targetNotional : i === 0 ? targetNotional : sliceNotional,
     }));
     const pendingJson = awaitingEntry
       ? effectiveLevels.map((price, i) => ({
           price,
-          notional: i === 0 ? targetNotional : sliceNotional,
+          notional: hasCustomNotional ? targetNotional : i === 0 ? targetNotional : sliceNotional,
         }))
       : effectiveLevels.slice(1).map((price) => ({
           price,
-          notional: sliceNotional,
+          notional: hasCustomNotional ? targetNotional : sliceNotional,
         }));
 
     const mids = await this.marketData.getAllMids().catch(() => ({} as Record<string, number>));
@@ -329,6 +349,10 @@ export class VirtualTradingService {
       awaitingEntry,
       entryMarket,
       marketEntryDelayMs,
+      initialMid,
+      openedMid: mid,
+      priceChangedBeforeOpen: openedMid !== initialMid,
+      entryWaitMs: Math.max(0, Date.now() - entryWaitStartedAt),
     });
     return { position, created: true, awaitingEntry };
   }

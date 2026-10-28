@@ -164,7 +164,10 @@ function bot(overrides: Record<string, unknown> = {}) {
       operatorChatIds: (overrides.chatIds ?? ["100"]) as string[],
       reportDestinationChatId: "",
       posMarketEntryDelayMs: 3000,
+      posMarketEntryPollMs: 3000,
+      posMarketEntryMaxWaitMs: 30000,
       posMarketCardMinAgeMs: 3000,
+      posMarketCardPriceChangeMaxMs: 30000,
     } as never,
     { record: jest.fn() } as never,
     (overrides.signals ?? {}) as never,
@@ -441,6 +444,7 @@ describe("extractPosFlags", () => {
       src: null,
       chat: "-1001",
       acc: "a1",
+      vol: null,
     });
   });
 
@@ -450,6 +454,7 @@ describe("extractPosFlags", () => {
       src: null,
       chat: null,
       acc: null,
+      vol: null,
     });
     expect(extractPosFlags(undefined).text).toBe("");
   });
@@ -464,6 +469,7 @@ describe("extractPosFlags", () => {
       src: null,
       chat: "-1001",
       acc: null,
+      vol: null,
     });
     // Legacy url= prefix survives flags too — extractSourceUrl strips it.
     expect(extractPosFlags("/pos LONG ETH @1 SL 2 TP 3 url=https://t.me/x/1").text).toContain(
@@ -481,6 +487,7 @@ describe("extractPosFlags", () => {
       src: "Kaka trades",
       chat: null,
       acc: null,
+      vol: null,
     });
   });
 
@@ -554,6 +561,166 @@ describe("OperatorBotService /pos command", () => {
     });
   });
 
+  it("creates a virtual account from Telegram", async () => {
+    const create = jest.fn(async () => ({
+      id: "acc-new",
+      name: "Main",
+      balance: 100000,
+      leverage: 10,
+      mode: "APPROVE",
+    }));
+    const { svc } = bot({ accounts: { create } });
+    const replies: string[] = [];
+    await svc.dispatch(
+      { name: "account_create", args: [] },
+      "tg:alice",
+      async (text: string) => {
+        replies.push(text);
+      },
+      '/account_create "Main" 100000 10 APPROVE',
+    );
+    expect(create).toHaveBeenCalledWith(
+      { name: "Main", balance: 100000, leverage: 10, mode: "APPROVE" },
+      "tg:alice",
+    );
+    expect(replies[0]).toContain("Created account acc-new");
+  });
+
+  it("passes a custom volume to /pos", async () => {
+    const createOperatorSignal = jest.fn(async () => ({
+      signalId: "sig3",
+      versionId: "v3",
+      status: "PENDING_APPROVAL",
+      instrument: "BTC",
+      direction: "LONG",
+      entryMarket: false,
+    }));
+    const approveSignal = jest.fn(async () => ({
+      approval: {},
+      position: { id: "pos-3" },
+      openError: null,
+      published: false,
+      awaitingEntry: true,
+    }));
+    const { svc } = bot({ signals: { createOperatorSignal }, flow: { approveSignal } });
+    await svc.dispatch(
+      { name: "pos", args: [] },
+      "tg:alice",
+      async () => {},
+      "/pos LONG BTC @100000 SL 98000 TP 105000 vol=25000",
+    );
+    expect(approveSignal).toHaveBeenCalledWith(
+      "sig3",
+      { signalVersionId: "v3" },
+      "tg:alice",
+      undefined,
+      undefined,
+      expect.objectContaining({ targetNotional: 25000 }),
+    );
+  });
+
+  it("uses default leverage and mode when creating an account", async () => {
+    const create = jest.fn(async (dto: Record<string, unknown>) => ({ id: "acc-default", ...dto }));
+    const { svc } = bot({ accounts: { create } });
+    const replies: string[] = [];
+    await svc.dispatch(
+      { name: "account_create", args: [] },
+      "tg:alice",
+      async (text: string) => {
+        replies.push(text);
+      },
+      "/account_create Main 100000",
+    );
+    expect(create).toHaveBeenCalledWith(
+      { name: "Main", balance: 100000, leverage: 10, mode: "APPROVE" },
+      "tg:alice",
+    );
+    expect(replies[0]).toContain("Created account acc-default");
+  });
+
+  it("rejects invalid account creation input", async () => {
+    const create = jest.fn();
+    const { svc } = bot({ accounts: { create } });
+    const replies: string[] = [];
+    const run = async (text: string) => {
+      replies.length = 0;
+      await svc.dispatch(
+        { name: "account_create", args: [] },
+        "tg:alice",
+        async (t: string) => {
+          replies.push(t);
+        },
+        text,
+      );
+    };
+    await run("/account_create Main -1");
+    expect(replies[0]).toContain("balance must be");
+    await run("/account_create Main 100000 0");
+    expect(replies[0]).toContain("leverage must be");
+    await run("/account_create Main 100000 10 BAD");
+    expect(replies[0]).toContain("mode must be");
+    await run("/account_create");
+    expect(replies[0]).toContain("Usage: /account_create");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("supports positional custom volume", async () => {
+    const createOperatorSignal = jest.fn(async () => ({
+      signalId: "sig4",
+      versionId: "v4",
+      status: "PENDING_APPROVAL",
+      instrument: "BTC",
+      direction: "LONG",
+      entryMarket: false,
+    }));
+    const approveSignal = jest.fn(async () => ({
+      approval: {},
+      position: { id: "pos-4" },
+      openError: null,
+      published: false,
+      awaitingEntry: true,
+    }));
+    const { svc } = bot({ signals: { createOperatorSignal }, flow: { approveSignal } });
+    await svc.dispatch(
+      { name: "pos", args: [] },
+      "tg:alice",
+      async () => {},
+      "/pos LONG BTC @100000 SL 98000 TP 105000 vol 25000",
+    );
+    expect(approveSignal).toHaveBeenCalledWith(
+      "sig4",
+      { signalVersionId: "v4" },
+      "tg:alice",
+      undefined,
+      undefined,
+      expect.objectContaining({ targetNotional: 25000 }),
+    );
+  });
+
+  it("rejects invalid custom volume", async () => {
+    const createOperatorSignal = jest.fn(async () => ({
+      signalId: "sig5",
+      versionId: "v5",
+      status: "PENDING_APPROVAL",
+      instrument: "BTC",
+      direction: "LONG",
+      entryMarket: false,
+    }));
+    const approveSignal = jest.fn();
+    const { svc } = bot({ signals: { createOperatorSignal }, flow: { approveSignal } });
+    const replies: string[] = [];
+    await svc.dispatch(
+      { name: "pos", args: [] },
+      "tg:alice",
+      async (text: string) => {
+        replies.push(text);
+      },
+      "/pos LONG BTC @100000 SL 98000 TP 105000 vol=0",
+    );
+    expect(replies[0]).toContain("vol must be a number > 0");
+    expect(approveSignal).not.toHaveBeenCalled();
+  });
+
   it("announces and configures the 3s market-entry delay", async () => {
     const createOperatorSignal = jest.fn(async () => ({
       signalId: "sig2",
@@ -581,7 +748,7 @@ describe("OperatorBotService /pos command", () => {
       "/pos LONG BTC entry market SL 98000 TP 105000",
     );
 
-    expect(replies[0].text).toContain("Đang chờ 3s để lấy giá market");
+    expect(replies[0].text).toContain("Đang chờ giá thay đổi (tối đa 30s)");
     expect(approveSignal).toHaveBeenCalledWith(
       "sig2",
       { signalVersionId: "v2" },
@@ -591,7 +758,9 @@ describe("OperatorBotService /pos command", () => {
       {
         renderDelayMs: 60_000,
         marketEntryDelayMs: 3000,
+        marketEntryMaxWaitMs: 30000,
         marketCardMinAgeMs: 3000,
+        marketCardPriceChangeMaxMs: 30000,
       },
     );
     expect(replies[1].text).toContain("✅ LONG BTC");
