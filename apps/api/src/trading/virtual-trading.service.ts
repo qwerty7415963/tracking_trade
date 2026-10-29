@@ -11,6 +11,8 @@ import {
   detectTpSlHit,
   evaluateVirtualRisk,
   realizedPnl,
+  resolveTakeProfitSpecs,
+  takeProfitSpecsFromPayload,
   roundDownToStep,
   splitTps,
   unrealizedPnl,
@@ -210,7 +212,18 @@ export class VirtualTradingService {
     }
     const entry = signalEntry ?? mid;
     const stopLoss = version.stopLoss === null ? null : asNumber(version.stopLoss);
-    const tps = asPriceArray(version.takeProfits);
+    const tpSpecs = takeProfitSpecsFromPayload(version.normalizedPayloadJson);
+    let tps = asPriceArray(version.takeProfits);
+    if (tps.length === 0 && tpSpecs.length > 0) {
+      const resolved = resolveTakeProfitSpecs(
+        tpSpecs,
+        entry,
+        stopLoss,
+        version.direction as VirtualDirection,
+      );
+      if (!resolved) throw new ConflictException("INVALID_TAKE_PROFIT_SPEC");
+      tps = resolved;
+    }
     if (stopLoss === null) throw new ConflictException("STOP_LOSS_REQUIRED");
     if (tps.length === 0) throw new ConflictException("NO_TAKE_PROFITS");
 

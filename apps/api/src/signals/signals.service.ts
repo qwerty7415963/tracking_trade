@@ -12,6 +12,7 @@ import {
   matchUpdate,
   missingRequiredFields,
   parseSignal,
+  takeProfitSpecsFromPayload,
 } from "@tracking-auto/domain";
 import { AuditService } from "../audit/audit.service";
 import { CoinsService } from "../coins/coins.service";
@@ -767,7 +768,8 @@ export class SignalsService {
       if (!entryMarket && latest.entry === null) unopenable.push("entry");
       if (latest.stopLoss === null) unopenable.push("stop_loss");
       const latestTps = Array.isArray(latest.takeProfits) ? latest.takeProfits : [];
-      if (latestTps.length === 0) unopenable.push("take_profits");
+      const latestSpecs = takeProfitSpecsFromPayload(latest.normalizedPayloadJson);
+      if (latestTps.length === 0 && latestSpecs.length === 0) unopenable.push("take_profits");
       if (unopenable.length > 0) {
         throw new ConflictException(
           `signal ${id} missing ${unopenable.join(", ")} — complete it first (Bổ sung)`,

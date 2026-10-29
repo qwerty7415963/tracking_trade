@@ -205,6 +205,70 @@ describe("VirtualTradingService.openApproved", () => {
     );
   });
 
+  it("resolves R-multiple take profits from the actual market fill", async () => {
+    const prisma = mockPrisma({
+      signal: {
+        findUnique: jest.fn(async () => ({
+          ...SIGNAL,
+          versions: [
+            {
+              ...VERSION,
+              entry: null,
+              takeProfits: [],
+              normalizedPayloadJson: {
+                sourceMessageId: "m1",
+                entryMarket: true,
+                entries: [],
+                takeProfitSpecs: [
+                  { kind: "r", multiple: 1 },
+                  { kind: "price", value: 3100 },
+                ],
+              },
+            },
+          ],
+        })),
+      },
+    });
+    const svc = service(prisma, mockMarketData({ getMid: jest.fn(async () => 3000) }), mockAccounts());
+    const { position } = (await svc.openApproved("s1", "acc1", "alice")) as unknown as {
+      position: { takeProfits: number[] };
+    };
+    expect(position.takeProfits).toEqual([3100, 3100]);
+    expect(prisma.virtualPosition.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          takeProfits: [3100, 3100],
+        }),
+      }),
+    );
+  });
+
+  it("rejects an R take profit when the risk distance is invalid", async () => {
+    const prisma = mockPrisma({
+      signal: {
+        findUnique: jest.fn(async () => ({
+          ...SIGNAL,
+          versions: [
+            {
+              ...VERSION,
+              entry: null,
+              stopLoss: 3000,
+              takeProfits: [],
+              normalizedPayloadJson: {
+                sourceMessageId: "m1",
+                entryMarket: true,
+                entries: [],
+                takeProfitSpecs: [{ kind: "r", multiple: 1 }],
+              },
+            },
+          ],
+        })),
+      },
+    });
+    const svc = service(prisma, mockMarketData({ getMid: jest.fn(async () => 3000) }), mockAccounts());
+    await expect(svc.openApproved("s1", "acc1", "alice")).rejects.toThrow(/INVALID_TAKE_PROFIT_SPEC/);
+  });
+
   it("uses a custom notional for every entry level", async () => {
     const prisma = mockPrisma({
       signal: {

@@ -10,6 +10,11 @@ export type UpdateAction =
   | "TP_HIT"
   | "NONE";
 
+export type TakeProfitSpec =
+  | { kind: "price"; value: number }
+  | { kind: "r"; multiple: number }
+  | { kind: "percent"; value: number };
+
 export interface NormalizedSignal {
   eventType: "NEW" | "UPDATE";
   instrument: string | null;
@@ -25,6 +30,8 @@ export interface NormalizedSignal {
   entries: number[];
   stopLoss: number | null;
   takeProfits: number[];
+  /** Ordered TP inputs exactly as written, including R-multiples and percents. */
+  takeProfitSpecs: TakeProfitSpec[];
   leverage: number | null;
   updateAction: UpdateAction;
   sourceMessageId: string;

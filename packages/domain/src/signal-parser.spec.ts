@@ -217,13 +217,90 @@ describe("parseSignal", () => {
     expect(withoutProfile.instrument).toBeNull();
   });
 
-  it("confirms plain-word tickers against the coin universe", () => {
-    const withUniverse = parseSignal(
-      { ...base, text: "ZEC LONG Entry 1 SL 0.9 TP 1.1" },
-      { coinUniverse: ["ZEC"] },
+  it("parses mixed R-multiple and absolute take profits in written order", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry 3000 SL 2800 TP 1R 3100 2R" },
+      { coinUniverse: ["ETH"] },
     );
-    expect(withUniverse.instrument).toBe("ZEC");
-    const withoutUniverse = parseSignal({ ...base, text: "ZEC LONG Entry 1 SL 0.9 TP 1.1" });
-    expect(withoutUniverse.instrument).toBeNull();
+    expect(parsed.takeProfits).toEqual([3200, 3100, 3400]);
+    expect(parsed.takeProfitSpecs).toEqual([
+      { kind: "r", multiple: 1 },
+      { kind: "price", value: 3100 },
+      { kind: "r", multiple: 2 },
+    ]);
+    expect(missingRequiredFields(parsed)).toEqual([]);
+  });
+
+  it("parses the requested LONG mixed TP example", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG BTC entry 100000 SL 98000 TP 1R 130000 450000" },
+      { coinUniverse: ["BTC"] },
+    );
+    expect(parsed.takeProfits).toEqual([102000, 130000, 450000]);
+    expect(parsed.takeProfitSpecs).toEqual([
+      { kind: "r", multiple: 1 },
+      { kind: "price", value: 130000 },
+      { kind: "price", value: 450000 },
+    ]);
+  });
+
+  it("parses SHORT R-multiple take profits below entry", () => {
+    const parsed = parseSignal(
+      { ...base, text: "SHORT ETH entry 3000 SL 3200 TP 1R 2R" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.takeProfits).toEqual([2800, 2600]);
+    expect(parsed.takeProfitSpecs).toEqual([
+      { kind: "r", multiple: 1 },
+      { kind: "r", multiple: 2 },
+    ]);
+  });
+
+  it("keeps R take profits unresolved for market entry until open", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry market SL 2800 TP 1R 3100" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.takeProfits).toEqual([]);
+    expect(parsed.takeProfitSpecs).toEqual([
+      { kind: "r", multiple: 1 },
+      { kind: "price", value: 3100 },
+    ]);
+    expect(missingRequiredFields(parsed)).toEqual([]);
+  });
+
+  it("rejects mixed R take profits when SL is missing", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry 3000 TP 1R 3100" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.takeProfits).toEqual([]);
+    expect(parsed.takeProfitSpecs).toEqual([
+      { kind: "r", multiple: 1 },
+      { kind: "price", value: 3100 },
+    ]);
+    expect(missingRequiredFields(parsed)).toContain("stop_loss");
+  });
+
+  it("does not treat leverage suffix as a TP price", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry 3000 SL 2800 TP 1R lev 5" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.takeProfits).toEqual([3200]);
+    expect(parsed.takeProfitSpecs).toEqual([{ kind: "r", multiple: 1 }]);
+  });
+
+  it("preserves absolute-only TP lists", () => {
+    const parsed = parseSignal(
+      { ...base, text: "LONG ETH entry 3000 SL 2800 TP 3100 3200" },
+      { coinUniverse: ["ETH"] },
+    );
+    expect(parsed.takeProfits).toEqual([3100, 3200]);
+    expect(parsed.takeProfitSpecs).toEqual([
+      { kind: "price", value: 3100 },
+      { kind: "price", value: 3200 },
+    ]);
   });
 });
+

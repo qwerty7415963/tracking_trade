@@ -536,7 +536,7 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
           await reply(
             [
               "Usage: /pos <signal text + post link> [src=\"..\"] [chat=..] [acc=..]",
-              "Example: /pos LONG BTC @100000 SL 98000 TP 105000 lev 5 https://t.me/channel/123",
+               "Example: /pos LONG BTC @100000 SL 98000 TP 1R 130000 450000 lev 5 https://t.me/channel/123",
               "Paste the post link anywhere in the text — no url= needed (auto-detected).",
               "src = channel name (fallback e.g. src=\"Kaka trades\"), chat = destination, acc = account id",
             ].join("\n"),

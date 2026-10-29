@@ -4,6 +4,7 @@ import {
   ParserInput,
   PARSER_VERSION,
   SYMBOL_MAP,
+  TakeProfitSpec,
   UpdateAction,
 } from "./signal-types";
 
@@ -159,13 +160,89 @@ function detectUpdateAction(text: string): UpdateAction {
   return "NONE";
 }
 
-function takeProfits(text: string): number[] {
+function takeProfitSpecs(text: string): TakeProfitSpec[] {
+  const out: TakeProfitSpec[] = [];
+  const headRe = /\bTP(\d)?\s*[:\-]?\s*/gi;
+  const heads = [...text.matchAll(headRe)];
+  for (let i = 0; i < heads.length; i += 1) {
+    const start = heads[i].index + heads[i][0].length;
+    const end = i + 1 < heads.length ? heads[i + 1].index : text.length;
+    const segment = text.slice(start, end);
+    for (const token of segment.split(/[-–,\s]+/)) {
+      if (!token) continue;
+      const percent = token.match(/^(\d+(?:\.\d+)?)%$/);
+      if (percent) {
+        const value = parseNumber(percent[1]);
+        if (value !== null) out.push({ kind: "percent", value });
+        continue;
+      }
+      const risk = token.match(/^(\d+(?:\.\d+)?)[Rr]$/);
+      if (risk) {
+        const value = parseNumber(risk[1]);
+        if (value !== null) out.push({ kind: "r", multiple: value });
+        continue;
+      }
+      // Plain leverage tokens such as `5x` are never TP prices.
+      const price = token.match(/^(\d+(?:\.\d+)?)(?![xX])$/);
+      if (price) {
+        const value = parseNumber(price[1]);
+        if (value !== null) out.push({ kind: "price", value });
+        continue;
+      }
+      break;
+    }
+  }
+  return out;
+}
+
+export function takeProfitSpecsFromPayload(payload: unknown): TakeProfitSpec[] {
+  const raw = (payload as { takeProfitSpecs?: unknown } | null)?.takeProfitSpecs;
+  if (!Array.isArray(raw)) return [];
+  const out: TakeProfitSpec[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const kind = (item as { kind?: unknown }).kind;
+    const value = Number((item as { value?: unknown; multiple?: unknown }).value ?? (item as { multiple?: unknown }).multiple);
+    if (!Number.isFinite(value)) continue;
+    if (kind === "price") out.push({ kind: "price", value });
+    else if (kind === "r") out.push({ kind: "r", multiple: value });
+    else if (kind === "percent") out.push({ kind: "percent", value });
+  }
+  return out;
+}
+
+export function resolveTakeProfitSpecs(
+  specs: TakeProfitSpec[],
+  entry: number | null,
+  stopLoss: number | null,
+  direction: Direction | null,
+): number[] | null {
+  if (specs.length === 0) return [];
+  // Price-only specs can resolve without entry/SL/direction.
+  if (specs.every((spec) => spec.kind === "price")) {
+    return specs.map((spec) => spec.value);
+  }
+  if (entry === null || stopLoss === null || direction === null) return null;
+  const risk = Math.abs(entry - stopLoss);
+  if (!(risk > 0) || !Number.isFinite(risk)) return null;
+  const decimals = Math.max(
+    countDecimals(entry),
+    countDecimals(stopLoss),
+    ...specs.map((spec) => (spec.kind === "r" ? countDecimals(spec.multiple) : 0)),
+  );
   const out: number[] = [];
-  TP_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = TP_RE.exec(text)) !== null) {
-    const n = parseNumber(m[2]);
-    if (n !== null) out.push(n);
+  for (const spec of specs) {
+    if (spec.kind === "price") {
+      out.push(spec.value);
+      continue;
+    }
+    if (spec.kind === "r") {
+      const raw = direction === "LONG" ? entry + spec.multiple * risk : entry - spec.multiple * risk;
+      out.push(roundTo(raw, decimals));
+      continue;
+    }
+    const sign = direction === "LONG" ? 1 : -1;
+    out.push(roundTo(entry * (1 + (sign * spec.value) / 100), countDecimals(entry)));
   }
   return out;
 }
@@ -225,7 +302,9 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
       : entries.every((v, i) => i === 0 || v >= entries[i - 1]));
   if (entriesWrongOrder) entries = [entries[0]];
   const stopLoss = parseNumber(text.match(SL_RE)?.[1]);
-  let tps = takeProfits(text);
+  const tpSpecs = takeProfitSpecs(text);
+  let tps = resolveTakeProfitSpecs(tpSpecs, entry, stopLoss, dir.direction);
+  if (tps === null) tps = [];
   const levMatch = rawText.match(LEVERAGE_RE);
   const leverage = parseNumber(levMatch?.[1] ?? undefined);
 
@@ -249,19 +328,15 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
   if (updateAction === "NONE") {
     if (!entryMarket && entry === null) missingFields.push("entry");
     if (stopLoss === null) missingFields.push("stop_loss");
-    if (tps.length === 0) {
-      // Percent-style TPs ("Tp: 20% 40%") convert to prices when entry exists.
-      // Assumption: % means price move from entry, not position-close share.
-      const pcts = /\bTP\b/i.test(text) ? takeProfitPercents(text) : [];
-      if (pcts.length > 0 && entry !== null && dir.direction) {
-        const sign = dir.direction === "LONG" ? 1 : -1;
-        const decimals = countDecimals(entry);
-        tps = pcts.map((p) => roundTo(entry * (1 + (sign * p) / 100), decimals));
-        ambiguities.push("tp_percent_converted");
-      } else {
-        missingFields.push("take_profits");
-      }
+  if (tps.length === 0) {
+    if (tpSpecs.length > 0 && tpSpecs.some((spec) => spec.kind !== "price")) {
+      missingFields.push("take_profits");
+    } else if (tpSpecs.length === 0) {
+      missingFields.push("take_profits");
     }
+  } else if (tpSpecs.some((spec) => spec.kind === "percent")) {
+    ambiguities.push("tp_percent_converted");
+  }
   }
 
   const confidence = Math.max(
@@ -280,6 +355,7 @@ export function parseSignal(input: ParserInput, opts: ParseOptions = {}): Normal
     entries,
     stopLoss,
     takeProfits: tps,
+    takeProfitSpecs: tpSpecs,
     leverage,
     updateAction,
     sourceMessageId: input.sourceMessageId,
@@ -307,7 +383,7 @@ export function missingRequiredFields(parsed: NormalizedSignal): string[] {
   const missing = required
     .filter(([key]) => parsed[key] === null)
     .map(([, name]) => name);
-  if (parsed.takeProfits.length === 0) missing.push("take_profits");
+  if (parsed.takeProfits.length === 0 && parsed.takeProfitSpecs.length === 0) missing.push("take_profits");
   return missing;
 }
 
