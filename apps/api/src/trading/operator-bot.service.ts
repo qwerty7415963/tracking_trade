@@ -63,7 +63,7 @@ export function isOperator(username: string | undefined, allowlist: string[]): b
 
 const HELP = [
   "/pos <signal text + post link> [src=\"..\"] [chat=..] [acc=..] [vol=amount] - create + approve + pick card, publish",
-  "/account_create <name> <balance> [leverage] [mode] - create a virtual account",
+  "/account_create <name...> <balance> [leverage] [mode] - create a virtual account",
   "/approve <signalId> - approve + open paper position",
   "/reject <signalId> [reason] - reject a signal",
   "/open <signalId> [accountId] - retry open for approved signal",
@@ -130,6 +130,62 @@ export function commandLineTokens(rawText: string | undefined): string[] {
     }
     return token;
   });
+}
+
+interface AccountCreateInput {
+  name: string;
+  balance: number;
+  leverage: number;
+  mode: string;
+}
+
+type AccountCreateParseResult =
+  | { ok: true; value: AccountCreateInput }
+  | { ok: false; error: string };
+
+function parseAccountCreateArgs(tokens: string[]): AccountCreateParseResult {
+  const usage = "Usage: /account_create <name...> <balance> [leverage] [mode]";
+  const args = [...tokens];
+  if (args.length === 0) return { ok: false, error: usage };
+
+  let mode = "APPROVE";
+  const lastArg = args[args.length - 1]!;
+  if (lastArg.toUpperCase() === "APPROVE" || lastArg.toUpperCase() === "AUTO") {
+    mode = lastArg.toUpperCase();
+    args.pop();
+  }
+  if (args.length < 2) return { ok: false, error: usage };
+
+  const last = args[args.length - 1]!;
+  const prev = args[args.length - 2]!;
+  const lastNumber = Number(last);
+  const prevNumber = Number(prev);
+  if (!Number.isFinite(lastNumber)) {
+    if (Number.isFinite(prevNumber)) {
+      return { ok: false, error: "mode must be APPROVE or AUTO" };
+    }
+    return { ok: false, error: "balance must be a number >= 0" };
+  }
+
+  let balanceRaw = last;
+  let leverage = 10;
+  if (args.length >= 3 && Number.isFinite(prevNumber)) {
+    balanceRaw = prev;
+    leverage = lastNumber;
+    args.pop();
+  }
+  args.pop();
+
+  const name = args.join(" ").trim();
+  if (!name) return { ok: false, error: usage };
+  const balance = Number(balanceRaw);
+  if (!Number.isFinite(balance) || balance < 0) {
+    return { ok: false, error: "balance must be a number >= 0" };
+  }
+  if (!Number.isInteger(leverage) || leverage < 1 || leverage > 50) {
+    return { ok: false, error: "leverage must be an integer between 1 and 50" };
+  }
+  return { ok: true, value: { name, balance, leverage, mode } };
 }
 
 /**
@@ -752,27 +808,12 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
       }
       case "account_create": {
         const tokens = commandLineTokens(rawText);
-        const [name, balanceRaw, leverageRaw, modeRaw] =
-          tokens.length > 0 ? tokens : parsed.args;
-        if (!name || !balanceRaw) {
-          await reply("Usage: /account_create <name> <balance> [leverage] [mode]");
+        const input = parseAccountCreateArgs(tokens.length > 0 ? tokens : parsed.args);
+        if (!input.ok) {
+          await reply(input.error);
           return;
         }
-        const balance = Number(balanceRaw);
-        if (!Number.isFinite(balance) || balance < 0) {
-          await reply("balance must be a number >= 0");
-          return;
-        }
-        const leverage = leverageRaw ? Number(leverageRaw) : 10;
-        if (!Number.isInteger(leverage) || leverage < 1 || leverage > 50) {
-          await reply("leverage must be an integer between 1 and 50");
-          return;
-        }
-        const mode = (modeRaw ?? "APPROVE").toUpperCase();
-        if (mode !== "APPROVE" && mode !== "AUTO") {
-          await reply("mode must be APPROVE or AUTO");
-          return;
-        }
+        const { name, balance, leverage, mode } = input.value;
         try {
           const account = await this.accounts.create(
             { name, balance, leverage, mode },

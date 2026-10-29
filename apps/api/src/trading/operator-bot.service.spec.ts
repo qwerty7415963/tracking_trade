@@ -586,6 +586,55 @@ describe("OperatorBotService /pos command", () => {
     expect(replies[0]).toContain("Created account acc-new");
   });
 
+  it("creates an account with an unquoted name containing spaces", async () => {
+    const create = jest.fn(async (dto: Record<string, unknown>) => ({ id: "acc-spaced", ...dto }));
+    const { svc } = bot({ accounts: { create } });
+    const replies: string[] = [];
+    await svc.dispatch(
+      { name: "account_create", args: [] },
+      "tg:alice",
+      async (text: string) => {
+        replies.push(text);
+      },
+      "/account_create Vinh cừ 200000",
+    );
+    expect(create).toHaveBeenCalledWith(
+      { name: "Vinh cừ", balance: 200000, leverage: 10, mode: "APPROVE" },
+      "tg:alice",
+    );
+    expect(replies[0]).toContain("Created account acc-spaced");
+  });
+
+  it("parses unquoted spaced names with leverage and mode", async () => {
+    const create = jest.fn(async (dto: Record<string, unknown>) => ({ id: "acc-spaced-full", ...dto }));
+    const { svc } = bot({ accounts: { create } });
+    await svc.dispatch(
+      { name: "account_create", args: [] },
+      "tg:alice",
+      async () => {},
+      "/account_create Vinh cừ 200000 20 AUTO",
+    );
+    expect(create).toHaveBeenCalledWith(
+      { name: "Vinh cừ", balance: 200000, leverage: 20, mode: "AUTO" },
+      "tg:alice",
+    );
+  });
+
+  it("supports a quoted numeric name", async () => {
+    const create = jest.fn(async (dto: Record<string, unknown>) => ({ id: "acc-numeric", ...dto }));
+    const { svc } = bot({ accounts: { create } });
+    await svc.dispatch(
+      { name: "account_create", args: [] },
+      "tg:alice",
+      async () => {},
+      '/account_create "Vinh 2" 100000',
+    );
+    expect(create).toHaveBeenCalledWith(
+      { name: "Vinh 2", balance: 100000, leverage: 10, mode: "APPROVE" },
+      "tg:alice",
+    );
+  });
+
   it("passes a custom volume to /pos", async () => {
     const createOperatorSignal = jest.fn(async () => ({
       signalId: "sig3",
@@ -657,7 +706,11 @@ describe("OperatorBotService /pos command", () => {
     expect(replies[0]).toContain("balance must be");
     await run("/account_create Main 100000 0");
     expect(replies[0]).toContain("leverage must be");
+    await run("/account_create Main 100000 99");
+    expect(replies[0]).toContain("leverage must be");
     await run("/account_create Main 100000 10 BAD");
+    expect(replies[0]).toContain("mode must be");
+    await run("/account_create Vinh cừ 200000 10 BAD");
     expect(replies[0]).toContain("mode must be");
     await run("/account_create");
     expect(replies[0]).toContain("Usage: /account_create");
