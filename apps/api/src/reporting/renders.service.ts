@@ -277,15 +277,17 @@ export class RendersService {
   }
 
   async writeArtifact(renderId: string, png: Buffer): Promise<string> {
+    const directory = this.artifactsDir();
     try {
-      const directory = this.artifactsDir();
       await fs.mkdir(directory, { recursive: true });
       const artifactPath = this.artifactPathFor(renderId);
       await fs.writeFile(artifactPath, png);
       return artifactPath;
     } catch (err) {
+      const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+      const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `ARTIFACT_STORAGE_FAILED: ${err instanceof Error ? err.message : err}`,
+        `ARTIFACT_STORAGE_FAILED: ${code ? `${code} ` : ""}${detail} (dir=${directory})`,
       );
     }
   }

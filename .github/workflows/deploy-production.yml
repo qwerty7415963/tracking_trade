@@ -48,6 +48,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" <<'EOF'
           set -e
           cd /opt/tracking_trade
+          install -d -o 100 -g 101 /opt/tracking_trade/artifacts
+          chown -R 100:101 /opt/tracking_trade/artifacts
           PREV_SHA=$(git rev-parse HEAD)
           echo "previous=$PREV_SHA" > /tmp/deploy-prev-sha
           git fetch origin && git checkout main && git pull --ff-only
@@ -64,6 +66,8 @@ jobs:
             sleep 2
           done
           curl -sf localhost:3000/api/v1/health
+
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml exec api sh -c 'test -w /data/artifacts && touch /data/artifacts/.deploy-write-test && rm -f /data/artifacts/.deploy-write-test'
 
           DEPLOYED_SHA=$(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml exec api cat /app/.gitsha | tr -d '\n')
           if [ "$DEPLOYED_SHA" != "${{ github.sha }}" ]; then
@@ -86,6 +90,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" <<'EOF'
           set -e
           cd /opt/tracking_trade
+          install -d -o 100 -g 101 /opt/tracking_trade/artifacts
+          chown -R 100:101 /opt/tracking_trade/artifacts
           PREV_SHA=$(cut -d= -f2 /tmp/deploy-prev-sha)
           git checkout "$PREV_SHA"
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml build --build-arg GIT_SHA="$PREV_SHA" api
@@ -100,6 +106,8 @@ jobs:
             sleep 2
           done
           curl -sf localhost:3000/api/v1/health
+
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml exec api sh -c 'test -w /data/artifacts && touch /data/artifacts/.deploy-write-test && rm -f /data/artifacts/.deploy-write-test'
 
           docker image prune -f
           EOF

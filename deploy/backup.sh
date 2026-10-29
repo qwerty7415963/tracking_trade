@@ -31,11 +31,11 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
   pg_dump -U "${POSTGRES_USER:-tracking}" "${POSTGRES_DB:-tracking}" > "${BACKUP_DIR}/dbdump.sql" \
   || fail_alert "pg_dump failed"
 
-ARTIFACTS_VOL="$(docker volume inspect deploy_artifacts --format '{{.Mountpoint}}' 2>/dev/null || true)"
-if [ -z "${ARTIFACTS_VOL}" ]; then fail_alert "artifacts volume not found"; fi
+ARTIFACTS_DIR="${APP_DIR}/artifacts"
+if [ ! -d "${ARTIFACTS_DIR}" ]; then fail_alert "artifacts directory not found"; fi
 
 restic -r "${REPO}" backup \
-  "${BACKUP_DIR}/dbdump.sql" "${ARTIFACTS_VOL}" \
+  "${BACKUP_DIR}/dbdump.sql" "${ARTIFACTS_DIR}" \
   "${APP_DIR}/.env" "${APP_DIR}/deploy/docker-compose.yml" \
   --tag daily || fail_alert "restic backup failed"
 
