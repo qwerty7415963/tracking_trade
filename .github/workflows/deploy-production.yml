@@ -51,12 +51,34 @@ jobs:
           PREV_SHA=$(git rev-parse HEAD)
           echo "previous=$PREV_SHA" > /tmp/deploy-prev-sha
           git fetch origin && git checkout main && git pull --ff-only
-          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml build api
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml build --build-arg GIT_SHA="${{ github.sha }}" api
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml run --rm api npx prisma migrate deploy
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml up -d --force-recreate --no-deps api
-          sleep 20
-          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml exec api node -e "const fs=require('fs'); const src=fs.readFileSync('/app/dist/apps/api/src/trading/operator-bot.service.js','utf8'); if (!src.includes('account_create')) { console.error('deployed artifact is stale: account_create missing'); process.exit(1); }"
+
+          echo "waiting for api health..."
+          for i in {1..30}; do
+            if curl -sf localhost:3000/api/v1/health >/dev/null; then
+              echo "api health ok"
+              break
+            fi
+            sleep 2
+          done
           curl -sf localhost:3000/api/v1/health
+
+          DEPLOYED_SHA=$(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml exec api cat /app/.gitsha | tr -d '\n')
+          if [ "$DEPLOYED_SHA" != "${{ github.sha }}" ]; then
+            echo "deployed SHA mismatch: expected ${{ github.sha }}, got $DEPLOYED_SHA"
+            exit 1
+          fi
+
+          BUILT_ID=$(docker inspect -f '{{.Id}}' tracking-trade-api:local)
+          RUNNING_ID=$(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml ps -q api | xargs -I {} docker inspect -f '{{.Image}}' {})
+          if [ "$BUILT_ID" != "$RUNNING_ID" ]; then
+            echo "deployed image mismatch: built $BUILT_ID, running $RUNNING_ID"
+            exit 1
+          fi
+
+          docker image prune -f
           EOF
       - name: Rollback on failure
         if: failure()
@@ -66,10 +88,20 @@ jobs:
           cd /opt/tracking_trade
           PREV_SHA=$(cut -d= -f2 /tmp/deploy-prev-sha)
           git checkout "$PREV_SHA"
-          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml build api
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml build --build-arg GIT_SHA="$PREV_SHA" api
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml up -d --force-recreate --no-deps api
-          sleep 20
+
+          echo "waiting for api health after rollback..."
+          for i in {1..30}; do
+            if curl -sf localhost:3000/api/v1/health >/dev/null; then
+              echo "api health ok"
+              break
+            fi
+            sleep 2
+          done
           curl -sf localhost:3000/api/v1/health
+
+          docker image prune -f
           EOF
       - name: Notify Telegram
         if: always()
