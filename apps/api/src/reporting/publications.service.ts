@@ -591,9 +591,13 @@ export class PublicationsService {
     if (!sourceUrl && !isOperatorSource) {
       throw new Error("PUBLICATION_VALIDATION_FAILED: missing required source_url");
     }
-    const tps: number[] = Array.isArray(version?.takeProfits)
+    const versionTps: number[] = Array.isArray(version?.takeProfits)
       ? (version.takeProfits as number[])
       : [];
+    const positionTps: number[] = Array.isArray(position.takeProfits)
+      ? (position.takeProfits as number[])
+      : [];
+    const tps = versionTps.length > 0 ? versionTps : positionTps;
     const filledTps = Array.isArray(position.filledTps) ? (position.filledTps as number[]) : [];
     // A `tp` card knows the ordinal it is about (it publishes before the
     // close); every other card annotates the TPs already in filledTps.

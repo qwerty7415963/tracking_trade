@@ -422,6 +422,37 @@ describe("PublicationsService.sendPublication", () => {
     expect(caption).not.toContain("đã khớp TP");
   });
 
+  it("falls back to resolved position TPs when the signal version has none", async () => {
+    const setup = okSetup();
+    (setup.prisma.virtualPosition.findUnique as jest.Mock).mockResolvedValue({
+      ...POSITION,
+      coin: "SOL",
+      entryPrice: 99.5335,
+      stopLoss: 60,
+      takeProfits: [139.067, 1000],
+      signal: {
+        ...POSITION.signal,
+        versions: [
+          {
+            direction: "LONG",
+            takeProfits: [],
+            normalizedPayloadJson: {
+              sourceMessageId: "m1",
+              entryMarket: true,
+              takeProfitSpecs: [
+                { kind: "r", multiple: 1 },
+                { kind: "price", value: 1000 },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput());
+    expect(captionOf(setup)).toContain("- TP: 139.067, 1000");
+  });
+
   it("marks the TP that already hit inside the list", async () => {
     const setup = tpSetup([2600]);
     const svc = service(setup);
@@ -624,7 +655,7 @@ describe("PublicationsService card styles", () => {
 });
 
 describe("PublicationsService.buildSnapshot stats extras", () => {
-  it("computes leverage, margin type, account name and liquidation price", async () => {
+  it("computes leverage, margin type and liquidation price", async () => {
     const prisma = {
       virtualPosition: {
         findUnique: jest.fn(async () => ({
