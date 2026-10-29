@@ -13,6 +13,8 @@
 | Market data lỗi | Bỏ qua chu kỳ poll, không tác động vị thế |
 | Telegram timeout | Publication UNKNOWN; xử lý thận trọng để tránh bài trùng |
 | Update đến trước bài gốc | Giữ chờ retryable 5 phút (`ORIGINAL_NOT_PUBLISHED_YET`), đổi sang `RETRY_PENDING` trong lúc chờ, rồi đăng lẻ + audit `publication.orphaned` |
+| Card `filled` sau limit | Chờ bài text limit `PUBLISHED` tối đa 5 phút để reply đúng thread; quá hạn đăng lẻ + audit `publication.orphaned` |
+| Bài text limit | Enqueue `telegram-send` ngay, không qua `card-render`/artifact; retry 10 lần như card |
 | Send job | 10 attempts, **exponential backoff 5s** (5s, 10s, 20s… — lần đầu nhanh, đuôi ~42 phút vượt hold 5 phút) |
 | Send job hết attempts | Consumer `failed` ở lần cuối → `FINAL_FAILURE` (trước đây im lặng, row kẹt `PENDING` mãi) |
 | Settle job (TP/SL) | 5 attempts × 30s, jobId dedupe `settle-<positionId>-TP-<i>` / `-SL`; **card trước, đóng sau** với giá đóng băng |

@@ -26,9 +26,9 @@ export function createCardRenderer(): FloatingPnLCardRenderer {
   return new FloatingPnLCardRenderer(() => chromium.launch());
 }
 
-/** TP/SL/close cards update an existing position; `filled`/undefined is the open card. */
+/** TP/SL/close cards update an existing position; `filled`/`limit` are roots. */
 export function isUpdateCardStatus(status: RenderJobData["status"]): boolean {
-  return status !== undefined && status !== "filled";
+  return status !== undefined && status !== "filled" && status !== "limit";
 }
 
 /** Render one `card-render` job; shared by the API consumer and tests. */

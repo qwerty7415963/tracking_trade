@@ -88,6 +88,34 @@ describe("RendersService", () => {
     }
   });
 
+  it("enqueues text-only limit placements on the shared send queue", async () => {
+    bullmqMock.__mock.added = null;
+    const svc = service();
+    await svc.enqueueSend({
+      publicationId: "pub-limit",
+      positionId: "pos1",
+      status: "limit",
+      markPrice: 2500,
+      destinationChatId: "@chan",
+      artifactPath: "",
+      actor: "alice",
+      textOnly: true,
+      caption: "Long ETH - limit",
+    });
+    const added = bullmqMock.__mock.added as {
+      data: Record<string, unknown>;
+      opts: Record<string, unknown>;
+    } | null;
+    expect(added?.data).toMatchObject({
+      publicationId: "pub-limit",
+      status: "limit",
+      textOnly: true,
+      caption: "Long ETH - limit",
+    });
+    expect(added?.opts.jobId).toBe("send-pub-limit");
+    expect(added?.opts.attempts).toBe(10);
+  });
+
   it("ignores a missing artifact when deleting", async () => {
     const dir = await tempDir();
     const restore = useArtifactsDir(dir);

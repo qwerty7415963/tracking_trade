@@ -39,7 +39,7 @@ describe("ApprovalFlowService.approveSignal", () => {
     expect(opts).not.toHaveProperty("markPrice");
   });
 
-  it("waits for the first entry fill before publishing a pending order", async () => {
+  it("publishes the limit text placement immediately and still waits for style", async () => {
     const signals = { approve: jest.fn(async () => ({ id: "ap1" })) };
     const trading = {
       openApproved: jest.fn(async () => ({
@@ -49,12 +49,43 @@ describe("ApprovalFlowService.approveSignal", () => {
       })),
     };
     const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
-    const publications = { requestPositionPublish: jest.fn(async () => ({})) };
+    const publications = {
+      requestPositionPublish: jest.fn(async () => ({})),
+      requestLimitTextPublish: jest.fn(async () => ({})),
+    };
     const svc = flow({ signals, trading, accounts, publications });
     const out = await svc.approveSignal("s1", { signalVersionId: "v1" }, "alice", "acc1", "@chan");
     expect(out.awaitingEntry).toBe(true);
-    expect(out.published).toBe(false);
+    expect(out.published).toBe(true);
+    expect(publications.requestLimitTextPublish).toHaveBeenCalledWith(
+      "pos1",
+      { destinationChatId: "@chan" },
+      "alice",
+    );
     expect(publications.requestPositionPublish).not.toHaveBeenCalled();
+  });
+
+  it("publishes the limit text placement when /open creates a pending order", async () => {
+    const trading = {
+      openApproved: jest.fn(async () => ({
+        position: { id: "pos1", status: "PENDING_ENTRY" },
+        created: true,
+        awaitingEntry: true,
+      })),
+    };
+    const accounts = { get: jest.fn(async () => ({ id: "acc1" })) };
+    const publications = {
+      requestPositionPublish: jest.fn(async () => ({})),
+      requestLimitTextPublish: jest.fn(async () => ({})),
+    };
+    const svc = flow({ trading, accounts, publications });
+    const out = await svc.openSignal("s1", "acc1", "alice", "@chan");
+    expect(out).toMatchObject({ created: true, awaitingEntry: true, published: true });
+    expect(publications.requestLimitTextPublish).toHaveBeenCalledWith(
+      "pos1",
+      { destinationChatId: "@chan" },
+      "alice",
+    );
   });
 
   it("keeps approval but reports open failure without throwing", async () => {

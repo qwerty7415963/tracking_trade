@@ -62,7 +62,7 @@ export function isOperator(username: string | undefined, allowlist: string[]): b
 }
 
 const HELP = [
-  "/pos <signal text + post link> [src=\"..\"] [chat=..] [acc=..] [vol=amount] - create + approve + pick card, publish",
+  "/pos <signal text + post link> [src=\"..\"] [chat=..] [acc=..] [vol=amount] - create + approve; limit posts text now, pick style for fill card",
   "/account_create <name...> <balance> [leverage] [mode] - create a virtual account",
   "/approve <signalId> - approve + open paper position",
   "/reject <signalId> [reason] - reject a signal",
@@ -650,6 +650,9 @@ export class OperatorBotService implements OnModuleInit, OnModuleDestroy {
             if (out.awaitingEntry) {
               await reply(
                 `✅ ${created.direction} ${created.instrument} → lệnh chờ entry ${pos.id}\n` +
+                  (out.published
+                    ? "Đã đăng bài limit (text).\n"
+                    : "⚠️ Chưa đăng được bài limit text.\n") +
                   `Chọn loại card khi entry khớp (1 phút, hết giờ dùng card PnL):`,
                 this.cardStyleKeyboard(pos.id),
               );

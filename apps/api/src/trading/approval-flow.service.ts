@@ -14,7 +14,7 @@ export interface ApproveOutcome {
   position: unknown | null;
   openError: string | null;
   published: boolean;
-  /** Limit order waits for its first entry before a card can be published. */
+  /** Limit order is resting; its text placement post is already published. */
   awaitingEntry: boolean;
 }
 
@@ -102,8 +102,10 @@ export class ApprovalFlowService {
           data: { cardKind: publishOpts.cardKind, styleChosen: true },
         });
       }
-      if (created && !awaitingEntry) {
-        published = await this.publishOpened(position.id, actor, destinationChatId, publishOpts);
+      if (created) {
+        published = awaitingEntry
+          ? await this.publishLimitText(position.id, actor, destinationChatId)
+          : await this.publishOpened(position.id, actor, destinationChatId, publishOpts);
       }
       return { approval, position, openError: null, published, awaitingEntry };
     } catch (err) {
@@ -126,10 +128,42 @@ export class ApprovalFlowService {
       account.id,
       actor,
     );
-    const published = created && !awaitingEntry
-      ? await this.publishOpened(position.id, actor, destinationChatId)
+    const published = created
+      ? awaitingEntry
+        ? await this.publishLimitText(position.id, actor, destinationChatId)
+        : await this.publishOpened(position.id, actor, destinationChatId)
       : false;
     return { position, created, published, awaitingEntry };
+  }
+
+  /** Immediately announce a resting limit order; failures never fail the open. */
+  private async publishLimitText(
+    positionId: string,
+    actor: string,
+    destinationChatId?: string,
+  ): Promise<boolean> {
+    const destination = this.destinationOrNull(destinationChatId);
+    if (!destination) {
+      await this.audit.record(actor, "publication.skipped", {
+        positionId,
+        reason: "no destination chat configured",
+      });
+      return false;
+    }
+    try {
+      await this.publications.requestLimitTextPublish(
+        positionId,
+        { destinationChatId: destination },
+        actor,
+      );
+      return true;
+    } catch (err) {
+      await this.audit.record(actor, "publication.skipped", {
+        positionId,
+        reason: err instanceof Error ? err.message : "unknown",
+      });
+      return false;
+    }
   }
 
   private async publishOpened(

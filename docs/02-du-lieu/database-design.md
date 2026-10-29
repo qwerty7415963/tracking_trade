@@ -203,7 +203,7 @@ Vị thế giấy theo dõi giá Hyperliquid.
 | `close_price` | Giá đóng cuối |
 | `realized_pnl` | Lãi-lỗ đã chốt cộng dồn (USDC) |
 | `card_kind` | Style ảnh card: `pnl-strip` (mặc định, 1280×180) \| `position-stats` (card thống kê tiếng Việt). Chọn lúc `/pos` — mọi card update (TP/SL) kế thừa. |
-| `style_chosen` | `false` = lệnh `PENDING_ENTRY` chưa chọn style; entry khớp trong cửa sổ 1 phút thì delay nốt phần còn lại rồi fallback `pnl-strip`; `true` = đã chọn hoặc không cần dialog. |
+| `style_chosen` | `false` = lệnh `PENDING_ENTRY` chưa chọn style cho card khi khớp (bài text limit đã đăng ngay, không đổi style được); entry khớp trong cửa sổ 1 phút thì delay nốt phần còn lại rồi fallback `pnl-strip`; `true` = đã chọn hoặc không cần dialog. |
 
 Quy tắc multi-TP: TP1 đóng 50%, các TP còn lại chia đều phần còn lại; TP duy nhất đóng 100%; SL đóng toàn bộ phần còn lại.
 

@@ -389,6 +389,18 @@ describe("PublicationsService.sendPublication", () => {
     expect(snapshot.status).toBe("OPEN");
   });
 
+  it("renders a limit placement snapshot as open", async () => {
+    const setup = okSetup();
+    const svc = service(setup);
+    const { snapshot } = await svc.buildSnapshot("pos1", 2500, {
+      status: "limit",
+      volume: 10,
+      open: true,
+    });
+    expect(snapshot.status).toBe("OPEN");
+    expect(snapshot.volume).toBe(10);
+  });
+
   function tpSetup(filledTps: number[]) {
     const setup = okSetup();
     (setup.prisma.virtualPosition.findUnique as jest.Mock).mockResolvedValue({
@@ -544,6 +556,196 @@ describe("PublicationsService.sendPublication", () => {
       "render-pub1",
     );
     expect(setup.sender.sendPhoto).not.toHaveBeenCalled();
+  });
+});
+
+describe("PublicationsService limit text placement", () => {
+  function limitSetup(overrides: Record<string, unknown> = {}) {
+    const prisma = {
+      virtualPosition: {
+        findUnique: jest.fn(async () => ({
+          ...POSITION,
+          size: 0,
+          remainingSize: 0,
+          status: "PENDING_ENTRY",
+          entries: [
+            { price: 2500, notional: 100000 },
+            { price: 2450, notional: 50000 },
+          ],
+          pendingEntries: [
+            { price: 2500, notional: 100000 },
+            { price: 2450, notional: 50000 },
+          ],
+          signal: {
+            sourceId: "src1",
+            versions: [
+              {
+                direction: "LONG",
+                takeProfits: [2600, 2700],
+                normalizedPayloadJson: { sourceMessageId: "m1" },
+              },
+            ],
+            source: { displayName: "Chan" },
+          },
+        })),
+      },
+      sourceMessage: {
+        findUnique: jest.fn(async () => ({
+          sourceUrl: "https://t.me/chan/1",
+          externalMessageId: "1",
+          source: { platform: "TELEGRAM", externalSourceId: "chan" },
+        })),
+      },
+      telegramPublication: {
+        create: jest.fn(async () => ({ id: "pub-limit" })),
+        findFirst: jest.fn(async () => null),
+        findUnique: jest.fn(async () => ({
+          id: "pub-limit",
+          publicationStatus: "PENDING",
+          createdAt: new Date(),
+        })),
+        update: jest.fn(async (args: { data: Record<string, unknown> }) => ({
+          id: "pub-limit",
+          ...args.data,
+        })),
+      },
+      ...(overrides.prisma as Record<string, unknown> | undefined),
+    };
+    const renders = {
+      enqueueSend: jest.fn(async () => undefined),
+      readArtifact: jest.fn(),
+      deleteArtifact: jest.fn(),
+      ...(overrides.renders as Record<string, unknown> | undefined),
+    };
+    const svc = service({
+      prisma,
+      renders,
+      config: { reportDestinationChatId: "@chan" },
+      ...overrides,
+    });
+    return { svc, prisma, renders };
+  }
+
+  it("builds a text-only limit post with every planned entry", async () => {
+    const { svc, renders } = limitSetup();
+    const out = await svc.requestLimitTextPublish("pos1", {}, "alice");
+
+    expect(out).toEqual({ publicationId: "pub-limit", status: "PENDING" });
+    const data = (renders.enqueueSend as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(data).toMatchObject({
+      publicationId: "pub-limit",
+      positionId: "pos1",
+      status: "limit",
+      destinationChatId: "@chan",
+      textOnly: true,
+    });
+    expect(String(data.caption)).toContain("Long ETH - limit");
+    expect(String(data.caption)).toContain("- Entry: 2500, 2450");
+    expect(String(data.caption)).toContain("- TP: 2600, 2700");
+    expect(String(data.caption)).not.toContain("đã khớp");
+    expect(renders.enqueueSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the limit text without a photo and records the message id", async () => {
+    const prisma = {
+      telegramPublication: {
+        findUnique: jest.fn(async () => ({
+          id: "pub-limit",
+          publicationStatus: "PENDING",
+          createdAt: new Date(),
+        })),
+        update: jest.fn(async (args: { data: Record<string, unknown> }) => ({
+          id: "pub-limit",
+          ...args.data,
+        })),
+      },
+    };
+    const sender = {
+      sendPhoto: jest.fn(),
+      sendMessage: jest.fn(async () => ({
+        ok: true,
+        telegramMessageId: "999",
+        unknown: false,
+      })),
+    };
+    const svc = service({ prisma, sender });
+    const result = (await svc.sendPublication("pub-limit", {
+      publicationId: "pub-limit",
+      positionId: "pos1",
+      status: "limit",
+      markPrice: 2500,
+      destinationChatId: "@chan",
+      artifactPath: "",
+      actor: "alice",
+      textOnly: true,
+      caption: "Long ETH - limit\n\n- Entry: 2500, 2450",
+    })) as { publicationStatus: string; telegramMessageId: string };
+
+    expect(sender.sendPhoto).not.toHaveBeenCalled();
+    expect(sender.sendMessage).toHaveBeenCalledWith({
+      chatId: "@chan",
+      text: "Long ETH - limit\n\n- Entry: 2500, 2450",
+    });
+    expect(result).toMatchObject({
+      publicationStatus: "PUBLISHED",
+      telegramMessageId: "999",
+    });
+  });
+
+  it("filled card replies to the published limit text", async () => {
+    const setup = limitSetup();
+    (setup.prisma.telegramPublication as Record<string, jest.Mock>).findFirst = jest
+      .fn()
+      .mockResolvedValueOnce({ telegramMessageId: "555" });
+    (setup.prisma.telegramPublication as Record<string, jest.Mock>).findUnique = jest.fn(
+      async () => ({ id: "pub-fill", publicationStatus: "PENDING", createdAt: new Date() }),
+    );
+    const sender = {
+      sendPhoto: jest.fn(async () => ({
+        ok: true,
+        telegramMessageId: "777",
+        unknown: false,
+      })),
+      sendMessage: jest.fn(),
+    };
+    const svc = service({ ...setup, prisma: setup.prisma, sender });
+    await svc.sendPublication("pub-fill", {
+      publicationId: "pub-fill",
+      positionId: "pos1",
+      status: "filled",
+      markPrice: 2550,
+      destinationChatId: "@chan",
+      artifactPath: "/tmp/pub-fill.png",
+      actor: "worker",
+    });
+    const sendArgs = (sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(sendArgs.replyToMessageId).toBe("555");
+  });
+
+  it("filled card waits while a prior limit publication is still pending", async () => {
+    const setup = limitSetup();
+    (setup.prisma.telegramPublication as Record<string, jest.Mock>).findFirst = jest
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "pub-limit" });
+    (setup.prisma.telegramPublication as Record<string, jest.Mock>).findUnique = jest.fn(
+      async () => ({ id: "pub-fill", publicationStatus: "PENDING", createdAt: new Date() }),
+    );
+    (setup.prisma.telegramPublication as Record<string, jest.Mock>).update = jest.fn(
+      async (args: unknown) => args,
+    );
+    const svc = service({ ...setup, prisma: setup.prisma });
+    await expect(
+      svc.sendPublication("pub-fill", {
+        publicationId: "pub-fill",
+        positionId: "pos1",
+        status: "filled",
+        markPrice: 2550,
+        destinationChatId: "@chan",
+        artifactPath: "/tmp/pub-fill.png",
+        actor: "worker",
+      }),
+    ).rejects.toThrow(/ORIGINAL_NOT_PUBLISHED_YET/);
   });
 });
 

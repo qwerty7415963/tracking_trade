@@ -71,7 +71,7 @@ OPEN -> CANCELLED
 ### Quy tắc
 
 - Cùng signal+version đang mở/chờ entry → trả vị thế hiện có, **không mở trùng**.
-- Limit entry mới ở `PENDING_ENTRY`: `size=0`, mọi entry nằm trong `pending_entries`; giá chạm level (LONG `≤`, SHORT `≥`) → khớp, entry đầu chuyển `OPEN`; chưa khớp thì không có card, không margin, `/tp` `/sl` bị từ chối, `/close` hủy (`CANCELLED`) không PnL.
+- Limit entry mới ở `PENDING_ENTRY`: `size=0`, mọi entry nằm trong `pending_entries`; **đăng ngay bài text limit (không ảnh, đủ entry)** làm thread gốc; giá chạm level (LONG `≤`, SHORT `≥`) → khớp, entry đầu chuyển `OPEN`, card `filled` reply vào bài text limit; chưa khớp thì không có ảnh card, không margin, `/tp` `/sl` bị từ chối, `/close` hủy (`CANCELLED`) không PnL.
 - TP1 đóng 50%, các TP còn lại chia đều; TP duy nhất đóng 100%.
 - SL đóng toàn bộ phần còn lại; SL thắng khi giá chạm cả 2 phía.
 - Mỗi lần đóng ghi realized PnL vào ledger; số dư chỉ đổi qua ledger.

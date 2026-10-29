@@ -41,14 +41,14 @@
 - TP1 đóng **50%**, các TP còn lại chia đều; TP duy nhất đóng 100%.
 - SL đóng **toàn bộ** phần còn lại; SL thắng khi chạm cả 2 phía.
 - Mỗi lần đóng ghi realized PnL vào **ledger**; số dư chỉ đổi qua ledger.
-- Limit entry tạo `PENDING_ENTRY` size 0, **không card/không margin**; giá chạm entry[0] → `OPEN`; `/tp` `/sl` bị từ chối, `/close` hủy không PnL/card.
+- Limit entry tạo `PENDING_ENTRY` size 0, **đăng ngay bài text limit (không ảnh, đủ entry)**, không margin; giá chạm entry[0] → `OPEN` + card `filled` reply vào bài text limit; `/tp` `/sl` bị từ chối, `/close` hủy không PnL/card.
 - `/pos entry market 2950 2900`: bot báo chờ 3s, sau đó mới lấy mid; khớp full notional tại giá đó, các level số còn lại DCA khi chạm giá; card không render trước entry + 3s.
 - DCA: mọi level chờ khớp; entry[0] full notional, level sau notional/N; card `entry` reply dưới card gốc.
 
 ## 4. Reporting
 
-- Card `filled` chỉ sau khi vị thế đã mở (không báo trước). Limit entry chưa khớp **không đăng card**; entry đầu khớp mới đăng.
-- Dialog chọn style **1 phút**: chọn trước khi limit khớp → lưu style, đăng ngay khi khớp; không chọn → fallback `pnl-strip` sau 1 phút; khớp khi đã quá 1 phút → fallback ngay. Market `/pos` chọn style sớm vẫn chờ đủ 3s sau entry mới render.
+- Card `filled` chỉ sau khi vị thế đã mở (không báo trước). Limit entry chưa khớp **chỉ đăng bài text limit**; entry đầu khớp mới đăng card `filled` reply vào bài text đó.
+- Dialog chọn style **1 phút**: chọn trước khi limit khớp → lưu style, card `filled` reply ngay khi khớp; không chọn → fallback `pnl-strip` sau 1 phút; khớp khi đã quá 1 phút → fallback ngay. Market `/pos` chọn style sớm vẫn chờ đủ 3s sau entry mới render.
 - Worker chỉ render PNG; API gửi Telegram — render lỗi **không mở/đóng vị thế**.
 - Telegram retry **không làm thay đổi vị thế**.
 - Bài TP/SL/close **reply đúng bài gốc**; update đến trước thì giữ chờ tối đa 5 phút, quá hạn đăng lẻ + audit (không mất bài).

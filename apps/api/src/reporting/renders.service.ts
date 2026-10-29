@@ -20,7 +20,7 @@ export interface RenderJobData {
   virtualPositionId: string;
   markPrice?: number;
   publicationId?: string;
-  status?: "filled" | "entry" | "tp" | "sl" | "close";
+  status?: "filled" | "entry" | "limit" | "tp" | "sl" | "close";
   destinationChatId?: string;
   replyToMessageId?: string;
   actor?: string;
@@ -47,7 +47,7 @@ export interface RenderJobData {
 export interface SendJobData {
   publicationId: string;
   positionId: string;
-  status: "filled" | "entry" | "tp" | "sl" | "close";
+  status: "filled" | "entry" | "limit" | "tp" | "sl" | "close";
   markPrice: number;
   /** TP ordinal just hit; the card publishes before the slice closes. */
   tpIndex?: number;
@@ -55,6 +55,10 @@ export interface SendJobData {
   replyToMessageId?: string;
   artifactPath: string;
   actor: string;
+  /** Text-only publication (limit placement): no image is rendered or read. */
+  textOnly?: boolean;
+  /** Frozen caption for a text-only publication. */
+  caption?: string;
 }
 
 export type RenderJobStatus =
@@ -68,7 +72,7 @@ export interface RenderRequest {
   virtualPositionId: string;
   markPrice?: number;
   publicationId?: string;
-  status?: "filled" | "entry" | "tp" | "sl" | "close";
+  status?: "filled" | "entry" | "limit" | "tp" | "sl" | "close";
   destinationChatId?: string;
   replyToMessageId?: string;
   actor?: string;
@@ -134,6 +138,31 @@ export class RendersService {
         positionId: request.virtualPositionId,
       });
       return { renderId: job.id, status: "PENDING" as RenderJobStatus };
+    } finally {
+      await queue.close();
+    }
+  }
+
+  /**
+   * Enqueue a text-only publication directly on the send queue. Used by the
+   * limit placement post, which must not wait for a Chromium render.
+   */
+  async enqueueSend(data: SendJobData): Promise<void> {
+    const queue = this.queue(PUBLISH_SEND_QUEUE_NAME);
+    try {
+      await queue.add("send-text", data, {
+        jobId: `${SEND_JOB_ID_PREFIX}${data.publicationId}`,
+        attempts: 10,
+        backoff: { type: "exponential", delay: 5_000 },
+        removeOnComplete: 100,
+        removeOnFail: 200,
+      });
+      await this.audit.record(data.actor, "send.requested", {
+        publicationId: data.publicationId,
+        positionId: data.positionId,
+        status: data.status,
+        textOnly: true,
+      });
     } finally {
       await queue.close();
     }

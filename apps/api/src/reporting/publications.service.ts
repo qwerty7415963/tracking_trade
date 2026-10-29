@@ -42,9 +42,14 @@ export interface TelegramSender {
     caption: string;
     replyToMessageId?: string;
   }): Promise<TelegramSendResult>;
+  sendMessage(input: {
+    chatId: string;
+    text: string;
+    replyToMessageId?: string;
+  }): Promise<TelegramSendResult>;
 }
 
-/** Minimal Bot API sender (sendPhoto). Retries live in the publish queue. */
+/** Minimal Bot API sender (sendPhoto/sendMessage). Retries live in the publish queue. */
 export class BotApiSender implements TelegramSender {
   constructor(private readonly token: string) {}
 
@@ -84,6 +89,44 @@ export class BotApiSender implements TelegramSender {
     if (!body.ok || !body.result) return { ok: false, telegramMessageId: null, unknown: true };
     return { ok: true, telegramMessageId: String(body.result.message_id), unknown: false };
   }
+
+  async sendMessage(input: {
+    chatId: string;
+    text: string;
+    replyToMessageId?: string;
+  }): Promise<TelegramSendResult> {
+    if (!this.token) throw new Error("TELEGRAM_PUBLISH_FAILED: missing bot token");
+    if (input.text.length > 4096) {
+      throw new Error("TELEGRAM_PUBLISH_FAILED: message over 4096 chars");
+    }
+    let res: Response;
+    try {
+      res = await fetch(`https://api.telegram.org/bot${this.token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: input.chatId,
+          text: input.text,
+          parse_mode: "HTML",
+          ...(input.replyToMessageId
+            ? { reply_to_message_id: input.replyToMessageId }
+            : {}),
+        }),
+      });
+    } catch {
+      return { ok: false, telegramMessageId: null, unknown: true };
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      if (res.status === 429 || res.status >= 500) {
+        return { ok: false, telegramMessageId: null, unknown: false };
+      }
+      throw new Error(`TELEGRAM_PUBLISH_FAILED: ${res.status} ${text.slice(0, 200)}`);
+    }
+    const body = (await res.json()) as { ok: boolean; result?: { message_id: number } };
+    if (!body.ok || !body.result) return { ok: false, telegramMessageId: null, unknown: true };
+    return { ok: true, telegramMessageId: String(body.result.message_id), unknown: false };
+  }
 }
 
 function escapeHtml(text: string): string {
@@ -93,7 +136,7 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
-export type CardStatus = "filled" | "entry" | "tp" | "sl" | "close";
+export type CardStatus = "filled" | "entry" | "limit" | "tp" | "sl" | "close";
 
 export interface PositionPublishRequest {
   positionId: string;
@@ -176,6 +219,35 @@ function displayBase(coin: string): string {
   return coin.includes(":") ? coin.split(":").slice(-1)[0] : coin;
 }
 
+function readEntryPrices(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const out: number[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const price = Number((raw as { price?: unknown }).price);
+    if (Number.isFinite(price) && price > 0) out.push(price);
+  }
+  return out;
+}
+
+/**
+ * Limit placements show every planned entry, not just the first one. Falls
+ * back to the stored entry price for legacy rows without `entries`.
+ */
+function entryPriceList(position: { entries: unknown; entryPrice: unknown }): string {
+  const prices = readEntryPrices(position.entries);
+  return prices.length > 0 ? prices.map(String).join(", ") : String(asNumber(position.entryPrice));
+}
+
+/**
+ * A threaded update must wait for the root post before sending. `limit` is
+ * the root itself; `filled` is usually the root, but becomes a reply when the
+ * limit placement post already exists.
+ */
+function isThreadedUpdateStatus(status: CardStatus): boolean {
+  return status !== "filled" && status !== "limit";
+}
+
 @Injectable()
 export class PublicationsService {
   constructor(
@@ -221,7 +293,7 @@ export class PublicationsService {
       throw new Error("PUBLICATION_VALIDATION_FAILED: no destination chat configured");
     }
     let replyTo = opts.replyToMessageId;
-    if (!replyTo) {
+    if (!replyTo && status !== "limit") {
       const original = await this.prisma.telegramPublication.findFirst({
         where: { virtualPositionId: positionId, publicationStatus: "PUBLISHED" },
         orderBy: { publishedAt: "asc" },
@@ -280,6 +352,92 @@ export class PublicationsService {
       ...(opts.minRenderAt ? { minRenderAt: opts.minRenderAt } : {}),
     });
     return { publicationId: publication.id, status: "PENDING", cardKind };
+  }
+
+  /**
+   * Limit placement post: a text-only announcement with every planned entry.
+   * It is sent immediately so the eventual filled card can reply to it, while
+   * the /pos style dialog still applies to that filled card.
+   */
+  async requestLimitTextPublish(
+    positionId: string,
+    opts: { destinationChatId?: string },
+    actor: string,
+  ) {
+    const destination = (opts.destinationChatId ?? this.config.reportDestinationChatId ?? "").trim();
+    if (!destination) {
+      throw new Error("PUBLICATION_VALIDATION_FAILED: no destination chat configured");
+    }
+    const position = await this.prisma.virtualPosition.findUnique({
+      where: { id: positionId },
+      include: {
+        signal: {
+          include: {
+            versions: { orderBy: { versionNumber: "desc" }, take: 1 },
+            source: true,
+          },
+        },
+      },
+    });
+    if (!position) throw new NotFoundException(`position ${positionId} not found`);
+    const version = position.signal?.versions[0];
+    const rowId = payloadRowId(version?.normalizedPayloadJson);
+    const sourceMessage = rowId
+      ? await this.prisma.sourceMessage.findUnique({
+          where: { id: rowId },
+          include: { source: true },
+        })
+      : null;
+    const sourceUrl =
+      sourceMessage?.sourceUrl ??
+      (sourceMessage
+        ? buildPostLink(
+            sourceMessage.source.platform,
+            sourceMessage.source.externalSourceId,
+            sourceMessage.externalMessageId,
+          )
+        : null);
+    const isOperatorSource = sourceMessage?.source?.sourceKind === "MANUAL";
+    if (!sourceUrl && !isOperatorSource) {
+      throw new Error("PUBLICATION_VALIDATION_FAILED: missing required source_url");
+    }
+    const versionTps: number[] = Array.isArray(version?.takeProfits)
+      ? (version.takeProfits as number[])
+      : [];
+    const positionTps: number[] = Array.isArray(position.takeProfits)
+      ? (position.takeProfits as number[])
+      : [];
+    const tps = versionTps.length > 0 ? versionTps : positionTps;
+    const caption = buildOpenCaption({
+      direction: position.direction === "SHORT" ? "SHORT" : "LONG",
+      instrument: displayBase(position.coin),
+      status: "limit",
+      entry: entryPriceList(position),
+      stopLoss: position.stopLoss === null ? "" : String(asNumber(position.stopLoss)),
+      takeProfit: takeProfitList(tps, 0),
+      sourceDisplayName: position.signal?.source.displayName ?? "unknown source",
+      sourceUrl,
+      hashtag: positionHashtag(positionId),
+    });
+    const publication = await this.prisma.telegramPublication.create({
+      data: { virtualPositionId: positionId, publicationStatus: "PENDING" },
+    });
+    await this.renders.enqueueSend({
+      publicationId: publication.id,
+      positionId,
+      status: "limit",
+      markPrice: asNumber(position.entryPrice),
+      destinationChatId: destination,
+      artifactPath: "",
+      actor,
+      textOnly: true,
+      caption,
+    });
+    await this.audit.record(actor, "publication.limit_text_requested", {
+      publicationId: publication.id,
+      positionId,
+    });
+    return { publicationId: publication.id, status: "PENDING" as const };
   }
 
   /**
@@ -448,7 +606,11 @@ export class PublicationsService {
     // render as CLOSED.
     const volume = opts?.volume ?? asNumber(position.size);
     const isOpen =
-      opts?.open ?? (!opts?.status || opts.status === "filled" || opts.status === "entry");
+      opts?.open ??
+      (!opts?.status ||
+        opts.status === "filled" ||
+        opts.status === "entry" ||
+        opts.status === "limit");
     const entry = asNumber(position.entryPrice);
     const floating =
       (position.direction === "LONG" ? 1 : -1) * (markPrice - entry) * volume;
@@ -540,33 +702,97 @@ export class PublicationsService {
     if (!request.destinationChatId.trim()) {
       throw new Error("PUBLICATION_VALIDATION_FAILED: no destination chat configured");
     }
-    // Update cards (tp/sl/close) must thread under the original filled card.
-    // Re-resolve at send time: the original may have published after request.
-    // Hold (retryable) while fresh; post orphaned + audit past the timeout.
+    // Text-only limit placement: no card render/artifact is involved.
+    if (request.textOnly) {
+      const caption = (request.caption ?? publication.renderedText ?? "").trim();
+      if (!caption) {
+        throw new Error("PUBLICATION_VALIDATION_FAILED: missing text caption");
+      }
+      const sent = await this.sender.sendMessage({
+        chatId: request.destinationChatId,
+        text: caption,
+      });
+      if (!sent.ok && sent.unknown) {
+        await this.prisma.telegramPublication.update({
+          where: { id: publicationId },
+          data: { publicationStatus: "UNKNOWN", renderedText: caption },
+        });
+        await this.audit.record(request.actor, "publication.unknown", { publicationId });
+        return { status: "UNKNOWN" as const };
+      }
+      if (!sent.ok) {
+        await this.prisma.telegramPublication.update({
+          where: { id: publicationId },
+          data: { publicationStatus: "RETRY_PENDING", renderedText: caption },
+        });
+        throw new Error("TELEGRAM_PUBLISH_FAILED: retryable");
+      }
+      const updated = await this.prisma.telegramPublication.update({
+        where: { id: publicationId },
+        data: {
+          senderAccountId: null,
+          destinationChannelName: request.destinationChatId,
+          renderedText: caption,
+          telegramMessageId: sent.telegramMessageId,
+          publicationStatus: "PUBLISHED",
+          publishedAt: new Date(),
+        },
+      });
+      await this.audit.record(request.actor, "publication.published", {
+        publicationId,
+        telegramMessageId: sent.telegramMessageId,
+      });
+      return updated;
+    }
+    // Update cards (filled after a limit post, tp/sl/close) thread under the
+    // original post. Re-resolve at send time: the root may have published
+    // after request. Hold (retryable) while fresh; post orphaned + audit past
+    // the timeout. A true first `filled` card has no prior publication and
+    // posts standalone.
     let replyTo = request.replyToMessageId;
-    if (!replyTo && request.status !== "filled") {
+    if (!replyTo && request.status !== "limit") {
       const original = await this.prisma.telegramPublication.findFirst({
-        where: { virtualPositionId: request.positionId, publicationStatus: "PUBLISHED" },
+        where: {
+          virtualPositionId: request.positionId,
+          publicationStatus: "PUBLISHED",
+          id: { not: publicationId },
+        },
         orderBy: { publishedAt: "asc" },
       });
       if (original?.telegramMessageId) {
         replyTo = original.telegramMessageId;
-      } else if (Date.now() - publication.createdAt.getTime() < ORIGINAL_HOLD_MS) {
-        // Still waiting for the original card. Record the hold so this row
-        // stops looking like an un-rendered card (it must not shadow the
-        // /pos style dialog), then let the send job retry.
-        if (publication.publicationStatus === "PENDING") {
-          await this.prisma.telegramPublication.update({
-            where: { id: publicationId },
-            data: { publicationStatus: "RETRY_PENDING" },
+      } else {
+        const threadedUpdate = isThreadedUpdateStatus(request.status);
+        const prior =
+          threadedUpdate
+            ? null
+            : await this.prisma.telegramPublication.findFirst({
+                where: {
+                  virtualPositionId: request.positionId,
+                  id: { not: publicationId },
+                },
+                orderBy: { createdAt: "asc" },
+                select: { id: true },
+              });
+        const needsOriginal = threadedUpdate || prior !== null;
+        if (needsOriginal && Date.now() - publication.createdAt.getTime() < ORIGINAL_HOLD_MS) {
+          // Still waiting for the root card. Record the hold so this row
+          // stops looking like an un-rendered card (it must not shadow the
+          // /pos style dialog), then let the send job retry.
+          if (publication.publicationStatus === "PENDING") {
+            await this.prisma.telegramPublication.update({
+              where: { id: publicationId },
+              data: { publicationStatus: "RETRY_PENDING" },
+            });
+          }
+          throw new Error("ORIGINAL_NOT_PUBLISHED_YET: retryable");
+        }
+        if (needsOriginal) {
+          await this.audit.record(request.actor, "publication.orphaned", {
+            publicationId,
+            positionId: request.positionId,
           });
         }
-        throw new Error("ORIGINAL_NOT_PUBLISHED_YET: retryable");
-      } else {
-        await this.audit.record(request.actor, "publication.orphaned", {
-          publicationId,
-          positionId: request.positionId,
-        });
       }
     }
     const { position, signal, version, sourceMessage, snapshot } = await this.buildSnapshot(

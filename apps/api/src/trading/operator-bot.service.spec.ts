@@ -832,7 +832,7 @@ describe("OperatorBotService /pos command", () => {
       approval: {},
       position: { id: "pos-1", status: "PENDING_ENTRY" },
       openError: null,
-      published: false,
+      published: true,
       awaitingEntry: true,
     }));
     const { svc } = bot({ signals: { createOperatorSignal }, flow: { approveSignal } });
@@ -847,6 +847,7 @@ describe("OperatorBotService /pos command", () => {
     );
 
     expect(replies[0].text).toContain("lệnh chờ entry");
+    expect(replies[0].text).toContain("Đã đăng bài limit (text)");
     expect(replies[0].text).toContain("1 phút");
     expect(replies[0].replyMarkup).toEqual(
       expect.objectContaining({ inline_keyboard: expect.any(Array) }),

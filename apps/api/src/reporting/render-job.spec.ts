@@ -1,5 +1,5 @@
 import { DEFAULT_CARD_KIND } from "@tracking-auto/card-renderer";
-import { processRenderJob, RenderRunnerDeps } from "./render-job";
+import { isUpdateCardStatus, processRenderJob, RenderRunnerDeps } from "./render-job";
 
 function setup(overrides: Partial<RenderRunnerDeps> = {}) {
   const deps = {
@@ -22,6 +22,12 @@ function setup(overrides: Partial<RenderRunnerDeps> = {}) {
 }
 
 describe("processRenderJob", () => {
+  it("keeps limit placement cards out of the update/dialog hold path", () => {
+    expect(isUpdateCardStatus("limit")).toBe(false);
+    expect(isUpdateCardStatus("filled")).toBe(false);
+    expect(isUpdateCardStatus("tp")).toBe(true);
+  });
+
   it("fetches the live mark, renders the card and enqueues the send", async () => {
     const deps = setup();
     const result = await processRenderJob(
