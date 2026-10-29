@@ -14,6 +14,7 @@ export interface SheetPositionInput {
   entries: unknown;
   pendingEntries: unknown;
   sourceName: string | null;
+  currentPrice?: number | null;
 }
 
 export interface DailySheetRow {
@@ -94,6 +95,21 @@ export function formatPct(value: number): string {
   return "0.00%";
 }
 
+export function unrealizedPct(position: SheetPositionInput): number | null {
+  const current = Number(position.currentPrice);
+  const entry = Number(position.entryPrice);
+  const size = Math.abs(Number(position.size));
+  const leverage = Math.max(1, Number(position.leverage));
+  if (!Number.isFinite(current) || current <= 0) return null;
+  if (!Number.isFinite(entry) || entry <= 0) return null;
+  if (!Number.isFinite(size) || size <= 0) return null;
+  const margin = (entry * size) / leverage;
+  if (!(margin > 0)) return null;
+  const direction = position.direction === "SHORT" ? -1 : 1;
+  const pnl = (current - entry) * size * direction;
+  return Number(((pnl / margin) * 100).toFixed(2));
+}
+
 function stateForClosed(pnlPct: number): DailySheetState {
   if (pnlPct > 0) return "TP";
   if (pnlPct < 0) return "SL";
@@ -105,13 +121,14 @@ export function positionRow(position: SheetPositionInput): DailySheetRow | null 
   const direction = position.direction === "SHORT" ? "Short" : "Long";
   const channel = position.sourceName?.trim() || "Operator (manual)";
   if (position.status === "OPEN" || position.status === "TP_HIT") {
+    const uPnl = unrealizedPct(position);
     return {
       positionId: position.id,
       channel,
       symbol: position.coin,
       direction,
       entry: filledEntryText(position),
-      pnl: null,
+      pnl: uPnl === null ? "-- (uPnL)" : `${formatPct(uPnl)} (uPnL)`,
       pnlPct: null,
       state: "Processing",
     };

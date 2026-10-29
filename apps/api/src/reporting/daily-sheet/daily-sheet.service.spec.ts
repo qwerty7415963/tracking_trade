@@ -31,7 +31,7 @@ function record(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function setup(records: unknown[]) {
+function setup(records: unknown[], mids: Record<string, number> = {}) {
   const setting = {
     id: "singleton",
     startDate: new Date("2026-10-27T00:00:00Z"),
@@ -53,13 +53,15 @@ function setup(records: unknown[]) {
     ensureTab: jest.fn(async () => undefined),
     writeTab: jest.fn(async () => undefined),
   };
+  const marketData = { getAllMids: jest.fn(async () => mids) };
   const svc = new DailySheetService(
     prisma as never,
     audit as never,
     CONFIG as never,
     client as never,
+    marketData as never,
   );
-  return { svc, prisma, audit, client };
+  return { svc, prisma, audit, client, marketData };
 }
 
 describe("DailySheetService", () => {
@@ -120,6 +122,31 @@ describe("DailySheetService", () => {
     );
   });
 
+  it("writes live uPnL for processing positions without changing the total", async () => {
+    const { svc, client, marketData } = setup(
+      [record({ status: "OPEN", realizedPnl: null })],
+      { ETH: 110 },
+    );
+
+    const out = await svc.syncDate("27/10/26", "tester");
+    expect(out).toMatchObject({ dateKey: "2026-10-27", rows: 1 });
+    expect(marketData.getAllMids).toHaveBeenCalled();
+    expect(client.writeTab).toHaveBeenCalledWith(
+      "27/10/26",
+      "NHẬT KÝ TRADING TOPCOIN - 27/10/2026",
+      expect.objectContaining({
+        rows: [
+          expect.objectContaining({
+            state: "Processing",
+            pnl: "+100.00% (uPnL)",
+          }),
+        ],
+        pnlPct: 0,
+        pnlText: "0.00%",
+      }),
+    );
+  });
+
   it("does not create tabs before the persisted start date", async () => {
     const { svc, client } = setup([]);
     await expect(svc.syncDate("26/10/26", "tester")).resolves.toMatchObject({
@@ -147,6 +174,7 @@ describe("DailySheetService", () => {
       { record: jest.fn() } as never,
       { ...CONFIG, dailySheetSpreadsheetId: "" } as never,
       {} as never,
+      { getAllMids: jest.fn(async () => ({})) } as never,
     );
     await expect(svc.syncDate("2026-10-27", "tester")).rejects.toThrow(/not configured/);
   });

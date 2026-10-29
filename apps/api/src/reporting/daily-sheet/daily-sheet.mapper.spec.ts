@@ -1,4 +1,10 @@
-import { buildDailyReport, formatPct, positionRow, roiPct } from "./daily-sheet.mapper";
+import {
+  buildDailyReport,
+  formatPct,
+  positionRow,
+  roiPct,
+  unrealizedPct,
+} from "./daily-sheet.mapper";
 
 function position(overrides: Partial<Parameters<typeof positionRow>[0]> = {}) {
   return {
@@ -26,6 +32,28 @@ describe("daily sheet mapper", () => {
     expect(positionRow(position({ status: "SL_HIT", realizedPnl: -5 }))?.state).toBe("SL");
     expect(positionRow(position({ status: "CLOSED", realizedPnl: 0 }))?.state).toBe("BE");
     expect(positionRow(position({ status: "OPEN" }))?.state).toBe("Processing");
+  });
+
+  it("shows uPnL for processing rows without adding it to the total", () => {
+    const open = position({ currentPrice: 110 });
+    const row = positionRow(open);
+    expect(unrealizedPct(open)).toBe(100);
+    expect(row?.pnl).toBe("+100.00% (uPnL)");
+    expect(row?.pnlPct).toBeNull();
+    const report = buildDailyReport([open], []);
+    expect(report.processing).toBe(1);
+    expect(report.pnlPct).toBe(0);
+    expect(report.pnlText).toBe("0.00%");
+  });
+
+  it("handles short uPnL and missing marks", () => {
+    expect(positionRow(position({ direction: "SHORT", currentPrice: 90 }))?.pnl).toBe(
+      "+100.00% (uPnL)",
+    );
+    expect(positionRow(position({ direction: "SHORT", currentPrice: 110 }))?.pnl).toBe(
+      "-100.00% (uPnL)",
+    );
+    expect(positionRow(position())?.pnl).toBe("-- (uPnL)");
   });
 
   it("formats entries in fill order and keeps planned levels for limits", () => {

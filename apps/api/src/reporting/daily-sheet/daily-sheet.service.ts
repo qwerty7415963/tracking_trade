@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { AuditService } from "../../audit/audit.service";
 import { APP_CONFIG, AppConfig } from "../../config/app.config";
 import { PrismaService } from "../../database/prisma.service";
+import { MarketDataService } from "../../market-data/market-data.service";
 import {
   dateKeyFromDb,
   dateKeyToDbDate,
@@ -43,6 +44,7 @@ export class DailySheetService implements OnModuleInit, OnModuleDestroy {
     private readonly audit: AuditService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(DAILY_SHEET_CLIENT) private readonly client: DailySheetClient,
+    private readonly marketData: MarketDataService,
   ) {}
 
   private get enabled(): boolean {
@@ -172,9 +174,12 @@ export class DailySheetService implements OnModuleInit, OnModuleDestroy {
       orderBy: [{ filledAt: "asc" }, { openedAt: "asc" }],
     });
 
+    const mids = await this.marketData
+      .getAllMids()
+      .catch(() => ({} as Record<string, number>));
     const filled = records
       .filter((row) => row.filledAt && row.filledAt >= start && row.filledAt < end)
-      .map(toInput);
+      .map((row) => toInput(row, mids[row.coin] ?? null));
     const limits = records
       .filter(
         (row) =>
@@ -182,7 +187,7 @@ export class DailySheetService implements OnModuleInit, OnModuleDestroy {
           row.openedAt >= start &&
           row.openedAt < end,
       )
-      .map(toInput);
+      .map((row) => toInput(row));
     const report = buildDailyReport(filled, limits);
     const tab = sheetTabName(dateKey);
     await this.client.writeTab(tab, `NHẬT KÝ TRADING TOPCOIN - ${sheetTitleDate(dateKey)}`, report);
@@ -248,7 +253,7 @@ export class DailySheetService implements OnModuleInit, OnModuleDestroy {
   }
 }
 
-function toInput(row: PositionRecord): SheetPositionInput {
+function toInput(row: PositionRecord, currentPrice: number | null = null): SheetPositionInput {
   return {
     id: row.id,
     status: row.status,
@@ -263,5 +268,6 @@ function toInput(row: PositionRecord): SheetPositionInput {
     entries: row.entries,
     pendingEntries: row.pendingEntries,
     sourceName: row.signal?.source?.displayName ?? null,
+    currentPrice,
   };
 }
