@@ -58,7 +58,6 @@ describeIntegration("FloatingPnLCardRenderer (real browser)", () => {
       volumeDigits: 2,
       leverage: 10,
       marginType: "CROSS",
-      accountName: "Vĩnh cửu",
       maintenanceMarginRate: 0.01,
       liquidationPrice: 2275,
     };

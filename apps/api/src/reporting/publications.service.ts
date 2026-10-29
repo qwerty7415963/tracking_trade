@@ -515,7 +515,6 @@ export class PublicationsService {
       // Position-stats card extras (pnl-strip ignores them).
       leverage: position.leverage,
       marginType: position.account?.marginType ?? null,
-      accountName: position.account?.name ?? null,
       maintenanceMarginRate: effectiveMmrFor(
         position.coin,
         Math.abs(volume) * markPrice,

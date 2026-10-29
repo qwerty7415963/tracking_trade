@@ -642,7 +642,6 @@ describe("PublicationsService.buildSnapshot stats extras", () => {
     const { snapshot } = await svc.buildSnapshot("pos1", 2550);
     expect(snapshot.leverage).toBe(10);
     expect(snapshot.marginType).toBe("CROSS");
-    expect(snapshot.accountName).toBe("Vinh cuu");
     expect(snapshot.maintenanceMarginRate).toBeCloseTo(0.005, 9);
     // Maintenance 0.5 x 2550 x 0.5% / equity (125 + 25).
     expect(snapshot.accountMarginRatio).toBeCloseTo(0.0425, 9);
@@ -660,7 +659,6 @@ describe("PublicationsService.buildSnapshot stats extras", () => {
     const svc = service({ prisma });
     const { snapshot } = await svc.buildSnapshot("pos1", 2550);
     expect(snapshot.marginType).toBeNull();
-    expect(snapshot.accountName).toBeNull();
     expect(snapshot.accountMarginRatio).toBeNull();
     expect(snapshot.liquidationPrice).toBeNull();
   });

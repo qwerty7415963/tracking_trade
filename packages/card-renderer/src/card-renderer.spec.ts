@@ -144,7 +144,6 @@ describe("buildStatsViewModel", () => {
     return snapshot({
       leverage: 10,
       marginType: "CROSS",
-      accountName: "Vinh cưu",
       liquidationPrice: 2275,
       maintenanceMarginRate: 0.01,
       ...overrides,
@@ -293,7 +292,6 @@ describe("buildStatsViewModel", () => {
       stats({
         direction: "SELL",
         leverage: 20,
-        accountName: "  ",
       }),
       STATS_CARD_THEME,
     );
@@ -302,7 +300,6 @@ describe("buildStatsViewModel", () => {
     expect(result.model.directionBadge).toBe("S");
     expect(result.model.directionColor).toBe(STATS_CARD_THEME.sellColor);
     expect(result.model.marginTypeText).toBe("Cross 20X");
-    expect(result.model.accountName).toBe("");
     // SELL loses when mark > entry: −(4172.845−4172.493)×1.
     expect(result.model.pnlText).toBe("-0.35");
     expect(result.model.roiText).toBe("-0.17%");
@@ -327,7 +324,7 @@ describe("buildStatsViewModel", () => {
 describe("renderStatsHtml", () => {
   it("renders the Vietnamese labels and values", () => {
     const vm = buildStatsViewModel(
-      snapshot({ leverage: 10, accountName: "Vinh cưu", liquidationPrice: 2275 }),
+      snapshot({ leverage: 10, liquidationPrice: 2275 }),
       STATS_CARD_THEME,
     );
     expect(vm.ok).toBe(true);
@@ -342,7 +339,7 @@ describe("renderStatsHtml", () => {
       "Giá vào lệnh (USDT)",
       "Giá đánh dấu (USDT)",
       "Giá thanh lý (USDT)",
-      "Vinh cưu",
+      "Vĩnh cửu",
       "Cross 10X",
     ]) {
       expect(html).toContain(label);
@@ -410,13 +407,14 @@ describe("renderStatsHtml", () => {
     expect(html).not.toContain('class="ph"');
   });
 
-  it("hides the account tag and escapes html", () => {
-    const vm = buildStatsViewModel(snapshot({ displaySymbol: "X<Y", accountName: null }), STATS_CARD_THEME);
+  it("renders the fixed account tag and escapes html", () => {
+    const vm = buildStatsViewModel(snapshot({ displaySymbol: "X<Y" }), STATS_CARD_THEME);
     expect(vm.ok).toBe(true);
     if (!vm.ok) return;
     const html = renderStatsHtml(vm.model, STATS_CARD_THEME);
     expect(html).toContain("X&lt;Y");
-    // Only the margin-type tag remains — no account tag without a name.
+    expect(html).toContain('<span class="tag acc">Vĩnh cửu</span>');
+    // The margin-type tag is still rendered separately.
     expect(html.split('class="tag"').length - 1).toBe(1);
   });
 });

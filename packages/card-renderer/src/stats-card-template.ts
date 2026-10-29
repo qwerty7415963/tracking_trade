@@ -394,9 +394,7 @@ export function renderStatsHtml(model: StatsCardViewModel, theme: CardTheme): st
 
   const baseSymbol = escapeHtml(model.symbol);
   const symbol = /USDT$/i.test(model.symbol) ? baseSymbol : `${baseSymbol}USDT`;
-  const accountTag = model.accountName
-    ? `<span class="tag acc">${escapeHtml(model.accountName)}</span>`
-    : "";
+  const accountTag = '<span class="tag acc">Vĩnh cửu</span>';
   const pnlClass =
     model.pnlColor === theme.positivePnl
       ? "up"

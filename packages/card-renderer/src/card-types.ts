@@ -48,7 +48,6 @@ export interface PositionSnapshot {
   /** Position-stats card extras (optional — pnl-strip never reads them). */
   leverage?: number | null;
   marginType?: string | null;
-  accountName?: string | null;
   liquidationPrice?: number | null;
   /** Per-coin maintenance margin rate (falls back to 0.5%). */
   maintenanceMarginRate?: number | null;

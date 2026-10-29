@@ -9,8 +9,6 @@ export interface StatsCardViewModel {
   symbol: string;
   directionBadge: "L" | "S";
   directionColor: string;
-  /** Account display name; empty string hides the chip (older rows). */
-  accountName: string;
   marginTypeText: string;
   pnlText: string;
   roiText: string;
@@ -111,7 +109,6 @@ export function buildStatsViewModel(
     symbol: snapshot.displaySymbol,
     directionBadge: isBuy ? "L" : "S",
     directionColor: isBuy ? theme.buyColor : theme.sellColor,
-    accountName: (snapshot.accountName ?? "").trim(),
     marginTypeText: `${capitalize((snapshot.marginType ?? "cross").trim() || "cross")} ${
       leverage ?? "?"
     }X`,
@@ -129,7 +126,6 @@ export function buildStatsViewModel(
 
   const fields: Record<string, string> = {
     symbol: model.symbol,
-    accountName: model.accountName,
     pnl: model.pnlText,
     roi: model.roiText,
     notional: model.notionalText,
