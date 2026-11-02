@@ -82,9 +82,10 @@ export async function processRenderJob(
           markPrice,
           ...(data.tpIndex !== undefined ? { tpIndex: data.tpIndex } : {}),
           destinationChatId: data.destinationChatId ?? "",
-          replyToMessageId: data.replyToMessageId,
-          artifactPath,
-          actor: data.actor ?? "worker",
+        replyToMessageId: data.replyToMessageId,
+        artifactPath,
+        actor: data.actor ?? "worker",
+        ...(data.showAllEntries ? { showAllEntries: true } : {}),
         },
         {
           jobId: `${SEND_JOB_ID_PREFIX}${data.publicationId}`,

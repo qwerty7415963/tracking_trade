@@ -120,7 +120,7 @@ export function positionRow(position: SheetPositionInput): DailySheetRow | null 
   if (position.status === "CANCELLED" || position.status === "PENDING_ENTRY") return null;
   const direction = position.direction === "SHORT" ? "Short" : "Long";
   const channel = position.sourceName?.trim() || "Operator (manual)";
-  if (position.status === "OPEN" || position.status === "TP_HIT") {
+  if (position.status === "OPEN") {
     const uPnl = unrealizedPct(position);
     return {
       positionId: position.id,
@@ -131,6 +131,19 @@ export function positionRow(position: SheetPositionInput): DailySheetRow | null 
       pnl: uPnl === null ? "-- (uPnL)" : `${formatPct(uPnl)} (uPnL)`,
       pnlPct: null,
       state: "Processing",
+    };
+  }
+  if (position.status === "TP_HIT") {
+    const pnlPct = roiPct(position);
+    return {
+      positionId: position.id,
+      channel,
+      symbol: position.coin,
+      direction,
+      entry: filledEntryText(position),
+      pnl: formatPct(pnlPct),
+      pnlPct,
+      state: "TP",
     };
   }
   const pnlPct = roiPct(position);

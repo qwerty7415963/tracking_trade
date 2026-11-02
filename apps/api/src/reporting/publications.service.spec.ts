@@ -373,6 +373,23 @@ describe("PublicationsService.sendPublication", () => {
     expect(caption).not.toContain("Long ETH - entry");
   });
 
+  it("shows every planned entry on the initial market-entry card", async () => {
+    const setup = okSetup();
+    (setup.prisma.virtualPosition.findUnique as jest.Mock).mockResolvedValue({
+      ...POSITION,
+      entries: [
+        { price: 2500, notional: 100000 },
+        { price: 2450, notional: 50000 },
+      ],
+      pendingEntries: [{ price: 2450, notional: 50000 }],
+    });
+    const svc = service(setup);
+    await svc.sendPublication("pub1", sendInput({ showAllEntries: true }));
+    const sendArgs = (setup.sender.sendPhoto as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    const caption = String(sendArgs.caption);
+    expect(caption).toContain("- Entry: 2500, 2450 (đã khớp 1/2 lệnh)");
+  });
+
   it("keeps a single-entry caption clean", async () => {
     const setup = okSetup();
     const svc = service(setup);

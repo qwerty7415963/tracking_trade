@@ -34,6 +34,22 @@ describe("daily sheet mapper", () => {
     expect(positionRow(position({ status: "OPEN" }))?.state).toBe("Processing");
   });
 
+  it("shows realized PnL and state TP as soon as TP1 hits", () => {
+    const row = positionRow(
+      position({ status: "TP_HIT", realizedPnl: 5, currentPrice: 110 }),
+    );
+    expect(row?.state).toBe("TP");
+    expect(row?.pnl).toBe("+5.00%");
+    expect(row?.pnlPct).toBe(5);
+    const report = buildDailyReport(
+      [position({ status: "TP_HIT", realizedPnl: 5 })],
+      [],
+    );
+    expect(report.win).toBe(1);
+    expect(report.processing).toBe(0);
+    expect(report.pnlPct).toBe(5);
+  });
+
   it("shows uPnL for processing rows without adding it to the total", () => {
     const open = position({ currentPrice: 110 });
     const row = positionRow(open);

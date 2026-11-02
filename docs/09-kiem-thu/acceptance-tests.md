@@ -43,7 +43,7 @@
 - Mỗi lần đóng ghi realized PnL vào **ledger**; số dư chỉ đổi qua ledger.
 - Limit entry tạo `PENDING_ENTRY` size 0, **đăng ngay bài text limit (không ảnh, đủ entry)**, không margin; giá chạm entry[0] → `OPEN` + card `filled` reply vào bài text limit; `/tp` `/sl` bị từ chối, `/close` hủy không PnL/card.
 - `/pos entry market 2950 2900`: bot báo chờ 3s, sau đó mới lấy mid; khớp full notional tại giá đó, các level số còn lại DCA khi chạm giá; card không render trước entry + 3s.
-- DCA: mọi level chờ khớp; entry[0] full notional, level sau notional/N; card `entry` reply dưới card gốc.
+- DCA: mọi level chờ khớp; entry[0] full notional, level sau notional/N; card `entry` reply dưới card gốc. Bài đầu tiên của market entry + DCA hiện đủ entry và tiến độ.
 
 ## 4. Reporting
 

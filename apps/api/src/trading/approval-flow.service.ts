@@ -105,7 +105,13 @@ export class ApprovalFlowService {
       if (created) {
         published = awaitingEntry
           ? await this.publishLimitText(position.id, actor, destinationChatId)
-          : await this.publishOpened(position.id, actor, destinationChatId, publishOpts);
+          : await this.publishOpened(
+              position.id,
+              actor,
+              destinationChatId,
+              publishOpts,
+              this.showAllEntriesOnOpen(position),
+            );
       }
       return { approval, position, openError: null, published, awaitingEntry };
     } catch (err) {
@@ -131,7 +137,13 @@ export class ApprovalFlowService {
     const published = created
       ? awaitingEntry
         ? await this.publishLimitText(position.id, actor, destinationChatId)
-        : await this.publishOpened(position.id, actor, destinationChatId)
+        : await this.publishOpened(
+            position.id,
+            actor,
+            destinationChatId,
+            undefined,
+            this.showAllEntriesOnOpen(position),
+          )
       : false;
     return { position, created, published, awaitingEntry };
   }
@@ -166,11 +178,23 @@ export class ApprovalFlowService {
     }
   }
 
+  private showAllEntriesOnOpen(position: unknown): boolean {
+    const entries = (position as { entries?: unknown } | null)?.entries;
+    const pending = (position as { pendingEntries?: unknown } | null)?.pendingEntries;
+    return (
+      Array.isArray(entries) &&
+      entries.length > 1 &&
+      Array.isArray(pending) &&
+      pending.length > 0
+    );
+  }
+
   private async publishOpened(
     positionId: string,
     actor: string,
     destinationChatId?: string,
     publishOpts: ApprovePublishOptions = {},
+    showAllEntries = false,
   ): Promise<boolean> {
     const destination = this.destinationOrNull(destinationChatId);
     if (!destination) {
@@ -193,6 +217,7 @@ export class ApprovalFlowService {
         "filled",
         {
           destinationChatId: destination,
+          ...(showAllEntries ? { showAllEntries: true } : {}),
           ...(publishOpts.cardKind ? { cardKind: publishOpts.cardKind } : {}),
           ...(publishOpts.renderDelayMs ? { renderDelayMs: publishOpts.renderDelayMs } : {}),
           ...(minRenderAt ? { minRenderAt } : {}),

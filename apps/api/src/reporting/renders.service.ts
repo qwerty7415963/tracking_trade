@@ -24,6 +24,8 @@ export interface RenderJobData {
   destinationChatId?: string;
   replyToMessageId?: string;
   actor?: string;
+  /** Render all planned entries on the initial market-entry card. */
+  showAllEntries?: boolean;
   /** Card image style; undefined renders the pnl-strip default. */
   cardKind?: CardKind;
   /** Position size frozen when the card was requested (open card). */
@@ -55,6 +57,8 @@ export interface SendJobData {
   replyToMessageId?: string;
   artifactPath: string;
   actor: string;
+  /** Render all planned entries on the initial market-entry card. */
+  showAllEntries?: boolean;
   /** Text-only publication (limit placement): no image is rendered or read. */
   textOnly?: boolean;
   /** Frozen caption for a text-only publication. */
@@ -76,6 +80,8 @@ export interface RenderRequest {
   destinationChatId?: string;
   replyToMessageId?: string;
   actor?: string;
+  /** Render all planned entries on the initial market-entry card. */
+  showAllEntries?: boolean;
   /** Card image style; undefined renders the pnl-strip default. */
   cardKind?: CardKind;
   /** Position size frozen at request time; keeps open cards renderable

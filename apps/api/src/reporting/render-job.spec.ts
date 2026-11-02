@@ -203,6 +203,26 @@ describe("processRenderJob", () => {
     );
   });
 
+  it("forwards showAllEntries to the send job", async () => {
+    const deps = setup();
+    await processRenderJob(
+      deps,
+      {
+        virtualPositionId: "pos1",
+        publicationId: "pub-all",
+        status: "filled",
+        markPrice: 2500,
+        showAllEntries: true,
+      },
+      "job-all",
+    );
+    expect(deps.sendQueue.add).toHaveBeenCalledWith(
+      "send-photo",
+      expect.objectContaining({ publicationId: "pub-all", showAllEntries: true }),
+      expect.any(Object),
+    );
+  });
+
   it("forwards the TP ordinal so the caption can mark that level as hit", async () => {
     const deps = setup({
       prisma: {

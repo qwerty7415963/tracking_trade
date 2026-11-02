@@ -283,9 +283,11 @@ export class PublicationsService {
       priceChangeDeadline?: number;
       /** Poll interval for the price-change wait. */
       priceChangePollMs?: number;
-      /** TP ordinal for `tp` cards — the caption marks that level as hit. */
-      tpIndex?: number;
-    },
+    /** TP ordinal for `tp` cards — the caption marks that level as hit. */
+    tpIndex?: number;
+    /** Show every planned entry on the initial market-entry card. */
+    showAllEntries?: boolean;
+  },
     actor: string,
   ) {
     const destination = (opts.destinationChatId ?? this.config.reportDestinationChatId ?? "").trim();
@@ -838,7 +840,9 @@ export class PublicationsService {
       // A DCA fill card reads "filled": the template vocabulary stays
       // limit/filled/tp/sl/close and the entry note carries the ladder.
       status: request.status === "entry" ? "filled" : request.status,
-      entry: String(snapshot.entryPrice) + entryFillNote(position),
+      entry: (request.showAllEntries
+        ? entryPriceList(position)
+        : String(snapshot.entryPrice)) + entryFillNote(position),
       stopLoss: position.stopLoss === null ? "" : String(asNumber(position.stopLoss)),
       takeProfit: takeProfitList(tps, hitCount),
       sourceDisplayName: signal?.source.displayName ?? "unknown source",
