@@ -62,13 +62,13 @@ jobs:
 
           echo "waiting for api health..."
           for i in {1..30}; do
-            if curl -sf localhost:3000/api/v1/health >/dev/null; then
+            if curl -sf localhost:3001/api/v1/health >/dev/null; then
               echo "api health ok"
               break
             fi
             sleep 2
           done
-          curl -sf localhost:3000/api/v1/health
+          curl -sf localhost:3001/api/v1/health
 
           docker compose -p deploy -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml ps -a
           API_CONTAINER=$(docker compose -p deploy -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml ps -q api)
@@ -109,13 +109,13 @@ jobs:
 
           echo "waiting for api health after rollback..."
           for i in {1..30}; do
-            if curl -sf localhost:3000/api/v1/health >/dev/null; then
+            if curl -sf localhost:3001/api/v1/health >/dev/null; then
               echo "api health ok"
               break
             fi
             sleep 2
           done
-          curl -sf localhost:3000/api/v1/health
+          curl -sf localhost:3001/api/v1/health
 
           docker compose -p deploy -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml ps -a
           API_CONTAINER=$(docker compose -p deploy -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml ps -q api)
