@@ -56,9 +56,17 @@ export class FloatingPnLCardRenderer {
       if (!vm.ok) return vm;
       html = renderCardHtml(vm.model, theme);
     }
+    const launchPromise = this.browserFactory();
     let browser: Browser | null = null;
+    const closeBrowser = async (target: Browser): Promise<void> => {
+      try {
+        await this.withTimeout(target.close(), "browser close");
+      } catch {
+        (target as any).process?.()?.kill("SIGKILL");
+      }
+    };
     try {
-      browser = await this.withTimeout(this.browserFactory(), "browser launch");
+      browser = await this.withTimeout(launchPromise, "browser launch");
       // `theme.width/height` are output pixels; the page is authored in CSS px
       // and rasterised at `theme.scale` (2× for the stats card).
       const scale = theme.scale ?? 1;
@@ -103,7 +111,11 @@ export class FloatingPnLCardRenderer {
         detail: err instanceof Error ? err.message : "render failed",
       };
     } finally {
-      if (browser) await browser.close().catch(() => {});
+      if (browser) {
+        await closeBrowser(browser);
+      } else {
+        void launchPromise.then(closeBrowser).catch(() => {});
+      }
     }
   }
 

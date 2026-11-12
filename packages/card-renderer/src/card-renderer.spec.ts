@@ -436,6 +436,49 @@ describe("parsePngDimensions", () => {
 });
 
 describe("FloatingPnLCardRenderer", () => {
+  it("closes a browser that launches after the render timeout", async () => {
+    const close = jest.fn(async () => {});
+    const browser = { close, process: () => null } as any;
+    const factory = jest.fn(
+      () => new Promise<any>((resolve) => setTimeout(() => resolve(browser), 50)),
+    );
+    const renderer = new FloatingPnLCardRenderer(factory, DEFAULT_CARD_THEME, 10);
+    const outcome = await renderer.render(snapshot());
+    expect(outcome.ok).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(close).toHaveBeenCalled();
+  });
+
+  it("kills the browser if close hangs", async () => {
+    const kill = jest.fn();
+    const browser = {
+      close: () => new Promise<void>(() => {}),
+      newPage: jest.fn(async () => {
+        throw new Error("page load failed");
+      }),
+      process: () => ({ kill }),
+    } as any;
+    const renderer = new FloatingPnLCardRenderer(async () => browser, DEFAULT_CARD_THEME, 10);
+    const outcome = await renderer.render(snapshot());
+    expect(outcome.ok).toBe(false);
+    expect(kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("closes the browser when rendering fails after launch", async () => {
+    const close = jest.fn(async () => {});
+    const browser = {
+      close,
+      newPage: jest.fn(async () => {
+        throw new Error("page load failed");
+      }),
+      process: () => null,
+    } as any;
+    const renderer = new FloatingPnLCardRenderer(async () => browser, DEFAULT_CARD_THEME, 10);
+    const outcome = await renderer.render(snapshot());
+    expect(outcome.ok).toBe(false);
+    expect(close).toHaveBeenCalled();
+  });
+
   it("refuses to render without launching trades (no-trade surface)", () => {
     const renderer = new FloatingPnLCardRenderer(async () => {
       throw new Error("should not launch");

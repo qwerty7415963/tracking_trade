@@ -23,6 +23,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     image: tracking-trade-api:local
+    init: true
     env_file:
       - ../.env
     environment:
