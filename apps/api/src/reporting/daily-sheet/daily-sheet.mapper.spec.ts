@@ -20,6 +20,8 @@ function position(overrides: Partial<Parameters<typeof positionRow>[0]> = {}) {
     filledAt: new Date("2026-10-27T01:00:00Z"),
     entries: [{ price: 100, notional: 1000 }],
     pendingEntries: [],
+    filledTps: [],
+    takeProfits: [2600, 2700],
     sourceName: "Channel A",
     ...overrides,
   };
@@ -48,6 +50,23 @@ describe("daily sheet mapper", () => {
     expect(report.win).toBe(1);
     expect(report.processing).toBe(0);
     expect(report.pnlPct).toBe(5);
+  });
+
+  it("keeps TP state and TP PnL when SL hits after a partial TP", () => {
+    const row = positionRow(
+      position({
+        status: "SL_HIT",
+        realizedPnl: -100,
+        filledTps: [2600],
+        takeProfits: [2600, 2700],
+        size: 1,
+        entryPrice: 2500,
+        leverage: 10,
+      }),
+    );
+    expect(row?.state).toBe("TP");
+    expect(row?.pnl).toBe("+20.00%");
+    expect(row?.pnlPct).toBe(20);
   });
 
   it("shows uPnL for processing rows without adding it to the total", () => {

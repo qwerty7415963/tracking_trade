@@ -267,6 +267,8 @@ function toInput(row: PositionRecord, currentPrice: number | null = null): Sheet
     filledAt: row.filledAt,
     entries: row.entries,
     pendingEntries: row.pendingEntries,
+    filledTps: row.filledTps,
+    takeProfits: row.takeProfits,
     sourceName: row.signal?.source?.displayName ?? null,
     currentPrice,
   };

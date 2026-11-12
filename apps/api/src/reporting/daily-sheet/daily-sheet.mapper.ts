@@ -1,3 +1,5 @@
+import { realizedPnl, splitTps } from "@tracking-auto/domain";
+
 export type DailySheetState = "Processing" | "TP" | "SL" | "BE" | "Limit";
 
 export interface SheetPositionInput {
@@ -13,6 +15,8 @@ export interface SheetPositionInput {
   filledAt: Date | null;
   entries: unknown;
   pendingEntries: unknown;
+  filledTps: unknown;
+  takeProfits: unknown;
   sourceName: string | null;
   currentPrice?: number | null;
 }
@@ -116,6 +120,27 @@ function stateForClosed(pnlPct: number): DailySheetState {
   return "BE";
 }
 
+function asPriceArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((v) => Number(v)).filter((v) => Number.isFinite(v));
+}
+
+function realizedTpPnl(position: SheetPositionInput): number {
+  const tps = asPriceArray(position.takeProfits);
+  const filled = asPriceArray(position.filledTps);
+  const slices = splitTps(Number(position.size), tps.length);
+  let total = 0;
+  for (let i = 0; i < filled.length && i < slices.length; i += 1) {
+    total += realizedPnl(
+      position.direction === "SHORT" ? "SHORT" : "LONG",
+      slices[i],
+      position.entryPrice,
+      filled[i],
+    );
+  }
+  return total;
+}
+
 export function positionRow(position: SheetPositionInput): DailySheetRow | null {
   if (position.status === "CANCELLED" || position.status === "PENDING_ENTRY") return null;
   const direction = position.direction === "SHORT" ? "Short" : "Long";
@@ -145,6 +170,24 @@ export function positionRow(position: SheetPositionInput): DailySheetRow | null 
       pnlPct,
       state: "TP",
     };
+  }
+  if (position.status === "SL_HIT") {
+    const filled = asPriceArray(position.filledTps);
+    const tps = asPriceArray(position.takeProfits);
+    if (filled.length > 0 && filled.length < tps.length) {
+      const tpRealized = realizedTpPnl(position);
+      const tpRoi = roiPct({ ...position, realizedPnl: tpRealized });
+      return {
+        positionId: position.id,
+        channel,
+        symbol: position.coin,
+        direction,
+        entry: filledEntryText(position),
+        pnl: formatPct(tpRoi),
+        pnlPct: tpRoi,
+        state: "TP",
+      };
+    }
   }
   const pnlPct = roiPct(position);
   return {
