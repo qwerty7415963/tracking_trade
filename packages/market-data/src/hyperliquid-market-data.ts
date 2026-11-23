@@ -28,33 +28,78 @@ function stripBrokerSuffix(raw: string): string {
 
 export class HyperliquidMarketData {
   private metaCache: { at: number; meta: HyperliquidMeta } | null = null;
+  private midsCache: { at: number; mids: Record<string, number> } | null = null;
 
   constructor(
     private readonly baseUrl = "https://api.hyperliquid.xyz",
     private readonly fetchFn: FetchFn = fetch,
     private readonly metaTtlMs = 5 * 60 * 1000,
+    private readonly midsTtlMs = 2_000,
+    private readonly maxRetries = 3,
+    private readonly retryBaseMs = 100,
   ) {}
 
-  private async post<T>(type: string, extra?: Record<string, unknown>): Promise<T> {
-    const res = await this.fetchFn(`${this.baseUrl}/info`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type, ...extra }),
-    });
-    if (!res.ok) {
-      throw new Error(`HYPERLIQUID_HTTP_FAILED: ${res.status}`);
-    }
-    return (await res.json()) as T;
+  private isRetryableStatus(status: number): boolean {
+    return status === 408 || status === 429 || (status >= 500 && status <= 599);
   }
 
-  /** Coin -> mid price, as numbers. */
-  async getAllMids(): Promise<Record<string, number>> {
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private backoffMs(attempt: number): number {
+    const base = this.retryBaseMs * 2 ** attempt;
+    const capped = Math.min(base, 4_000);
+    const jitter = Math.floor(Math.random() * 100);
+    return capped + jitter;
+  }
+
+  private async post<T>(type: string, extra?: Record<string, unknown>): Promise<T> {
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      let res: Response;
+      try {
+        res = await this.fetchFn(`${this.baseUrl}/info`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type, ...extra }),
+        });
+      } catch (err) {
+        if (attempt < this.maxRetries) {
+          await this.sleep(this.backoffMs(attempt));
+          attempt += 1;
+          continue;
+        }
+        throw new Error(
+          `HYPERLIQUID_NETWORK_FAILED: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      if (!res.ok) {
+        if (this.isRetryableStatus(res.status) && attempt < this.maxRetries) {
+          await this.sleep(this.backoffMs(attempt));
+          attempt += 1;
+          continue;
+        }
+        throw new Error(`HYPERLIQUID_HTTP_FAILED: ${res.status}`);
+      }
+      return (await res.json()) as T;
+    }
+  }
+
+  /** Coin -> mid price, as numbers. Cached briefly to reduce 429s under load. */
+  async getAllMids(force = false): Promise<Record<string, number>> {
+    const now = Date.now();
+    if (!force && this.midsCache && now - this.midsCache.at < this.midsTtlMs) {
+      return this.midsCache.mids;
+    }
     const raw = await this.post<Record<string, string>>("allMids");
     const out: Record<string, number> = {};
-    for (const [coin, px] of Object.entries(raw)) {
+    for (const [coin, px] of Object.entries(raw ?? {})) {
       const n = Number(px);
       if (Number.isFinite(n)) out[coin] = n;
     }
+    this.midsCache = { at: Date.now(), mids: out };
     return out;
   }
 
